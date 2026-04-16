@@ -1,0 +1,6 @@
+tokenizer:
+  type: "wordpiece"
+  vocab_size: 32000
+  params:
+    min_frequency: 2
+  save_path: "outputs/tokenizers/wordpiece_32k"

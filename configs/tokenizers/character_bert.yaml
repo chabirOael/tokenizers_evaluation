@@ -1,0 +1,7 @@
+tokenizer:
+  type: "character_bert"
+  vocab_size: null  # Character vocab is built from data
+  params:
+    max_char_len: 50
+    max_word_vocab: 50000
+  save_path: "outputs/tokenizers/character_bert"

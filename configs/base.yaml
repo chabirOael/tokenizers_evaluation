@@ -1,0 +1,51 @@
+seed: 42
+deterministic: true
+
+data:
+  dataset_name: "Jr23xd23/ArabicText-Large"
+  cache_dir: "outputs/data_cache"
+  train_split: "train"
+  eval_split: "test"
+  max_train_samples: null
+  max_eval_samples: 10000
+  preprocessing:
+    normalize_unicode: true
+    remove_diacritics: false
+    min_text_length: 10
+
+model:
+  type: "llama"
+  name_or_path: "meta-llama/Llama-3.2-1B"
+  dtype: "bfloat16"
+  device: "auto"
+
+training:
+  num_epochs: 3
+  batch_size: 8
+  gradient_accumulation_steps: 4
+  learning_rate: 2.0e-5
+  weight_decay: 0.01
+  warmup_ratio: 0.1
+  lr_scheduler: "cosine"
+  max_grad_norm: 1.0
+  fp16: false
+  bf16: true
+  save_steps: 500
+  eval_steps: 500
+  logging_steps: 50
+  save_total_limit: 2
+  early_stopping_patience: 3
+  early_stopping_metric: "eval_loss"
+
+evaluation:
+  intrinsic_metrics: true
+  downstream_metrics: true
+  num_eval_samples: 5000
+  generation_max_new_tokens: 128
+  generation_temperature: 1.0
+  generation_do_sample: false
+
+tracking:
+  use_wandb: false
+  wandb_project: "arabic-tokenizer-eval"
+  log_to_file: true

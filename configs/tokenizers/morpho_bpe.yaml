@@ -1,0 +1,6 @@
+tokenizer:
+  type: "morpho_bpe"
+  vocab_size: 32000
+  params:
+    min_frequency: 2
+  save_path: "outputs/tokenizers/morpho_bpe_32k"

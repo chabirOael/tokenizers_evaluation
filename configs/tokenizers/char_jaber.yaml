@@ -1,0 +1,5 @@
+tokenizer:
+  type: "char_jaber"
+  vocab_size: null  # Character vocab is built from data
+  params: {}
+  save_path: "outputs/tokenizers/char_jaber"

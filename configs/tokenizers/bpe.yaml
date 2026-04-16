@@ -1,0 +1,6 @@
+tokenizer:
+  type: "bpe"
+  vocab_size: 32000
+  params:
+    min_frequency: 2
+  save_path: "outputs/tokenizers/bpe_32k"

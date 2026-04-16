@@ -1,0 +1,42 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "arabic-eval"
+version = "0.1.0"
+description = "Universal Arabic Tokenizers Evaluation Platform"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    # torch: GCP VM with driver 570.x supports CUDA 12.8 — install with:
+    #   pip install torch --index-url https://download.pytorch.org/whl/cu128
+    # Do NOT use the default PyPI torch (cu130) — it requires driver >= 575.
+    "torch>=2.1.0",
+    "transformers>=4.36.0",
+    "tokenizers>=0.15.0",
+    "datasets>=2.16.0",
+    "accelerate>=0.25.0",
+    "farasapy>=0.0.14",
+    "pydantic>=2.5.0",
+    "pyyaml>=6.0",
+    "numpy>=1.24.0",
+    "tqdm>=4.66.0",
+    "wandb>=0.16.0",
+    "tabulate>=0.9.0",
+    "matplotlib>=3.8.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4.0",
+    "pytest-cov>=4.1.0",
+    "ruff>=0.1.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"

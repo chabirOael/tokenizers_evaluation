@@ -1,0 +1,6 @@
+task:
+  type: "question_answering"
+  params:
+    max_length: 512
+    max_new_tokens: 64
+    dataset_name: "hsseinmz/arcd"
