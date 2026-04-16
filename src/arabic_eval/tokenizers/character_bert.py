@@ -16,11 +16,18 @@ from arabic_eval.tokenizers.base import BaseTokenizer, EmbeddingType, TokenizerO
 
 logger = logging.getLogger("arabic_eval.tokenizers.character_bert")
 
-# Reserved IDs
+# Reserved character IDs
 PAD_CHAR = 0
 BOW_CHAR = 1  # Beginning of word
 EOW_CHAR = 2  # End of word
 UNK_CHAR = 3
+# Dedicated sentinel character IDs for special word tokens so they are never
+# confused with ordinary characters or with each other.
+BOS_CHAR = 4   # sentinel for <s> word token
+EOS_CHAR = 5   # sentinel for </s> word token
+UNK_WORD_CHAR = 6  # sentinel for <unk> word token
+_NUM_RESERVED_CHARS = 7  # start regular chars after this
+
 PAD_TOKEN = "<pad>"
 BOS_TOKEN = "<s>"
 EOS_TOKEN = "</s>"
@@ -78,8 +85,11 @@ class CharacterBERTTokenizer(BaseTokenizer):
             "<bow>": BOW_CHAR,
             "<eow>": EOW_CHAR,
             "<unk>": UNK_CHAR,
+            "<bos_char>": BOS_CHAR,
+            "<eos_char>": EOS_CHAR,
+            "<unk_word_char>": UNK_WORD_CHAR,
         }
-        for i, ch in enumerate(sorted(char_set), start=len(self._char_to_id)):
+        for i, ch in enumerate(sorted(char_set), start=_NUM_RESERVED_CHARS):
             self._char_to_id[ch] = i
         self._id_to_char = {v: k for k, v in self._char_to_id.items()}
 
@@ -99,17 +109,37 @@ class CharacterBERTTokenizer(BaseTokenizer):
         )
 
     def _word_to_char_ids(self, word: str) -> List[int]:
-        """Convert a word to a fixed-length character ID sequence."""
+        """Convert a word to a fixed-length character ID sequence.
+
+        Special word tokens get dedicated sentinel character IDs so they are
+        always distinguishable from each other and from regular characters.
+        Regular words are represented as [BOW, char..., EOW, PAD...], with
+        characters truncated (not EOW) when the word is too long.
+        """
+        # Special tokens: use dedicated sentinel chars, never go through the
+        # char vocab (their ASCII chars are almost certainly absent from Arabic text).
+        if word == PAD_TOKEN:
+            return [PAD_CHAR] * self.max_char_len
+        if word == BOS_TOKEN:
+            ids = [BOW_CHAR, BOS_CHAR, EOW_CHAR]
+            ids.extend([PAD_CHAR] * (self.max_char_len - len(ids)))
+            return ids
+        if word == EOS_TOKEN:
+            ids = [BOW_CHAR, EOS_CHAR, EOW_CHAR]
+            ids.extend([PAD_CHAR] * (self.max_char_len - len(ids)))
+            return ids
+        if word == UNK_TOKEN:
+            ids = [BOW_CHAR, UNK_WORD_CHAR, EOW_CHAR]
+            ids.extend([PAD_CHAR] * (self.max_char_len - len(ids)))
+            return ids
+
+        # Regular word: BOW + chars + EOW, truncating chars (not EOW) to fit.
+        max_chars = self.max_char_len - 2  # reserve slots for BOW and EOW
         ids = [BOW_CHAR]
-        for ch in word:
+        for ch in word[:max_chars]:
             ids.append(self._char_to_id.get(ch, UNK_CHAR))
         ids.append(EOW_CHAR)
-
-        # Pad or truncate to max_char_len
-        if len(ids) > self.max_char_len:
-            ids = ids[: self.max_char_len]
-        else:
-            ids.extend([PAD_CHAR] * (self.max_char_len - len(ids)))
+        ids.extend([PAD_CHAR] * (self.max_char_len - len(ids)))
         return ids
 
     def encode(
@@ -180,6 +210,7 @@ class CharacterBERTTokenizer(BaseTokenizer):
         self._id_to_char = {v: k for k, v in self._char_to_id.items()}
         self._word_to_id = {k: int(v) for k, v in data["word_to_id"].items()}
         self._id_to_word = {v: k for k, v in self._word_to_id.items()}
+        self._next_word_id = max(self._word_to_id.values()) + 1 if self._word_to_id else len(self._special_word_tokens)
         self.max_char_len = data["max_char_len"]
 
     @property

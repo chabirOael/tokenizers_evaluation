@@ -27,6 +27,9 @@ class Highway(nn.Module):
         super().__init__()
         self.transform = nn.Linear(dim, dim)
         self.gate = nn.Linear(dim, dim)
+        # Bias the gate toward "carry" (pass-through) mode at init, following
+        # the ELMo / CharacterBERT convention.
+        nn.init.constant_(self.gate.bias, -2.0)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         t = F.relu(self.transform(x))

@@ -154,7 +154,7 @@ class TextGenerationTask(BaseTask):
             outputs = model.forward(batch)
             if outputs["loss"] is not None:
                 # Count non-padded tokens
-                labels = batch.get("labels", batch["input_ids"])
+                labels = batch.get("labels", batch.get("input_ids"))
                 n_tokens = (labels != -100).sum().item()
                 total_loss += outputs["loss"].item() * n_tokens
                 total_tokens += n_tokens

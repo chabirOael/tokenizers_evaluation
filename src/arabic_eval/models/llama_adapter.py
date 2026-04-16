@@ -117,20 +117,31 @@ class LlamaAdapter(BaseModelAdapter):
         emb_config = tokenizer.get_embedding_config()
         hidden_size = self._model.config.hidden_size
         char_vocab_size = emb_config["char_vocab_size"]
+        downsample_factor = emb_config.get("downsample_factor", 1)
 
         char_embed = CharJaberEmbedding(
             char_vocab_size=char_vocab_size,
             output_dim=hidden_size,
-            downsample_factor=1,  # No downsampling by default
+            downsample_factor=downsample_factor,
         )
 
-        # Replace embedding and output head
+        # Output head must upsample back to full sequence length when downsampling
+        # is active, so use CharJaberOutputHead rather than a plain Linear.
+        output_head = CharJaberOutputHead(
+            hidden_dim=hidden_size,
+            char_vocab_size=char_vocab_size,
+            upsample_factor=downsample_factor,
+        )
+        nn.init.normal_(output_head.output_projection.weight, mean=0.0, std=0.02)
+
         self._model.model.embed_tokens = char_embed
-        self._model.lm_head = nn.Linear(hidden_size, char_vocab_size, bias=False)
-        nn.init.normal_(self._model.lm_head.weight, mean=0.0, std=0.02)
+        self._model.lm_head = output_head
         self._model.config.vocab_size = char_vocab_size
 
-        logger.info("Replaced embedding with char-JABER (char_vocab=%d)", char_vocab_size)
+        logger.info(
+            "Replaced embedding with char-JABER (char_vocab=%d, downsample_factor=%d)",
+            char_vocab_size, downsample_factor,
+        )
 
     def forward(self, batch: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
         """Forward pass handling both standard and character-level inputs."""
@@ -180,12 +191,32 @@ class LlamaAdapter(BaseModelAdapter):
     def _prepare_attention_mask(
         self, attention_mask: Optional[torch.Tensor], hidden_states: torch.Tensor
     ) -> Optional[torch.Tensor]:
-        """Prepare causal attention mask compatible with the model."""
+        """Build a 4-D additive causal mask from a 2-D padding mask.
+
+        LLaMA decoder layers expect an additive mask of shape
+        [batch, 1, seq_len, seq_len] where attended positions are 0 and
+        masked positions are -inf.  The standard HF forward builds this
+        internally via _update_causal_mask; the manual CharacterCNN loop
+        bypasses that path, so we must build it here.
+        """
         if attention_mask is None:
             return None
-        # For most transformer implementations, 4D causal mask is built internally
-        # We just pass the 2D mask and let the model handle it
-        return attention_mask
+        batch_size, seq_len = attention_mask.shape
+        dtype = hidden_states.dtype
+        device = hidden_states.device
+
+        # Upper-triangular causal mask: future positions -> -inf
+        causal = torch.full(
+            (seq_len, seq_len), torch.finfo(dtype).min, dtype=dtype, device=device
+        )
+        causal = torch.triu(causal, diagonal=1)       # [S, S]
+        causal = causal.unsqueeze(0).unsqueeze(0)     # [1, 1, S, S]
+
+        # Padding mask: pad positions -> -inf, real positions -> 0
+        pad = (1.0 - attention_mask.to(dtype)) * torch.finfo(dtype).min
+        pad = pad[:, None, None, :]                   # [B, 1, 1, S]
+
+        return causal + pad                           # [B, 1, S, S]
 
     def generate(self, input_ids: torch.Tensor, **kwargs: Any) -> torch.Tensor:
         """Generate tokens. Only works for STANDARD and CHAR_JABER modes."""

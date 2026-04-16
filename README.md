@@ -49,6 +49,39 @@ pip install -e ".[dev]"
 
 If you already have a virtual environment, just activate it instead. If `.venv` already exists, you can skip the `python3 -m venv .venv` step.
 
+## Testing
+
+The test suite lives in `tests/`. It covers every tokenizer through the complete sweep pipeline — no internet access, GPU, or Java runtime is required.
+
+```bash
+pip install -e ".[dev]"   # installs pytest
+pytest tests/ -v
+```
+
+### What’s covered
+
+| Suite | Tests | Description |
+|---|---|---|
+| `TestTokenizerUnit` | 25 | `train`, `encode`, `decode`, `save`/`load` roundtrip, special tokens, intrinsic metrics |
+| `TestCharacterBERTRegression` | 3 | EOW never truncated, BOS/EOS char IDs are distinct, `_next_word_id` restored on load |
+| `TestCollation` | 5 | Correct batch tensor shapes and label presence per embedding type |
+| `TestModelAdaptation` | 10 | Correct embedding module type after adaptation, no crash |
+| `TestForwardPass` | 5 | Finite scalar loss for every tokenizer |
+| `test_e2e_full_sweep` | 10 | `run_single_experiment` end-to-end for every (tokenizer × task) combination |
+
+**Total: 63 tests, ~5 s.**
+
+The full sweep matrix under test:
+
+- **Tokenizers**: `bpe`, `wordpiece`, `morpho_bpe`, `character_bert`, `char_jaber`
+- **Tasks**: `text_generation`, `question_answering`
+
+### How it works without real infrastructure
+
+- **Dataset**: `load_dataset` is patched in every module that imports it; a 12-text synthetic Arabic corpus is returned instead.
+- **LLM**: `AutoModelForCausalLM.from_pretrained` is patched to return a 32-hidden-unit CPU model. The model has the same attribute structure as LLaMA (`model.embed_tokens`, `model.layers`, `model.norm`, `lm_head`) so all embedding-replacement logic is exercised exactly as in production.
+- **Farasa (morpho_bpe)**: the Farasa segmenter is patched with a pass-through mock, so `morpho_bpe` exercises the full BPE-on-segmented-text path without Java.
+
 ### (Optional) Run tests in tmux
 
 If you’re on a remote machine, running tests inside `tmux` keeps them running if your SSH session drops.
@@ -56,7 +89,7 @@ If you’re on a remote machine, running tests inside `tmux` keeps them running 
 ```bash
 tmux new -s arabic-eval-tests
 source .venv/bin/activate
-pytest -q
+pytest -v
 ```
 
 Later, re-attach with:

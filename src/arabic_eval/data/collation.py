@@ -82,7 +82,8 @@ class CharacterCNNCollator:
 
         result = {"char_ids": padded, "attention_mask": attention_mask}
 
-        # Word-level labels
+        # Word-level labels: prefer explicit "labels", fall back to word-level
+        # input_ids (present when called from text_generation / QA tasks).
         if "labels" in batch[0]:
             labels = [torch.tensor(ex["labels"][: self.max_words], dtype=torch.long)
                       for ex in batch]
@@ -90,6 +91,18 @@ class CharacterCNNCollator:
             for i, lab in enumerate(labels):
                 padded_labels[i, : lab.size(0)] = lab
             result["labels"] = padded_labels
+        elif "input_ids" in batch[0]:
+            # Derive causal LM labels from word IDs (same as StandardCollator fallback).
+            word_ids = [
+                torch.tensor(ex["input_ids"][: self.max_words], dtype=torch.long)
+                for ex in batch
+            ]
+            padded_word_ids = torch.full((len(batch), max_words), self.pad_token_id, dtype=torch.long)
+            for i, wids in enumerate(word_ids):
+                padded_word_ids[i, : wids.size(0)] = wids
+            word_labels = padded_word_ids.clone()
+            word_labels[attention_mask == 0] = -100
+            result["labels"] = word_labels
 
         return result
 
@@ -123,7 +136,12 @@ def get_collator(embedding_type: str, pad_token_id: int = 0, **kwargs):
     if embedding_type == "standard":
         return StandardCollator(pad_token_id=pad_token_id, **kwargs)
     elif embedding_type == "character_cnn":
-        return CharacterCNNCollator(pad_token_id=pad_token_id, **kwargs)
+        # CharacterCNNCollator uses max_words (not max_length) for its sequence
+        # dimension.  Callers uniformly pass max_length, so map it here.
+        cnn_kwargs = dict(kwargs)
+        if "max_length" in cnn_kwargs:
+            cnn_kwargs.setdefault("max_words", cnn_kwargs.pop("max_length"))
+        return CharacterCNNCollator(pad_token_id=pad_token_id, **cnn_kwargs)
     elif embedding_type == "char_jaber":
         return CharJaberCollator(pad_token_id=pad_token_id, **kwargs)
     else:

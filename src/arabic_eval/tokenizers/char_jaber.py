@@ -32,9 +32,10 @@ class CharJaberTokenizer(BaseTokenizer):
     Sequences are much longer than subword tokenizers.
     """
 
-    def __init__(self, **kwargs: Any) -> None:
+    def __init__(self, downsample_factor: int = 1, **kwargs: Any) -> None:
         self._char_to_id: Dict[str, int] = {}
         self._id_to_char: Dict[int, str] = {}
+        self.downsample_factor = downsample_factor
 
     def train(self, texts: List[str], vocab_size: int = 0, **kwargs: Any) -> None:
         """Build the character vocabulary from training texts.
@@ -101,8 +102,9 @@ class CharJaberTokenizer(BaseTokenizer):
 
     def decode(self, ids: List[int]) -> str:
         chars = []
+        skip = {PAD_ID, BOS_ID, EOS_ID, UNK_ID}
         for cid in ids:
-            if cid in (PAD_ID, BOS_ID, EOS_ID):
+            if cid in skip:
                 continue
             ch = self._id_to_char.get(cid, "")
             chars.append(ch)
@@ -141,4 +143,5 @@ class CharJaberTokenizer(BaseTokenizer):
     def get_embedding_config(self) -> Dict[str, Any]:
         return {
             "char_vocab_size": self.vocab_size,
+            "downsample_factor": self.downsample_factor,
         }
