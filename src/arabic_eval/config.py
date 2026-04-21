@@ -73,7 +73,7 @@ class TrainingConfig(BaseModel):
 class EvaluationConfig(BaseModel):
     intrinsic_metrics: bool = True
     downstream_metrics: bool = True
-    num_eval_samples: int = 5_000
+    num_eval_samples: Optional[int] = 5_000  # None = no cap (use full eval split)
     generation_max_new_tokens: int = 128
     generation_temperature: float = 1.0
     generation_do_sample: bool = False

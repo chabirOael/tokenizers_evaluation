@@ -32,9 +32,13 @@ class Evaluator:
         self.eval_texts = eval_texts or []
         self.output_dir = output_dir
 
-    def run_intrinsic(self, num_samples: int = 5000) -> Dict[str, float]:
+    def run_intrinsic(self, num_samples: Optional[int] = 5000) -> Dict[str, float]:
         """Compute intrinsic tokenizer metrics."""
-        texts = self.eval_texts[:num_samples]
+        texts = (
+            self.eval_texts
+            if num_samples is None
+            else self.eval_texts[:num_samples]
+        )
         if not texts:
             logger.warning("No texts provided for intrinsic evaluation")
             return {}

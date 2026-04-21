@@ -1,0 +1,12 @@
+task:
+  type: "acva"
+  params:
+    # HuggingFace dataset identifier.  Override to use a specific topic config,
+    # e.g. dataset_config: "Algeria" (see OALL/ACVA for available configs).
+    dataset_name: "OALL/ACVA"
+    dataset_config: null
+    cache_dir: "outputs/data_cache"
+    max_length: 512
+    # 10 % of total examples used for SFT; 90 % reserved for LightEval evaluation.
+    train_split_ratio: 0.10
+    seed: 42

@@ -1,0 +1,12 @@
+task:
+  type: "alghafa"
+  params:
+    # HuggingFace dataset identifier.  Override dataset_config to target a
+    # specific subtask, e.g. "mcq_exams_ar", "piqa_ar", "arc_easy_ar".
+    dataset_name: "OALL/AlGhafa-Arabic-LLM-Benchmark-Native"
+    dataset_config: null
+    cache_dir: "outputs/data_cache"
+    max_length: 512
+    # 10 % of total examples used for SFT; 90 % reserved for LightEval evaluation.
+    train_split_ratio: 0.10
+    seed: 42

@@ -3,7 +3,7 @@
 Run with:  pytest tests/test_e2e_sweep.py -v
 
 No internet access or GPU is required:
-  - Dataset loading is patched to return synthetic Arabic text.
+  - Dataset loading is patched to return synthetic Arabic text / MCQ data.
   - Model loading is patched to return a tiny CPU-based fake LLaMA model.
   - MorphoBPE's Farasa segmenter is patched to return text unchanged.
 
@@ -14,6 +14,9 @@ Each parametrized case drives *one* (tokenizer × task) combination through:
   4. Model adaptation (embedding-layer swap)
   5. Forward pass with loss
   6. Full run_single_experiment call (mirrors the actual sweep loop)
+
+LightEval benchmark tasks (acva, alghafa, culture_arabic_mmlu, arabic_exam) are
+covered separately in TestLightEvalBenchmarks and in the parametrized e2e sweep.
 """
 from __future__ import annotations
 
@@ -28,7 +31,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 # ---------------------------------------------------------------------------
-# Synthetic corpus
+# Synthetic corpus — plain Arabic text
 # ---------------------------------------------------------------------------
 
 ARABIC_TEXTS: List[str] = [
@@ -45,6 +48,10 @@ ARABIC_TEXTS: List[str] = [
     "التحويل الآلي للنصوص العربية يستخدم خوارزميات متطورة جداً",
     "تقنيات التعلم العميق تعتمد على الشبكات العصبية الاصطناعية",
 ]
+
+# ---------------------------------------------------------------------------
+# Synthetic QA corpus
+# ---------------------------------------------------------------------------
 
 SAMPLE_QA: Dict[str, List] = {
     "context": [
@@ -66,6 +73,37 @@ SAMPLE_QA: Dict[str, List] = {
         {"text": ["قوانين الطبيعة"]},
     ],
 }
+
+# ---------------------------------------------------------------------------
+# Synthetic MCQ corpus — used by all lighteval benchmark mocks.
+# Schema: separate A/B/C/D columns + answer letter (handled by _parse_mcq_generic).
+# ---------------------------------------------------------------------------
+
+SAMPLE_MCQ_DATA: Dict[str, List] = {
+    "question": [
+        "ما هي عاصمة الجزائر؟",
+        "كم عدد أيام الأسبوع؟",
+        "ما هو لون السماء؟",
+        "ما هي أكبر قارة في العالم؟",
+        "ما هي عاصمة مصر؟",
+        "كم عدد أشهر السنة؟",
+        "ما هو أطول نهر في العالم؟",
+        "من كتب القرآن الكريم؟",
+    ],
+    "A": ["الجزائر", "خمسة", "أزرق", "آسيا", "القاهرة", "عشرة", "النيل", "الله"],
+    "B": ["وهران", "سبعة", "أحمر", "أفريقيا", "الإسكندرية", "اثنا عشر", "الأمازون", "محمد"],
+    "C": ["قسنطينة", "ستة", "أخضر", "أوروبا", "أسوان", "ثمانية", "المسيسيبي", "جبريل"],
+    "D": ["عنابة", "ثمانية", "أصفر", "أمريكا", "الجيزة", "خمسة عشر", "اليانغتسي", "موسى"],
+    "answer": ["A", "B", "A", "A", "A", "B", "A", "A"],
+}
+
+# Benchmark dataset names patched by the mock factory.
+_BENCHMARK_NAMES = frozenset({
+    "OALL/ACVA",
+    "OALL/AlGhafa-Native",
+    "acmc/arabic_culture_mmlu",
+    "arabic_exam",
+})
 
 
 # ---------------------------------------------------------------------------
@@ -207,20 +245,40 @@ def _make_qa_dataset():
     return Dataset.from_dict(SAMPLE_QA)
 
 
+def _make_mcq_dataset():
+    from datasets import Dataset
+    return Dataset.from_dict(SAMPLE_MCQ_DATA)
+
+
 def _mock_load_dataset_factory():
-    """Returns a callable that fakes load_dataset for all three call sites."""
+    """Returns a callable that fakes load_dataset for all four call sites.
+
+    Routing logic:
+      - ARCD / qa names  → QA dataset (context/question/answers)
+      - Known benchmark names (ACVA, Alghafa, …) → MCQ dataset (A/B/C/D cols)
+      - Everything else  → plain Arabic text dataset
+    """
     from datasets import DatasetDict
 
     text_ds = _make_text_dataset(ARABIC_TEXTS)
     text_dd = DatasetDict({"train": text_ds, "test": text_ds})
     qa_ds = _make_qa_dataset()
     qa_dd = DatasetDict({"train": qa_ds, "test": qa_ds})
+    mcq_ds = _make_mcq_dataset()
+    # Single split only — avoids duplicating questions when concatenate_datasets
+    # is called over all splits in LightEvalBenchmarkTask._load_all_examples().
+    mcq_dd = DatasetDict({"train": mcq_ds})
 
     def _mock(name, config=None, cache_dir=None, split=None, **kwargs):
-        is_qa = "arcd" in str(name) or "qa" in str(name).lower()
-        if split is not None:
-            return qa_ds if is_qa else text_ds
-        return qa_dd if is_qa else text_dd
+        name_str = str(name)
+        is_benchmark = name_str in _BENCHMARK_NAMES
+        is_qa = ("arcd" in name_str or "qa" in name_str.lower()) and not is_benchmark
+
+        if is_benchmark:
+            return mcq_ds if split is not None else mcq_dd
+        if is_qa:
+            return qa_ds if split is not None else qa_dd
+        return text_ds if split is not None else text_dd
 
     return _mock
 
@@ -231,18 +289,47 @@ def _mock_load_dataset_factory():
 
 # (tokenizer_type, tokenizer_params, vocab_size_for_training)
 _TOK_CASES = [
-    pytest.param("bpe",           {"min_frequency": 1}, 100,  id="bpe"),
-    pytest.param("wordpiece",     {"min_frequency": 1}, 100,  id="wordpiece"),
-    pytest.param("morpho_bpe",    {"min_frequency": 1}, 100,  id="morpho_bpe"),
+    pytest.param("bpe",            {"min_frequency": 1}, 100,  id="bpe"),
+    pytest.param("wordpiece",      {"min_frequency": 1}, 100,  id="wordpiece"),
+    pytest.param("morpho_bpe",     {"min_frequency": 1}, 100,  id="morpho_bpe"),
     pytest.param("character_bert", {"max_char_len": 10, "max_word_vocab": 200}, None, id="character_bert"),
-    pytest.param("char_jaber",    {},                   None, id="char_jaber"),
+    pytest.param("char_jaber",     {},                   None, id="char_jaber"),
 ]
 
 # (task_type, task_params)
+# train_split_ratio=0.50 for lighteval tasks keeps ≥4 examples in each split
+# even with the tiny 8-row synthetic MCQ dataset (16 rows after mock duplication).
 _TASK_CASES = [
-    pytest.param("text_generation",  {"max_length": 32, "stride": 16},                     id="text_gen"),
-    pytest.param("question_answering", {"max_length": 32, "max_new_tokens": 4,
-                                        "dataset_name": "hsseinmz/arcd"},                   id="qa"),
+    pytest.param(
+        "text_generation",
+        {"max_length": 32, "stride": 16},
+        id="text_gen",
+    ),
+    pytest.param(
+        "question_answering",
+        {"max_length": 32, "max_new_tokens": 4, "dataset_name": "hsseinmz/arcd"},
+        id="qa",
+    ),
+    pytest.param(
+        "acva",
+        {"dataset_name": "OALL/ACVA", "train_split_ratio": 0.50, "max_length": 32, "seed": 0},
+        id="acva",
+    ),
+    pytest.param(
+        "alghafa",
+        {"dataset_name": "OALL/AlGhafa-Native", "train_split_ratio": 0.50, "max_length": 32, "seed": 0},
+        id="alghafa",
+    ),
+    pytest.param(
+        "culture_arabic_mmlu",
+        {"dataset_name": "acmc/arabic_culture_mmlu", "train_split_ratio": 0.50, "max_length": 32, "seed": 0},
+        id="culture_arabic_mmlu",
+    ),
+    pytest.param(
+        "arabic_exam",
+        {"dataset_name": "arabic_exam", "train_split_ratio": 0.50, "max_length": 32, "seed": 0},
+        id="arabic_exam",
+    ),
 ]
 
 
@@ -258,10 +345,13 @@ def patched_env():
       - AutoModelForCausalLM.from_pretrained → FakeLlamaForCausalLM
       - load_dataset in every module that imports it → synthetic data
       - MorphoBPE Farasa segmenter → pass-through (no Java needed)
+
+    All four load_dataset call sites are patched so that any test order is
+    safe and no test can trigger a real network call.
     """
     mock_ds = _mock_load_dataset_factory()
 
-    # Farasa mock: segment() returns the text as-is (no morphological split)
+    # Farasa mock: segment() returns the text unchanged (no morphological split)
     fake_segmenter = MagicMock()
     fake_segmenter.segment.side_effect = lambda text: text
 
@@ -270,9 +360,10 @@ def patched_env():
             "arabic_eval.models.llama_adapter.AutoModelForCausalLM.from_pretrained",
             side_effect=lambda *a, **kw: FakeLlamaForCausalLM(),
         ),
-        patch("arabic_eval.data.loader.load_dataset",                   side_effect=mock_ds),
-        patch("arabic_eval.tasks.text_generation.load_dataset",         side_effect=mock_ds),
-        patch("arabic_eval.tasks.question_answering.load_dataset",      side_effect=mock_ds),
+        patch("arabic_eval.data.loader.load_dataset",                        side_effect=mock_ds),
+        patch("arabic_eval.tasks.text_generation.load_dataset",              side_effect=mock_ds),
+        patch("arabic_eval.tasks.question_answering.load_dataset",           side_effect=mock_ds),
+        patch("arabic_eval.tasks.lighteval_benchmarks.load_dataset",         side_effect=mock_ds),
         patch(
             "arabic_eval.tokenizers.morpho_bpe._get_farasa_segmenter",
             return_value=fake_segmenter,
@@ -300,6 +391,7 @@ def _build_tokenizer(tok_type: str, tok_params: Dict, vocab_size: Optional[int])
 # 1. Tokenizer unit tests  (train / encode / decode / save-load / intrinsic)
 # ===========================================================================
 
+@pytest.mark.usefixtures("patched_env")
 class TestTokenizerUnit:
 
     @pytest.mark.parametrize("tok_type,tok_params,vocab_size", _TOK_CASES)
@@ -323,14 +415,12 @@ class TestTokenizerUnit:
         if tok.embedding_type == EmbeddingType.CHARACTER_CNN:
             assert out.char_ids is not None, "CharacterBERT must populate char_ids"
             assert len(out.char_ids) == len(out.input_ids)
-            # Every char_ids row must be fixed length (max_char_len)
             max_char_len = tok_params.get("max_char_len", 50)
             for row in out.char_ids:
                 assert len(row) == max_char_len, (
                     f"char_ids row has wrong length: {len(row)} vs {max_char_len}"
                 )
         else:
-            # Standard and char_jaber have no char_ids
             assert out.char_ids is None
 
     @pytest.mark.parametrize("tok_type,tok_params,vocab_size", _TOK_CASES)
@@ -339,7 +429,6 @@ class TestTokenizerUnit:
         out = tok.encode("مرحبا بالعالم")
         result = tok.decode(out.input_ids)
         assert isinstance(result, str)
-        # decode must not embed the literal string '<unk>' for char_jaber
         if tok_type == "char_jaber":
             assert "<unk>" not in result, "decode() must skip UNK tokens, not stringify them"
 
@@ -352,7 +441,6 @@ class TestTokenizerUnit:
         with tempfile.TemporaryDirectory() as tmp:
             tok.save(tmp)
 
-            # Load into a fresh instance
             import arabic_eval.tokenizers  # noqa
             from arabic_eval.registry import tokenizer_registry
             fresh = tokenizer_registry.get(tok_type)(**tok_params)
@@ -389,6 +477,7 @@ class TestTokenizerUnit:
 # 2. CharacterBERT-specific bug regression tests
 # ===========================================================================
 
+@pytest.mark.usefixtures("patched_env")
 class TestCharacterBERTRegression:
 
     def _make_tok(self):
@@ -402,13 +491,11 @@ class TestCharacterBERTRegression:
         from arabic_eval.tokenizers.character_bert import BOW_CHAR, EOW_CHAR, PAD_CHAR
 
         tok = self._make_tok()
-        # Construct a word that would overflow max_char_len=10 without the fix
         long_word = "أ" * 15  # 15 chars >> max_char_len=10
         ids = tok._word_to_char_ids(long_word)
 
         assert len(ids) == tok.max_char_len, "char_ids must always be exactly max_char_len"
         assert ids[0] == BOW_CHAR, "first char must be BOW"
-        # EOW must be present and not be the last real char (i.e. not truncated)
         assert EOW_CHAR in ids, "EOW must always be present even for long words"
 
     def test_special_tokens_have_distinct_char_ids(self, patched_env):
@@ -445,6 +532,7 @@ class TestCharacterBERTRegression:
 # 3. Collation tests (correct tensor shapes per embedding type)
 # ===========================================================================
 
+@pytest.mark.usefixtures("patched_env")
 class TestCollation:
 
     @pytest.mark.parametrize("tok_type,tok_params,vocab_size", _TOK_CASES)
@@ -454,7 +542,6 @@ class TestCollation:
         tok = _build_tokenizer(tok_type, tok_params, vocab_size)
         max_len = 32
 
-        # Encode a few texts
         samples = []
         for text in ARABIC_TEXTS[:3]:
             enc = tok.encode(text, max_length=max_len, truncation=True)
@@ -485,10 +572,10 @@ class TestCollation:
 # 4. Model adaptation tests
 # ===========================================================================
 
+@pytest.mark.usefixtures("patched_env")
 class TestModelAdaptation:
 
     def _make_adapter(self):
-        """Return a LlamaAdapter backed by the fake model."""
         from arabic_eval.models.llama_adapter import LlamaAdapter
         return LlamaAdapter(model_name_or_path="test", device="cpu", dtype="float32")
 
@@ -520,7 +607,6 @@ class TestModelAdaptation:
                 "char_jaber adaptation must install CharJaberOutputHead"
             )
         else:
-            # Standard: embedding is still a plain nn.Embedding, resized to new vocab
             assert isinstance(inner.embed_tokens, nn.Embedding)
             assert inner.embed_tokens.weight.shape[0] == tok.vocab_size
 
@@ -529,6 +615,7 @@ class TestModelAdaptation:
 # 5. Forward-pass tests (one batch, loss is a scalar)
 # ===========================================================================
 
+@pytest.mark.usefixtures("patched_env")
 class TestForwardPass:
 
     def _adapted_adapter(self, tok_type, tok_params, vocab_size):
@@ -545,7 +632,6 @@ class TestForwardPass:
         adapter, tok = self._adapted_adapter(tok_type, tok_params, vocab_size)
         max_len = 32
 
-        # Build a micro-batch of 2
         samples = []
         for text in ARABIC_TEXTS[:2]:
             enc = tok.encode(text, max_length=max_len, truncation=True)
@@ -567,7 +653,293 @@ class TestForwardPass:
 
 
 # ===========================================================================
-# 6. Full end-to-end sweep simulation  (run_single_experiment)
+# 6. LightEval benchmark task tests
+# ===========================================================================
+
+@pytest.mark.usefixtures("patched_env")
+class TestLightEvalBenchmarks:
+    """Unit and integration tests for the four LightEval benchmark tasks.
+
+    Coverage:
+      - MCQ parsing with A/B/C/D column schema and choices-list schema
+      - 10/90 split correctness (no overlap, correct proportions)
+      - get_dataloader produces correctly shaped batches
+      - evaluate() returns valid accuracy for standard tokenizers
+      - evaluate() returns accuracy=0.0 for CharacterBERT (expected limitation)
+      - LightEvalModelWrapper.loglikelihood returns one float per request
+    """
+
+    # --- helpers ---
+
+    def _make_task(self, task_type: str = "acva", extra: Optional[Dict] = None):
+        import arabic_eval.tasks  # noqa: F401
+        from arabic_eval.registry import task_registry
+        params = {
+            "dataset_name": "OALL/ACVA",
+            "train_split_ratio": 0.50,
+            "max_length": 32,
+            "seed": 0,
+        }
+        if extra:
+            params.update(extra)
+        cls = task_registry.get(task_type)
+        return cls(params)
+
+    def _make_adapted_adapter(self, tok_type="bpe", tok_params=None, vocab_size=100):
+        from arabic_eval.models.llama_adapter import LlamaAdapter
+        tok_params = tok_params or {"min_frequency": 1}
+        tok = _build_tokenizer(tok_type, tok_params, vocab_size)
+        adapter = LlamaAdapter(model_name_or_path="test", device="cpu", dtype="float32")
+        adapter.adapt_to_tokenizer(tok)
+        return adapter, tok
+
+    # --- MCQ parsing ---
+
+    @pytest.mark.parametrize("task_type", ["acva", "alghafa", "culture_arabic_mmlu", "arabic_exam"])
+    def test_parse_example_abcd_schema(self, patched_env, task_type):
+        """_parse_example must handle the A/B/C/D column + answer letter schema."""
+        import arabic_eval.tasks  # noqa
+        from arabic_eval.registry import task_registry
+        task = task_registry.get(task_type)({"dataset_name": "OALL/ACVA"})
+        raw = {
+            "question": "ما هي عاصمة الجزائر؟",
+            "A": "الجزائر", "B": "وهران", "C": "قسنطينة", "D": "عنابة",
+            "answer": "A",
+        }
+        parsed = task._parse_example(raw)
+        assert parsed is not None, f"{task_type}: _parse_example returned None for valid ABCD row"
+        assert parsed["question"] == "ما هي عاصمة الجزائر؟"
+        assert len(parsed["choices"]) == 4
+        assert parsed["answer"] == 0  # A → index 0
+
+    def test_parse_example_choices_list_schema(self, patched_env):
+        """_parse_example must handle the choices-list + integer answer schema."""
+        from arabic_eval.tasks.lighteval_benchmarks import ACVATask
+        task = ACVATask({"dataset_name": "OALL/ACVA"})
+        raw = {
+            "question": "كم عدد الأيام في الأسبوع؟",
+            "choices": ["خمسة", "ستة", "سبعة", "ثمانية"],
+            "answer": 2,
+        }
+        parsed = task._parse_example(raw)
+        assert parsed is not None
+        assert parsed["answer"] == 2
+        assert parsed["choices"][2] == "سبعة"
+
+    def test_parse_example_returns_none_for_invalid(self, patched_env):
+        """_parse_example must return None for malformed rows (no choices)."""
+        from arabic_eval.tasks.lighteval_benchmarks import ACVATask
+        task = ACVATask({"dataset_name": "OALL/ACVA"})
+        assert task._parse_example({"question": "سؤال بدون خيارات"}) is None
+        assert task._parse_example({}) is None
+
+    # --- Data splitting ---
+
+    def test_split_no_overlap(self, patched_env):
+        """Fine-tune and eval splits must be disjoint."""
+        task = self._make_task()
+        fine_tune, eval_examples = task._get_splits()
+        assert len(fine_tune) > 0, "fine-tune split must not be empty"
+        assert len(eval_examples) > 0, "eval split must not be empty"
+        ft_qs = {ex["question"] for ex in fine_tune}
+        ev_qs = {ex["question"] for ex in eval_examples}
+        assert ft_qs.isdisjoint(ev_qs), "fine-tune and eval splits must not share questions"
+
+    def test_split_is_deterministic(self, patched_env):
+        """Two task instances with the same seed must produce identical splits."""
+        task_a = self._make_task()
+        task_b = self._make_task()
+        ft_a, ev_a = task_a._get_splits()
+        ft_b, ev_b = task_b._get_splits()
+        assert [ex["question"] for ex in ft_a] == [ex["question"] for ex in ft_b]
+        assert [ex["question"] for ex in ev_a] == [ex["question"] for ex in ev_b]
+
+    def test_split_different_seeds_differ(self, patched_env):
+        """Tasks with different seeds must (very likely) produce different splits."""
+        task_a = self._make_task(extra={"seed": 0})
+        task_b = self._make_task(extra={"seed": 99})
+        ft_a, _ = task_a._get_splits()
+        ft_b, _ = task_b._get_splits()
+        qs_a = [ex["question"] for ex in ft_a]
+        qs_b = [ex["question"] for ex in ft_b]
+        assert qs_a != qs_b, "Different seeds should produce different orderings"
+
+    # --- DataLoader ---
+
+    @pytest.mark.parametrize("tok_type,tok_params,vocab_size", _TOK_CASES)
+    def test_get_dataloader_produces_batches(self, patched_env, tok_type, tok_params, vocab_size):
+        """get_dataloader must yield at least one batch for every tokenizer type."""
+        task = self._make_task()
+        tok = _build_tokenizer(tok_type, tok_params, vocab_size)
+        dl = task.get_dataloader(tok, split="train", batch_size=2)
+        batch = next(iter(dl))
+
+        if tok_type == "character_bert":
+            assert "char_ids" in batch
+            assert batch["char_ids"].dim() == 3
+        else:
+            assert "input_ids" in batch
+            assert batch["input_ids"].dim() == 2
+
+        assert "attention_mask" in batch
+        assert "labels" in batch
+
+    # --- Evaluation ---
+
+    @pytest.mark.parametrize("tok_type,tok_params,vocab_size", [
+        pytest.param("bpe",       {"min_frequency": 1}, 100, id="bpe"),
+        pytest.param("wordpiece", {"min_frequency": 1}, 100, id="wordpiece"),
+        pytest.param("char_jaber", {},                  None, id="char_jaber"),
+    ])
+    def test_evaluate_returns_valid_accuracy(self, patched_env, tok_type, tok_params, vocab_size):
+        """evaluate() must return accuracy in [0, 1] for standard tokenizer types."""
+        task = self._make_task()
+        adapter, tok = self._make_adapted_adapter(tok_type, tok_params, vocab_size)
+        metrics = task.evaluate(adapter, tok, split="test", max_samples=2)
+        assert "accuracy" in metrics
+        assert 0.0 <= metrics["accuracy"] <= 1.0
+        assert "num_samples" in metrics
+        assert metrics["num_samples"] >= 0
+
+    def test_character_bert_evaluate_returns_zero_accuracy(self, patched_env):
+        """CharacterBERT must return accuracy=0.0 — log-likelihood not supported."""
+        task = self._make_task()
+        adapter, tok = self._make_adapted_adapter(
+            "character_bert", {"max_char_len": 10, "max_word_vocab": 200}, None
+        )
+        metrics = task.evaluate(adapter, tok, split="test", max_samples=2)
+        assert metrics["accuracy"] == 0.0, (
+            "CharacterBERT (character_cnn) must always report accuracy=0.0 "
+            "because token-level log-likelihood is not supported"
+        )
+
+    # --- LightEvalModelWrapper ---
+
+    def test_loglikelihood_returns_one_float_per_request(self, patched_env):
+        """LightEvalModelWrapper.loglikelihood must return exactly one float per pair."""
+        from arabic_eval.tasks.lighteval_benchmarks import LightEvalModelWrapper
+        adapter, tok = self._make_adapted_adapter()
+        wrapper = LightEvalModelWrapper(adapter, tok, max_length=32)
+        requests = [
+            ("السؤال: ما هي عاصمة الجزائر؟\nالإجابة:", " A"),
+            ("السؤال: ما هي عاصمة الجزائر؟\nالإجابة:", " B"),
+            ("السؤال: ما هي عاصمة الجزائر؟\nالإجابة:", " C"),
+        ]
+        scores = wrapper.loglikelihood(requests)
+        assert len(scores) == 3, "Must return exactly one score per request"
+        assert all(isinstance(s, float) for s in scores), "All scores must be floats"
+
+    def test_loglikelihood_scores_are_finite(self, patched_env):
+        """Log-likelihoods must be finite (not NaN or ±inf)."""
+        from arabic_eval.tasks.lighteval_benchmarks import LightEvalModelWrapper
+        adapter, tok = self._make_adapted_adapter()
+        wrapper = LightEvalModelWrapper(adapter, tok, max_length=32)
+        scores = wrapper.loglikelihood([
+            ("السياق العربي", " A"),
+            ("السياق العربي", " B"),
+        ])
+        import math
+        assert all(math.isfinite(s) for s in scores), "All log-likelihood scores must be finite"
+
+    def test_evaluate_mcq_returns_correct_keys(self, patched_env):
+        """evaluate_mcq must return both 'accuracy' and 'num_samples'."""
+        from arabic_eval.tasks.lighteval_benchmarks import LightEvalModelWrapper
+        adapter, tok = self._make_adapted_adapter()
+        wrapper = LightEvalModelWrapper(adapter, tok, max_length=32)
+        examples = [
+            {"question": "ما هي عاصمة الجزائر؟", "choices": ["الجزائر", "وهران", "قسنطينة", "عنابة"], "answer": 0},
+            {"question": "كم عدد أيام الأسبوع؟", "choices": ["خمسة", "سبعة", "ستة", "ثمانية"], "answer": 1},
+        ]
+        result = wrapper.evaluate_mcq(examples)
+        assert "accuracy" in result and "num_samples" in result
+        assert result["num_samples"] == 2
+        assert 0.0 <= result["accuracy"] <= 1.0
+
+    # --- Multi-config dataset fallback ---
+
+    def test_multi_config_fallback_loads_all_sub_configs(self, patched_env):
+        """When load_dataset raises 'Config name is missing', _load_all_configs_merged
+        must enumerate sub-configs and merge their examples."""
+        from arabic_eval.tasks.lighteval_benchmarks import ACVATask
+
+        mcq_ds = _make_mcq_dataset()
+
+        def _load_requiring_config(name, config=None, cache_dir=None, **kwargs):
+            if config is None:
+                raise ValueError(
+                    "Config name is missing. Pick one among: ['cfg_a', 'cfg_b']"
+                )
+            from datasets import DatasetDict
+            return DatasetDict({"train": mcq_ds})
+
+        def _config_names(name):
+            return ["cfg_a", "cfg_b"]
+
+        with (
+            patch("arabic_eval.tasks.lighteval_benchmarks.load_dataset", side_effect=_load_requiring_config),
+            patch("arabic_eval.tasks.lighteval_benchmarks.get_dataset_config_names", side_effect=_config_names),
+        ):
+            task = ACVATask({"dataset_name": "OALL/ACVA", "train_split_ratio": 0.50})
+            examples = task._load_all_examples()
+
+        # 2 configs × 8 rows each = 16 examples total
+        assert len(examples) == 2 * len(SAMPLE_MCQ_DATA["question"]), (
+            "Multi-config merge must include examples from all sub-configs"
+        )
+
+    def test_multi_config_skips_broken_sub_configs(self, patched_env):
+        """Broken sub-configs must be skipped with a warning, not raise."""
+        from arabic_eval.tasks.lighteval_benchmarks import ACVATask
+
+        mcq_ds = _make_mcq_dataset()
+
+        def _load_requiring_config(name, config=None, cache_dir=None, **kwargs):
+            if config is None:
+                raise ValueError("Config name is missing.")
+            if config == "broken":
+                raise RuntimeError("Dataset not found")
+            from datasets import DatasetDict
+            return DatasetDict({"train": mcq_ds})
+
+        def _config_names(name):
+            return ["good", "broken"]
+
+        with (
+            patch("arabic_eval.tasks.lighteval_benchmarks.load_dataset", side_effect=_load_requiring_config),
+            patch("arabic_eval.tasks.lighteval_benchmarks.get_dataset_config_names", side_effect=_config_names),
+        ):
+            task = ACVATask({"dataset_name": "OALL/ACVA"})
+            examples = task._load_all_examples()
+
+        # Only the "good" config's examples should be present
+        assert len(examples) == len(SAMPLE_MCQ_DATA["question"])
+
+    # --- All four benchmark task types via task registry ---
+
+    @pytest.mark.parametrize("task_type,dataset_name", [
+        pytest.param("acva",               "OALL/ACVA",               id="acva"),
+        pytest.param("alghafa",            "OALL/AlGhafa-Native",     id="alghafa"),
+        pytest.param("culture_arabic_mmlu","acmc/arabic_culture_mmlu",id="culture_arabic_mmlu"),
+        pytest.param("arabic_exam",        "arabic_exam",             id="arabic_exam"),
+    ])
+    def test_all_benchmark_tasks_load_examples(self, patched_env, task_type, dataset_name):
+        """Every registered benchmark task must load >0 examples from the mock."""
+        import arabic_eval.tasks  # noqa
+        from arabic_eval.registry import task_registry
+        task = task_registry.get(task_type)({
+            "dataset_name": dataset_name,
+            "train_split_ratio": 0.50,
+            "max_length": 32,
+            "seed": 0,
+        })
+        all_ex = task._load_all_examples()
+        assert len(all_ex) > 0, f"{task_type}: no examples loaded from mock dataset"
+        for ex in all_ex:
+            assert "question" in ex and "choices" in ex and "answer" in ex
+
+
+# ===========================================================================
+# 7. Full end-to-end sweep simulation  (run_single_experiment)
 # ===========================================================================
 
 def _make_experiment_config(tok_type, tok_params, vocab_size, task_type, task_params, out_dir):
@@ -630,6 +1002,7 @@ def test_e2e_full_sweep(patched_env, tok_type, tok_params, vocab_size, task_type
       - Result contains intrinsic and training sections.
       - Downstream section is present.
       - Losses / metrics are finite numbers.
+      - LightEval tasks: accuracy is in [0, 1]; CharacterBERT yields 0.0.
     """
     from pathlib import Path
     from arabic_eval.pipeline.experiment import run_single_experiment
@@ -661,9 +1034,21 @@ def test_e2e_full_sweep(patched_env, tok_type, tok_params, vocab_size, task_type
         f"train_loss must be a non-negative float, got {train_loss}"
     )
 
-    # Downstream sanity (metric values are numerics in [0, ∞))
+    # Downstream sanity
     downstream = result["downstream"]
     assert task_type in downstream
-    for metric_val in downstream[task_type].values():
+    task_metrics = downstream[task_type]
+    for metric_val in task_metrics.values():
         if isinstance(metric_val, (int, float)):
             assert metric_val >= 0, f"Downstream metric must be >= 0, got {metric_val}"
+
+    # LightEval-specific: accuracy must be in [0, 1]
+    is_lighteval = task_type in {"acva", "alghafa", "culture_arabic_mmlu", "arabic_exam"}
+    if is_lighteval and "accuracy" in task_metrics:
+        assert 0.0 <= task_metrics["accuracy"] <= 1.0, (
+            f"LightEval accuracy must be in [0,1], got {task_metrics['accuracy']}"
+        )
+        if tok_type == "character_bert":
+            assert task_metrics["accuracy"] == 0.0, (
+                "CharacterBERT must always report accuracy=0.0 for LightEval tasks"
+            )

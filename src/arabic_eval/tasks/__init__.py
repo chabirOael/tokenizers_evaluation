@@ -5,5 +5,6 @@ installed (useful for tokenizer-only workflows).
 """
 try:
     from arabic_eval.tasks import text_generation, question_answering  # noqa: F401
+    from arabic_eval.tasks import lighteval_benchmarks  # noqa: F401
 except ImportError:
     pass

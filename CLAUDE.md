@@ -6,7 +6,7 @@ A universal platform for evaluating Arabic tokenizers by measuring LLM downstrea
 
 - **Primary dataset**: `Jr23xd23/ArabicText-Large` (HuggingFace)
 - **Primary LLM**: LLaMA 3.2-1B (`meta-llama/Llama-3.2-1B`)
-- **Downstream tasks**: Text Generation (perplexity), Question Answering (F1/EM on ARCD)
+- **Downstream tasks**: Text Generation (perplexity), Question Answering (F1/EM on ARCD), and four LightEval benchmarks (ACVA, Alghafa, Culture-Arabic-MMLU, Arabic-Exam — accuracy via log-likelihood scoring)
 - **Vocab sizes tested**: 16K, 32K, 50K for subword tokenizers; fixed char vocab for character-level
 
 ## Setup
@@ -29,7 +29,7 @@ src/arabic_eval/          # Main package
   data/                   # loader.py, preprocessing.py, collation.py
   tokenizers/             # base.py + 5 implementations + intrinsic_metrics.py
   models/                 # base.py, llama_adapter.py, embeddings/{standard,character_cnn,char_jaber_embed}.py
-  tasks/                  # base.py, text_generation.py, question_answering.py
+  tasks/                  # base.py, text_generation.py, question_answering.py, lighteval_benchmarks.py
   training/               # trainer.py, callbacks.py
   evaluation/             # metrics.py, evaluator.py, reporter.py
   pipeline/               # experiment.py (end-to-end orchestrator)
@@ -112,6 +112,11 @@ Special tokens for all: `<pad>` (0), `<s>` (1), `</s>` (2), `<unk>` (3).
 
 `run_sweep(config)` iterates over the Cartesian product of (tokenizer types x vocab sizes x tasks) and generates a comparison report.
 
+For **LightEval benchmark tasks** the pipeline flow adapts automatically:
+- Steps 1–4 are unchanged (main Arabic dataset used for tokenizer training and intrinsic metrics).
+- Step 6 fine-tunes on the **10 % benchmark split** (the task's `get_dataloader()` returns this).
+- Step 7 evaluates on the **90 % benchmark split** via LightEval log-likelihood scoring.
+
 ## CLI Commands
 
 ```bash
@@ -123,6 +128,9 @@ python scripts/run_experiment.py --config configs/experiments/bpe_32k_generation
 
 # Run full sweep (all tokenizers x vocab sizes x tasks)
 python scripts/run_experiment.py --config configs/experiments/full_sweep.yaml --sweep
+
+# Run benchmark sweep (all tokenizers x ACVA/Alghafa/Culture-Arabic-MMLU/Arabic-Exam)
+python scripts/run_experiment.py --config configs/experiments/benchmark_sweep.yaml --sweep
 
 # Intrinsic-only evaluation of a saved tokenizer
 python scripts/evaluate_intrinsic.py --tokenizer-path outputs/tokenizers/bpe_32k --type bpe
@@ -161,6 +169,15 @@ All scripts add `src/` to `sys.path`, so no install is needed for development. T
 4. Add import in `src/arabic_eval/tasks/__init__.py`
 5. Create `configs/tasks/my_task.yaml`
 
+### Adding a new LightEval benchmark task
+
+1. In `src/arabic_eval/tasks/lighteval_benchmarks.py`, subclass `LightEvalBenchmarkTask`
+2. Implement `_default_dataset_name()`, `_parse_example()`, and the `name` property
+3. Decorate with `@task_registry.register("my_benchmark")`
+4. Create `configs/tasks/my_benchmark.yaml` with `dataset_name`, `train_split_ratio: 0.10`, etc.
+
+The 10/90 data split, SFT dataloader, and LightEval log-likelihood evaluation are all inherited from the base class — only the dataset-specific parsing needs to be provided.
+
 ## Key Technical Details
 
 ### Model Integration Approach
@@ -198,6 +215,96 @@ Character-level tokenization produces sequences ~4-6x longer. Default `max_lengt
 ### Downstream Metrics
 - **Text generation** (`tasks/text_generation.py`): perplexity via sliding-window (stride=256) on held-out text
 - **Question answering** (`tasks/question_answering.py`): F1 and Exact Match on ARCD dataset. QA is framed as generation (Arabic prompt: `السياق: ... \nالسؤال: ... \nالإجابة:`)
+- **LightEval benchmarks** (`tasks/lighteval_benchmarks.py`): accuracy via log-likelihood multiple-choice scoring on ACVA, Alghafa, Culture-Arabic-MMLU, and Arabic-Exam. See [LightEval Benchmarks](#lighteval-benchmarks-acva-alghafa-culture-arabic-mmlu-arabic-exam) below.
+
+## LightEval Benchmarks (ACVA, Alghafa, Culture-Arabic-MMLU, Arabic-Exam)
+
+### Overview
+
+These four multiple-choice benchmarks are used to evaluate the impact of tokenizer training choices on downstream Arabic understanding. All evaluation is conducted using the LightEval framework methodology.
+
+| Registry Key | Class | Default Dataset | Metric |
+|---|---|---|---|
+| `acva` | `ACVATask` | `OALL/ACVA` | accuracy |
+| `alghafa` | `AlghafaTask` | `OALL/AlGhafa-Native` | accuracy |
+| `culture_arabic_mmlu` | `CultureArabicMMLUTask` | `acmc/arabic_culture_mmlu` | accuracy |
+| `arabic_exam` | `ArabicExamTask` | `arabic_exam` | accuracy |
+
+### Data Split Strategy
+
+All examples across all predefined splits of each benchmark are pooled, then split with a fixed RNG seed:
+
+- **10 %** → supervised fine-tuning (SFT) on formatted MCQ prompts
+- **90 %** → reserved for LightEval evaluation (never seen during training)
+
+The same seed is used across all tokenizer variants in a sweep so every experiment evaluates on the identical 90 % partition.
+
+### Evaluation Methodology (LightEval)
+
+For each multiple-choice question the `LightEvalModelWrapper` computes:
+
+```
+log P(" A" | context)  …  log P(" D" | context)
+```
+
+using the fine-tuned model's forward pass (`_compute_loglikelihood`), then predicts `argmax`. This matches LightEval's standard log-likelihood MCQ protocol exactly. The wrapper implements the same `loglikelihood(requests)` interface as LightEval's `LightevalModel`, so it can be substituted into a full LightEval pipeline if needed.
+
+**CharacterBERT limitation**: `character_cnn` embedding does not support token-level log-likelihoods; accuracy will be reported as 0.0 for that embedding type.
+
+### Fine-tuning Data Format
+
+Each MCQ example is formatted as a plain-text causal-LM sequence:
+
+```
+السؤال: {question}
+
+A. {choice_A}
+B. {choice_B}
+C. {choice_C}
+D. {choice_D}
+الإجابة: {correct_letter}
+```
+
+This is tokenised and passed through the existing `Trainer` using the standard collator for the active embedding type.
+
+### Key Classes (`src/arabic_eval/tasks/lighteval_benchmarks.py`)
+
+| Class | Role |
+|---|---|
+| `LightEvalBenchmarkTask` | Abstract base — 10/90 split, SFT dataloader, `evaluate()` |
+| `LightEvalModelWrapper` | Wraps `BaseModelAdapter` for LightEval's `loglikelihood` interface |
+| `_compute_loglikelihood` | Core per-token log-likelihood sum (LightEval methodology) |
+| `_format_mcq_context` | Formats question + choices as LightEval context string |
+| `_format_mcq_full` | Formats complete MCQ + answer for SFT |
+
+### Dataset Field Schemas
+
+`_parse_mcq_generic()` in the base class handles three common formats automatically:
+
+| Format | Fields |
+|---|---|
+| Separate columns | `question`, `A`, `B`, `C`, `D`, `answer` (letter or int) |
+| Choices list | `question`, `choices` (list), `answer` (int) |
+| Options list | `question`, `options` (list), `label` (int) |
+
+Subclasses can override `_parse_example()` for non-standard schemas.
+
+### Config Overrides
+
+Dataset paths are configurable per-task via the `params` dict:
+
+```yaml
+task:
+  type: "acva"          # or alghafa | culture_arabic_mmlu | arabic_exam
+  params:
+    dataset_name: "OALL/ACVA"
+    dataset_config: null   # set to a specific subtask/config if needed
+    train_split_ratio: 0.10
+    max_length: 512
+    seed: 42
+```
+
+> **Note:** `dataset_name` for `culture_arabic_mmlu` (`acmc/arabic_culture_mmlu`) and `arabic_exam` (`arabic_exam`) are best-effort defaults. Update them to the confirmed HuggingFace Hub paths before running.
 
 ## Config Reference
 
@@ -232,7 +339,9 @@ model:
   device: "auto"
 
 task:
-  type: "text_generation"    # Registry key: text_generation|question_answering
+  # Registry key: text_generation | question_answering
+  #               acva | alghafa | culture_arabic_mmlu | arabic_exam
+  type: "text_generation"
   params:
     max_length: 512
 
@@ -264,6 +373,35 @@ sweep:
     - type: "question_answering"
 ```
 
+### Benchmark sweep YAML structure (for benchmark_sweep.yaml)
+
+```yaml
+sweep:
+  tokenizers:
+    - type: "bpe"
+      vocab_sizes: [16000, 32000, 50000]
+    # ... other tokenizers ...
+  tasks:
+    - type: "acva"
+      params:
+        dataset_name: "OALL/ACVA"
+        train_split_ratio: 0.10   # 10% SFT, 90% LightEval eval
+        max_length: 512
+        seed: 42
+    - type: "alghafa"
+      params:
+        dataset_name: "OALL/AlGhafa-Native"
+        train_split_ratio: 0.10
+    - type: "culture_arabic_mmlu"
+      params:
+        dataset_name: "acmc/arabic_culture_mmlu"
+        train_split_ratio: 0.10
+    - type: "arabic_exam"
+      params:
+        dataset_name: "arabic_exam"
+        train_split_ratio: 0.10
+```
+
 ## Output Structure
 
 Each experiment produces:
@@ -284,7 +422,7 @@ Sweep mode additionally generates: `comparison_report.txt` and `comparison_repor
 
 ## Dependencies
 
-Core: `torch`, `transformers`, `tokenizers`, `datasets`, `accelerate`, `farasapy`, `pydantic`, `pyyaml`, `numpy`, `tqdm`, `wandb`, `tabulate`, `matplotlib`
+Core: `torch`, `transformers`, `tokenizers`, `datasets`, `accelerate`, `farasapy`, `pydantic`, `pyyaml`, `numpy`, `tqdm`, `wandb`, `tabulate`, `matplotlib`, `lighteval>=0.6.0`
 
 Tokenizer-only workflows (no GPU): `pydantic`, `pyyaml`, `tokenizers`, `tabulate`, `numpy`, `tqdm`
 
@@ -295,3 +433,6 @@ Tokenizer-only workflows (no GPU): `pydantic`, `pyyaml`, `tokenizers`, `tabulate
 - Character-level tokenizers (char-JABER) produce very long sequences; reduce `max_length` or `batch_size` if hitting OOM.
 - The `models/__init__.py` and `tasks/__init__.py` use try/except on imports, so model and task registries will be empty if torch/transformers are not installed. The pipeline script (`pipeline/experiment.py`) force-imports them, so missing deps will surface at experiment runtime.
 - `torch.cuda.amp.autocast` in the trainer uses `device_type="cuda"` — will need adjustment for non-CUDA accelerators (e.g., MPS).
+- LightEval benchmark tasks (`acva`, `alghafa`, `culture_arabic_mmlu`, `arabic_exam`) fine-tune on the **10 % split only**; the 90 % eval split is never used during training. The `get_dataloader(split="test")` call from the Trainer also returns the 10 % split to avoid contamination.
+- CharacterBERT (`character_cnn`) returns `accuracy=0.0` on LightEval benchmarks because log-likelihood scoring requires token-level logits over a standard vocabulary — not supported by the word-level CharCNN architecture.
+- The `dataset_name` defaults for `culture_arabic_mmlu` (`acmc/arabic_culture_mmlu`) and `arabic_exam` (`arabic_exam`) are best-effort; confirm the exact HuggingFace Hub paths before running and update the YAML configs accordingly.

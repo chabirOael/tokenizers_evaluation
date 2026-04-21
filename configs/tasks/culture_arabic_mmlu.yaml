@@ -1,0 +1,12 @@
+task:
+  type: "culture_arabic_mmlu"
+  params:
+    # HuggingFace dataset identifier.  Update dataset_name / dataset_config to
+    # match the exact path once the dataset is confirmed on HuggingFace Hub.
+    dataset_name: "OALL/Arabic_MMLU"
+    dataset_config: null
+    cache_dir: "outputs/data_cache"
+    max_length: 512
+    # 10 % of total examples used for SFT; 90 % reserved for LightEval evaluation.
+    train_split_ratio: 0.10
+    seed: 42
