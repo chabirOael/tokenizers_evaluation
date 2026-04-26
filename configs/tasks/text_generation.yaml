@@ -1,6 +1,0 @@
-task:
-  type: "text_generation"
-  params:
-    max_length: 512
-    stride: 256
-    dataset_name: "Jr23xd23/ArabicText-Large"
