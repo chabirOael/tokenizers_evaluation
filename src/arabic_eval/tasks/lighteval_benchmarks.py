@@ -48,7 +48,12 @@ except ImportError:
         "Install with: pip install lighteval>=0.6.0"
     )
 
+# Latin letters — used ONLY for dataset field-name lookups and answer-key parsing
+# (datasets store choices as columns "A"/"B"/"C"/"D" and answer keys as "A"–"D").
 CHOICE_LETTERS: List[str] = ["A", "B", "C", "D", "E"]
+
+# Arabic letters — used in all user-facing prompt text (SFT training + evaluation).
+ARABIC_CHOICE_LETTERS: List[str] = ["أ", "ب", "ج", "د", "هـ"]
 
 
 # ---------------------------------------------------------------------------
@@ -59,7 +64,7 @@ def _format_mcq_context(question: str, choices: List[str]) -> str:
     """Build the context string for a multiple-choice question (LightEval convention)."""
     lines = [f"السؤال: {question}", ""]
     for i, choice in enumerate(choices):
-        letter = CHOICE_LETTERS[i] if i < len(CHOICE_LETTERS) else str(i)
+        letter = ARABIC_CHOICE_LETTERS[i] if i < len(ARABIC_CHOICE_LETTERS) else str(i)
         lines.append(f"{letter}. {choice}")
     lines.append("الإجابة:")
     return "\n".join(lines)
@@ -68,7 +73,7 @@ def _format_mcq_context(question: str, choices: List[str]) -> str:
 def _format_mcq_full(question: str, choices: List[str], answer_idx: int) -> str:
     """Full MCQ text including the correct answer letter — used for SFT."""
     context = _format_mcq_context(question, choices)
-    letter = CHOICE_LETTERS[answer_idx] if answer_idx < len(CHOICE_LETTERS) else str(answer_idx)
+    letter = ARABIC_CHOICE_LETTERS[answer_idx] if answer_idx < len(ARABIC_CHOICE_LETTERS) else str(answer_idx)
     return f"{context} {letter}"
 
 
@@ -91,13 +96,10 @@ def _compute_loglikelihood(
     forward pass yields logits; we sum the log-probabilities of the continuation
     tokens only (the tokens after ``len(context_tokens)``).
 
-    CharacterBERT (``character_cnn`` embedding) does not support token-level
-    log-likelihoods and returns 0.0 with a warning.
+    CharacterBERT (``character_cnn``) uses word-level logits: the batch is built
+    from ``char_ids`` instead of ``input_ids``, but continuation scoring follows
+    the same causal-LM approach using word vocabulary indices.
     """
-    if tokenizer.embedding_type == EmbeddingType.CHARACTER_CNN:
-        logger.debug("character_cnn does not support log-likelihood scoring; returning 0.0")
-        return 0.0
-
     full_text = context + continuation
     ctx_enc = tokenizer.encode(context, max_length=max_length, truncation=True, padding=False)
     full_enc = tokenizer.encode(full_text, max_length=max_length, truncation=True, padding=False)
@@ -109,13 +111,16 @@ def _compute_loglikelihood(
         # Continuation was completely truncated — should not happen for single letters.
         return -1e9
 
-    input_ids = torch.tensor([full_enc.input_ids], device=model.device)
     attention_mask = torch.tensor([full_enc.attention_mask], device=model.device)
-    batch = {
-        "input_ids": input_ids,
-        "attention_mask": attention_mask,
-        "labels": input_ids.clone(),
-    }
+
+    if tokenizer.embedding_type == EmbeddingType.CHARACTER_CNN:
+        # CharacterBERT: input is 3-D char_ids; output logits are over word vocab.
+        char_ids = torch.tensor([full_enc.char_ids], device=model.device)
+        batch = {"char_ids": char_ids, "attention_mask": attention_mask}
+    else:
+        input_ids = torch.tensor([full_enc.input_ids], device=model.device)
+        batch = {"input_ids": input_ids, "attention_mask": attention_mask,
+                 "labels": input_ids.clone()}
 
     output = model.forward(batch)
     logits = output["logits"]                          # [1, seq_len, vocab_size]
@@ -181,7 +186,7 @@ class LightEvalModelWrapper:
             context = _format_mcq_context(ex["question"], ex["choices"])
             # LightEval prefixes continuations with a space to match tokenisation.
             requests: List[Tuple[str, str]] = [
-                (context, " " + (CHOICE_LETTERS[i] if i < len(CHOICE_LETTERS) else str(i)))
+                (context, " " + (ARABIC_CHOICE_LETTERS[i] if i < len(ARABIC_CHOICE_LETTERS) else str(i)))
                 for i in range(len(ex["choices"]))
             ]
             log_likelihoods = self.loglikelihood(requests)
@@ -514,27 +519,14 @@ class LightEvalBenchmarkTask(BaseTask):
         Evaluate on the **90 % held-out split** using LightEval's log-likelihood
         multiple-choice methodology.
 
-        CharacterBERT (``character_cnn``) does not support log-likelihood scoring;
-        the accuracy will be 0.0 for that embedding type.
+        CharacterBERT (``character_cnn``) is scored using word-level logits;
+        the continuation word IDs from the word vocabulary are used directly.
         """
         if not LIGHTEVAL_AVAILABLE:
             logger.warning(
                 "lighteval package not found. Running built-in log-likelihood "
                 "evaluation (identical methodology to LightEval)."
             )
-
-        # CharacterBERT uses word-level logits and cannot compute token-level
-        # log-likelihoods, so we skip evaluation and report 0.0 directly rather
-        # than letting argmax(all-zeros) produce accidental non-zero accuracy.
-        if tokenizer.embedding_type == EmbeddingType.CHARACTER_CNN:
-            examples = self.get_eval_examples()
-            n = min(max_samples, len(examples)) if max_samples else len(examples)
-            logger.warning(
-                "%s: character_cnn does not support log-likelihood scoring; "
-                "returning accuracy=0.0 for %d examples.",
-                self.name, n,
-            )
-            return {"accuracy": 0.0, "num_samples": n}
 
         examples = self.get_eval_examples()
         if max_samples:

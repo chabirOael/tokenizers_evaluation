@@ -1,6 +1,6 @@
 experiment:
   name: "full_sweep"
-  description: "All tokenizers x LightEval benchmarks x vocab sizes (16K, 32K, 50K)"
+  description: "All tokenizers x all tasks x vocab sizes (16K, 32K, 50K)"
   output_dir: "outputs/experiments/full_sweep"
 
 sweep:
@@ -26,34 +26,12 @@ sweep:
       vocab_sizes: [null]
       params: {}
   tasks:
-    - type: "acva"
+    - type: "text_generation"
       params:
-        dataset_name: "OALL/ACVA"
-        dataset_config: null
-        train_split_ratio: 0.10
         max_length: 512
-        seed: 42
-
-    - type: "alghafa"
+        stride: 256
+    - type: "question_answering"
       params:
-        dataset_name: "OALL/AlGhafa-Arabic-LLM-Benchmark-Native"
-        dataset_config: null
-        train_split_ratio: 0.10
         max_length: 512
-        seed: 42
-
-    - type: "culture_arabic_mmlu"
-      params:
-        dataset_name: "OALL/Arabic_MMLU"
-        dataset_config: null
-        train_split_ratio: 0.10
-        max_length: 512
-        seed: 42
-
-    - type: "arabic_exam"
-      params:
-        dataset_name: "MBZUAI/ArabicMMLU"
-        dataset_config: null
-        train_split_ratio: 0.10
-        max_length: 512
-        seed: 42
+        max_new_tokens: 64
+        dataset_name: "hsseinmz/arcd"

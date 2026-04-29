@@ -11,7 +11,7 @@ from arabic_eval.evaluation.evaluator import Evaluator
 from arabic_eval.evaluation.reporter import generate_report
 from arabic_eval.registry import model_registry, task_registry, tokenizer_registry
 from arabic_eval.training.trainer import Trainer
-from arabic_eval.utils.io import ensure_dir, save_json
+from arabic_eval.utils.io import ensure_dir, load_json, save_json
 from arabic_eval.utils.reproducibility import set_seed
 
 logger = logging.getLogger("arabic_eval.pipeline")
@@ -196,6 +196,13 @@ def run_sweep(config: ExperimentConfig) -> Dict[str, Dict[str, Any]]:
                 )
                 exp_config.task = task_config
                 exp_config.sweep = None  # Clear sweep for single run
+
+                # Resume: skip if results already exist
+                existing_results = Path(exp_config.output_dir) / "all_metrics.json"
+                if existing_results.exists():
+                    logger.info("SWEEP: Skipping %s (results already exist)", exp_name)
+                    all_results[exp_name] = load_json(existing_results)
+                    continue
 
                 logger.info("=" * 60)
                 logger.info("SWEEP: Running %s", exp_name)

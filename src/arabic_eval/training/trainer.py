@@ -185,16 +185,16 @@ class Trainer:
                 self.optimizer.zero_grad()
                 self.state.global_step += 1
 
+                # Logging — once per optimizer step, not once per batch step
+                if self.state.global_step % self.logging_steps == 0:
+                    avg = total_loss / num_steps
+                    lr = self.scheduler.get_last_lr()[0]
+                    logger.info(
+                        "Step %d — loss: %.4f, lr: %.2e", self.state.global_step, avg, lr
+                    )
+
             total_loss += loss.item() * self.gradient_accumulation_steps
             num_steps += 1
-
-            # Logging
-            if self.state.global_step % self.logging_steps == 0 and self.state.global_step > 0:
-                avg = total_loss / num_steps
-                lr = self.scheduler.get_last_lr()[0]
-                logger.info(
-                    "Step %d — loss: %.4f, lr: %.2e", self.state.global_step, avg, lr
-                )
 
             # Periodic save
             if (self.save_steps and self.state.global_step % self.save_steps == 0

@@ -28,15 +28,15 @@ Every run follows the same 7-step pipeline, defined in [src/arabic_eval/pipeline
   │  Jr23xd23/ArabicText-Large  (HuggingFace)                    │
   └──────────────────────┬───────────────────────────────────────┘
                          │
-                 ┌───────▼────────────────────────────────────────┐
+                 ┌───────▼────────┐
           Step 1 │  Load & preprocess dataset                     │
                  │  normalize · strip diacritics · split          │
-                 └───────┬────────────────────────────────────────┘
+                 └───────┬────────┘
                          │  train_texts / eval_texts
-                 ┌───────▼────────────────────────────────────────┐
+                 ┌───────▼────────┐
           Step 2 │  Train tokenizer from scratch                  │
                  │  (or load from load_path)                      │
-                 └───────┬────────────────────────────────────────┘
+                 └───────┬────────┘
                          │  trained tokenizer
               ┌──────────┴──────────┐
               │                     │

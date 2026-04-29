@@ -89,6 +89,9 @@ class LlamaAdapter(BaseModelAdapter):
         emb_config = tokenizer.get_embedding_config()
         hidden_size = self._model.config.hidden_size
 
+        # Capture device/dtype from existing layers before replacing embed_tokens
+        ref_param = next(self._model.model.layers.parameters())
+
         char_cnn = CharacterCNNEmbedding(
             char_vocab_size=emb_config["char_vocab_size"],
             char_embed_dim=emb_config.get("char_embed_dim", 16),
@@ -97,14 +100,16 @@ class LlamaAdapter(BaseModelAdapter):
             output_dim=hidden_size,
             max_char_len=emb_config.get("max_char_len", 50),
         )
+        char_cnn = char_cnn.to(device=ref_param.device, dtype=ref_param.dtype)
 
         # Replace the embedding layer
         self._model.model.embed_tokens = char_cnn
 
         # Resize output head for word-level vocabulary
         output_vocab_size = emb_config.get("output_vocab_size", tokenizer.vocab_size)
-        self._model.lm_head = nn.Linear(hidden_size, output_vocab_size, bias=False)
-        nn.init.normal_(self._model.lm_head.weight, mean=0.0, std=0.02)
+        lm_head = nn.Linear(hidden_size, output_vocab_size, bias=False)
+        nn.init.normal_(lm_head.weight, mean=0.0, std=0.02)
+        self._model.lm_head = lm_head.to(device=ref_param.device, dtype=ref_param.dtype)
         self._model.config.vocab_size = output_vocab_size
 
         logger.info(
@@ -119,11 +124,15 @@ class LlamaAdapter(BaseModelAdapter):
         char_vocab_size = emb_config["char_vocab_size"]
         downsample_factor = emb_config.get("downsample_factor", 1)
 
+        # Capture device/dtype from existing layers before replacing embed_tokens
+        ref_param = next(self._model.model.layers.parameters())
+
         char_embed = CharJaberEmbedding(
             char_vocab_size=char_vocab_size,
             output_dim=hidden_size,
             downsample_factor=downsample_factor,
         )
+        char_embed = char_embed.to(device=ref_param.device, dtype=ref_param.dtype)
 
         # Output head must upsample back to full sequence length when downsampling
         # is active, so use CharJaberOutputHead rather than a plain Linear.
@@ -133,6 +142,7 @@ class LlamaAdapter(BaseModelAdapter):
             upsample_factor=downsample_factor,
         )
         nn.init.normal_(output_head.output_projection.weight, mean=0.0, std=0.02)
+        output_head = output_head.to(device=ref_param.device, dtype=ref_param.dtype)
 
         self._model.model.embed_tokens = char_embed
         self._model.lm_head = output_head
@@ -157,66 +167,23 @@ class LlamaAdapter(BaseModelAdapter):
             return {"loss": outputs.loss, "logits": outputs.logits}
 
     def _forward_character_cnn(self, batch: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
-        """Forward pass for CharacterBERT (char_ids -> CharCNN -> transformer)."""
-        char_ids = batch["char_ids"]  # [B, S, max_char_len]
-        attention_mask = batch.get("attention_mask")
-        labels = batch.get("labels")
-
-        # Get embeddings from CharCNN
-        hidden_states = self._model.model.embed_tokens(char_ids)  # [B, S, D]
-
-        # Pass through transformer layers (skip embed_tokens, start from layers)
-        for layer in self._model.model.layers:
-            layer_out = layer(
-                hidden_states,
-                attention_mask=self._prepare_attention_mask(attention_mask, hidden_states),
-            )
-            hidden_states = layer_out[0]
-
-        hidden_states = self._model.model.norm(hidden_states)
-        logits = self._model.lm_head(hidden_states)
-
-        loss = None
-        if labels is not None:
-            shift_logits = logits[..., :-1, :].contiguous()
-            shift_labels = labels[..., 1:].contiguous()
-            loss = nn.functional.cross_entropy(
-                shift_logits.view(-1, shift_logits.size(-1)),
-                shift_labels.view(-1),
-                ignore_index=-100,
-            )
-
-        return {"loss": loss, "logits": logits}
-
-    def _prepare_attention_mask(
-        self, attention_mask: Optional[torch.Tensor], hidden_states: torch.Tensor
-    ) -> Optional[torch.Tensor]:
-        """Build a 4-D additive causal mask from a 2-D padding mask.
-
-        LLaMA decoder layers expect an additive mask of shape
-        [batch, 1, seq_len, seq_len] where attended positions are 0 and
-        masked positions are -inf.  The standard HF forward builds this
-        internally via _update_causal_mask; the manual CharacterCNN loop
-        bypasses that path, so we must build it here.
+        """Forward pass for CharacterBERT: compute CharCNN embeddings, then use
+        the standard model forward via inputs_embeds so that RoPE, causal masking,
+        and lm_head are all handled by the existing HF implementation.
         """
-        if attention_mask is None:
-            return None
-        batch_size, seq_len = attention_mask.shape
-        dtype = hidden_states.dtype
-        device = hidden_states.device
+        char_ids = batch["char_ids"]  # [B, S, max_char_len]
 
-        # Upper-triangular causal mask: future positions -> -inf
-        causal = torch.full(
-            (seq_len, seq_len), torch.finfo(dtype).min, dtype=dtype, device=device
+        # Compute word-level embeddings with our CharCNN
+        inputs_embeds = self._model.model.embed_tokens(char_ids)  # [B, S, D]
+
+        # Pass through the full LlamaForCausalLM forward (skips embed_tokens lookup
+        # because inputs_embeds is provided; uses our replaced lm_head for output)
+        outputs = self._model(
+            inputs_embeds=inputs_embeds,
+            attention_mask=batch.get("attention_mask"),
+            labels=batch.get("labels"),
         )
-        causal = torch.triu(causal, diagonal=1)       # [S, S]
-        causal = causal.unsqueeze(0).unsqueeze(0)     # [1, 1, S, S]
-
-        # Padding mask: pad positions -> -inf, real positions -> 0
-        pad = (1.0 - attention_mask.to(dtype)) * torch.finfo(dtype).min
-        pad = pad[:, None, None, :]                   # [B, 1, 1, S]
-
-        return causal + pad                           # [B, 1, S, S]
+        return {"loss": outputs.loss, "logits": outputs.logits}
 
     def generate(self, input_ids: torch.Tensor, **kwargs: Any) -> torch.Tensor:
         """Generate tokens. Only works for STANDARD and CHAR_JABER modes."""
