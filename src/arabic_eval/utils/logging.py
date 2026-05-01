@@ -10,9 +10,15 @@ from typing import Optional
 def setup_logger(
     name: str = "arabic_eval",
     log_file: Optional[str | Path] = None,
+    error_log_file: Optional[str | Path] = None,
     level: int = logging.INFO,
 ) -> logging.Logger:
-    """Create a logger with console + optional file handlers."""
+    """Create a logger with console + optional file handlers.
+
+    If ``error_log_file`` is given, a second FileHandler is attached that
+    only writes records at WARNING or higher — a quick way to see whether
+    anything went wrong during a long run without grepping the full log.
+    """
     logger = logging.getLogger(name)
     logger.setLevel(level)
 
@@ -33,5 +39,12 @@ def setup_logger(
         fh = logging.FileHandler(log_file)
         fh.setFormatter(fmt)
         logger.addHandler(fh)
+
+    if error_log_file is not None:
+        Path(error_log_file).parent.mkdir(parents=True, exist_ok=True)
+        eh = logging.FileHandler(error_log_file)
+        eh.setLevel(logging.WARNING)
+        eh.setFormatter(fmt)
+        logger.addHandler(eh)
 
     return logger

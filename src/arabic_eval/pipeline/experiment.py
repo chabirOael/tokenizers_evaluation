@@ -96,7 +96,9 @@ def run_single_experiment(config: ExperimentConfig) -> Dict[str, Any]:
             output_dir=str(output_dir),
         )
         results["intrinsic"] = evaluator.run_intrinsic(
-            num_samples=config.evaluation.num_eval_samples
+            num_samples=config.evaluation.num_eval_samples,
+            morphological_metrics=config.evaluation.morphological_metrics,
+            morph_sample_size=config.evaluation.morph_sample_size,
         )
 
     # ---------------------------------------------------------------

@@ -1,0 +1,12 @@
+tokenizer:
+  type: "charformer"
+  vocab_size: null  # Fixed at 260 (256 bytes + 4 specials); ignored.
+  params:
+    # GBST hyperparameters from the Charformer paper (Tay et al., 2021).
+    # Defaults match the paper's main configuration.
+    max_block_size: 4         # M: enumerate blocks of size 1..M.
+    downsample_rate: 2        # d_s: final mean-pool stride. Paper uses 2-3.
+    conv_kernel_size: 5       # Pre-GBST 1D conv kernel; 0 disables.
+    block_attention: false    # Position-wise score calibration; helps in
+                              # English, neutral multilingually per the paper.
+  save_path: "outputs/tokenizers/charformer"

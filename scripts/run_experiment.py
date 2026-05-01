@@ -43,9 +43,12 @@ def main() -> None:
 
     config = load_config(args.config, base_path=base_path, overrides=overrides or None)
 
-    # Setup logging
-    log_file = Path(config.output_dir) / "experiment.log"
-    setup_logger("arabic_eval", log_file=log_file)
+    # Setup logging — full log + an error-only log for quick post-run triage.
+    # Both go under outputs/logs/<experiment_name>/ so all logs live in one place.
+    log_dir = Path("outputs/logs") / config.name
+    log_file = log_dir / "experiment.log"
+    error_log_file = log_dir / "errors.log"
+    setup_logger("arabic_eval", log_file=log_file, error_log_file=error_log_file)
 
     # Run
     if args.sweep or config.sweep is not None:

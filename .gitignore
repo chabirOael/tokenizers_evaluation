@@ -1,4 +1,7 @@
-outputs/
+outputs/**
+!outputs/
+!outputs/**/
+!outputs/**/.gitkeep
 __pycache__/
 *.pyc
 *.pyo
@@ -15,3 +18,4 @@ wandb/
 *.bin
 *.safetensors
 .ipynb_checkpoints/
+.pytest_cache/

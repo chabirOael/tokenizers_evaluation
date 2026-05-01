@@ -1,0 +1,34 @@
+tokenizer:
+  type: "araroopat"
+  vocab_size: null  # Derived from max_roots + max_patterns + fixed slots; ignored.
+  params:
+    # ----- Vocab budget (three pre-set tiers; pick one) -----
+    # Compact:   max_roots:  5000, max_patterns: 200    (~5,400 total, ~81% coverage)
+    # Balanced:  max_roots: 10000, max_patterns: 500    (~10,700 total, ~94% coverage)  ← default
+    # Max:       max_roots: 15000, max_patterns: 1000   (~16,200 total, ~98% coverage)
+    max_roots: 10000
+    max_patterns: 500
+
+    # Frequency thresholds — drop very-low-freq roots/patterns even if budget
+    # allows. Stops vocab from filling with single-occurrence noise.
+    min_root_freq: 2
+    min_pattern_freq: 2
+
+    # Tier-2 reconstruction: cap CAMeL Generator wall-clock per call (ms).
+    # Falls through to tier-3 (naive substitution) on timeout. Defaults to a
+    # generous 50 ms — most generator calls finish in <1 ms.
+    generator_timeout_ms: 50
+
+    # Whether the lookup table stores diacritized or undiacritized surfaces.
+    # ``false`` matches typical Arabic text (no tashkeel) and gives smaller
+    # storage; set ``true`` only if downstream tasks need full diacritics.
+    use_diacritized_surface: false
+
+    # Cache the per-corpus CAMeL pre-pass to disk. Re-using the cache across
+    # different (max_roots, max_patterns) tiers saves ~30 min per run.
+    cache_corpus_analysis: true
+
+    # Wrap encode() output with <s>...</s>. Standard for the platform.
+    add_bos_eos: true
+
+  save_path: "outputs/tokenizers/araroopat_balanced"

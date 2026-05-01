@@ -13,6 +13,7 @@ from arabic_eval.models.base import BaseModelAdapter
 from arabic_eval.models.embeddings.standard import resize_token_embeddings
 from arabic_eval.models.embeddings.character_cnn import CharacterCNNEmbedding
 from arabic_eval.models.embeddings.char_jaber_embed import CharJaberEmbedding, CharJaberOutputHead
+from arabic_eval.models.embeddings.charformer_embed import CharformerOutputHead, GBSTEmbedding
 from arabic_eval.registry import model_registry
 from arabic_eval.tokenizers.base import BaseTokenizer, EmbeddingType
 
@@ -23,10 +24,13 @@ logger = logging.getLogger("arabic_eval.models.llama")
 class LlamaAdapter(BaseModelAdapter):
     """Adapter for LLaMA models (or any AutoModelForCausalLM-compatible model).
 
-    Handles three embedding integration modes:
+    Handles four embedding integration modes:
       - STANDARD: resize nn.Embedding for subword tokenizers
       - CHARACTER_CNN: replace embedding with CharCNN for CharacterBERT
       - CHAR_JABER: replace embedding with character embedding for char-JABER
+      - CHARFORMER: replace embedding with GBST module for Charformer; the
+        transformer operates on the downsampled latent-subword sequence and
+        the output head upsamples back to byte length.
     """
 
     def __init__(
@@ -56,6 +60,9 @@ class LlamaAdapter(BaseModelAdapter):
         self._device_str = device
         self._embedding_type: Optional[str] = None
         self._char_output_head: Optional[nn.Module] = None
+        # Set during _adapt_charformer; used by _forward_charformer to downsample
+        # the attention mask before passing it to the transformer.
+        self._charformer_downsample_rate: int = 1
         logger.info("Model loaded — parameters: %d", sum(p.numel() for p in self._model.parameters()))
 
     def adapt_to_tokenizer(self, tokenizer: BaseTokenizer) -> None:
@@ -69,6 +76,8 @@ class LlamaAdapter(BaseModelAdapter):
             self._adapt_character_cnn(tokenizer)
         elif emb_type == EmbeddingType.CHAR_JABER:
             self._adapt_char_jaber(tokenizer)
+        elif emb_type == EmbeddingType.CHARFORMER:
+            self._adapt_charformer(tokenizer)
         else:
             raise ValueError(f"Unknown embedding type: {emb_type}")
 
@@ -153,10 +162,60 @@ class LlamaAdapter(BaseModelAdapter):
             char_vocab_size, downsample_factor,
         )
 
+    def _adapt_charformer(self, tokenizer: BaseTokenizer) -> None:
+        """Charformer: replace embedding with GBST module, output head upsamples."""
+        emb_config = tokenizer.get_embedding_config()
+        hidden_size = self._model.config.hidden_size
+        vocab_size = emb_config["vocab_size"]
+        downsample_rate = emb_config.get("downsample_rate", 2)
+
+        # Capture device/dtype from existing layers before replacing embed_tokens.
+        ref_param = next(self._model.model.layers.parameters())
+
+        gbst = GBSTEmbedding(
+            vocab_size=vocab_size,
+            output_dim=hidden_size,
+            max_block_size=emb_config.get("max_block_size", 4),
+            downsample_rate=downsample_rate,
+            conv_kernel_size=emb_config.get("conv_kernel_size", 5),
+            block_attention=emb_config.get("block_attention", False),
+            padding_idx=tokenizer.special_tokens.get("pad_token", 0),
+        )
+        gbst = gbst.to(device=ref_param.device, dtype=ref_param.dtype)
+
+        # Output head upsamples back to byte length so byte-level labels match.
+        output_head = CharformerOutputHead(
+            hidden_dim=hidden_size,
+            vocab_size=vocab_size,
+            upsample_factor=downsample_rate,
+        )
+        nn.init.normal_(output_head.output_projection.weight, mean=0.0, std=0.02)
+        output_head = output_head.to(device=ref_param.device, dtype=ref_param.dtype)
+
+        self._model.model.embed_tokens = gbst
+        self._model.lm_head = output_head
+        self._model.config.vocab_size = vocab_size
+
+        # Stash the downsample rate so _forward_charformer can shrink the
+        # attention mask to match the GBST output length.
+        self._charformer_downsample_rate = downsample_rate
+
+        logger.info(
+            "Replaced embedding with Charformer GBST "
+            "(vocab=%d, M=%d, d_s=%d, conv=%d, block_attn=%s)",
+            vocab_size,
+            emb_config.get("max_block_size", 4),
+            downsample_rate,
+            emb_config.get("conv_kernel_size", 5),
+            emb_config.get("block_attention", False),
+        )
+
     def forward(self, batch: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
         """Forward pass handling both standard and character-level inputs."""
         if self._embedding_type == EmbeddingType.CHARACTER_CNN:
             return self._forward_character_cnn(batch)
+        elif self._embedding_type == EmbeddingType.CHARFORMER:
+            return self._forward_charformer(batch)
         else:
             # Standard forward (works for both STANDARD and CHAR_JABER)
             outputs = self._model(
@@ -185,12 +244,70 @@ class LlamaAdapter(BaseModelAdapter):
         )
         return {"loss": outputs.loss, "logits": outputs.logits}
 
+    def _forward_charformer(self, batch: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
+        """Forward pass for Charformer.
+
+        GBST shrinks the byte sequence by ``d_s`` before the transformer, so
+        the attention mask must shrink to match. Labels stay at byte length
+        because the output head (CharformerOutputHead) upsamples logits back
+        to byte length, where they align with byte-level labels.
+        """
+        input_ids = batch["input_ids"]  # [B, L] byte ids
+        attention_mask = batch.get("attention_mask")  # [B, L] at byte level
+        labels = batch.get("labels")  # [B, L] at byte level
+
+        # GBST -> [B, ceil(L / d_s), D]
+        inputs_embeds = self._model.model.embed_tokens(input_ids)
+
+        d_s = self._charformer_downsample_rate
+        if d_s > 1 and attention_mask is not None:
+            # A downsampled position is "valid" if any byte in its window is
+            # valid. Pad the byte-level mask up to a multiple of d_s, then
+            # reduce over the per-window dim.
+            L = attention_mask.size(1)
+            pad = (d_s - L % d_s) % d_s
+            if pad:
+                attention_mask = torch.nn.functional.pad(attention_mask, (0, pad))
+            attention_mask = (
+                attention_mask.view(attention_mask.size(0), -1, d_s)
+                .any(dim=-1)
+                .long()
+            )
+            # Sanity: the GBST output length and the downsampled mask length
+            # should agree (both ceil(L / d_s)).
+            if attention_mask.size(1) != inputs_embeds.size(1):
+                # GBST may pad slightly differently due to the avg_pool's
+                # ``ceil_mode=False``; trim to the shorter to keep them in sync.
+                m = min(attention_mask.size(1), inputs_embeds.size(1))
+                attention_mask = attention_mask[:, :m]
+                inputs_embeds = inputs_embeds[:, :m, :]
+
+        # Forward without labels: the upsampling output head will produce
+        # byte-length logits, then we compute the LM loss ourselves below
+        # (HF would otherwise compute it correctly too, but doing it here
+        # makes the byte-level alignment explicit).
+        outputs = self._model(
+            inputs_embeds=inputs_embeds,
+            attention_mask=attention_mask,
+            labels=labels,
+        )
+        return {"loss": outputs.loss, "logits": outputs.logits}
+
     def generate(self, input_ids: torch.Tensor, **kwargs: Any) -> torch.Tensor:
         """Generate tokens. Only works for STANDARD and CHAR_JABER modes."""
         if self._embedding_type == EmbeddingType.CHARACTER_CNN:
             raise NotImplementedError(
                 "Auto-regressive generation is not supported for CharacterBERT. "
                 "Use evaluation metrics that don't require generation."
+            )
+        if self._embedding_type == EmbeddingType.CHARFORMER:
+            raise NotImplementedError(
+                "Auto-regressive generation is not supported for Charformer. "
+                "GBST pools blocks X[i:i+b] so position i sees up to position "
+                "i+M-1, which breaks naive byte-by-byte decoding. The original "
+                "Charformer is encoder-decoder; in our decoder-only setup, use "
+                "log-likelihood-based evaluations (LightEval MCQ benchmarks) "
+                "instead of generation-based ones."
             )
         return self._model.generate(input_ids=input_ids, **kwargs)
 

@@ -5,7 +5,9 @@ Universal platform for evaluating **Arabic tokenizers** by measuring downstream 
 The pipeline:
 
 - Train (or load) a tokenizer from scratch
-- Compute **intrinsic tokenizer metrics** (fertility, compression ratio, UNK rate, vocab coverage)
+- Compute **intrinsic tokenizer metrics**:
+  - *Size / coverage* — fertility, compression ratio, UNK rate, vocab coverage, avg token count
+  - *Arabic morphological* — root conservation, pattern (wazn) conservation, Farasa morpheme integrity, root-bearing & pattern-bearing token percentages
 - Load a causal LM (default: LLaMA) and **adapt embeddings/output head** to the tokenizer
 - Fine-tune on a downstream task
 - Evaluate and write results + a sweep comparison report
@@ -28,7 +30,7 @@ The pipeline:
 - **HuggingFace access**:
   - Datasets are loaded via `datasets.load_dataset(...)`
   - The default model is `meta-llama/Llama-3.2-1B` (may be gated). You may need `HF_TOKEN`.
-- **Java runtime**: required only for `morpho_bpe` (Farasa segmentation via `farasapy`)
+- **Java runtime**: required for `morpho_bpe` *and* for the `morpheme_integrity_rate` morphological metric (Farasa segmentation via `farasapy`). Other intrinsic metrics work without Java.
 
 ## Install
 
@@ -47,7 +49,37 @@ Optional dev tools:
 pip install -e ".[dev]"
 ```
 
+Optional **morphological metric backends** (recommended for the Arabic root/pattern metrics — without them, root extraction falls back to a consonant-skeleton heuristic):
+
+```bash
+pip install -e ".[morphological]"
+```
+
+This installs `qalsadi` (proper morphological root extraction via `Analex.check_word`) and `pyarabic`. Tashaphyne is pulled in transitively as a secondary backend.
+
 If you already have a virtual environment, just activate it instead. If `.venv` already exists, you can skip the `python3 -m venv .venv` step.
+
+### Optional: AraRooPat tokenizer (separate `.venv-camel`)
+
+The `araroopat` tokenizer needs CAMeL Tools, which pins `numpy<2` and `transformers<4.54` — incompatible with `lighteval>=0.11`. To keep the main env lighteval-compatible, CAMeL runs in an **isolated venv** and the main process talks to it via a stdin/stdout NDJSON subprocess bridge.
+
+Set up `.venv-camel` once (this does **not** affect your main `.venv`):
+
+```bash
+python3 -m venv .venv-camel
+.venv-camel/bin/pip install -e ".[araroopat-camel]"
+.venv-camel/bin/camel_data -i light
+```
+
+The `light` data bundle (~80MB) installs `disambig-mle-calima-msa-r13` + `morphology-db-msa-r13` and is enough for the analyzer + disambiguator + generator. Data is cached under `~/.camel_tools/` (shared across venvs).
+
+The bridge auto-discovers `<repo_root>/.venv-camel/bin/python`. To point at a different interpreter, set:
+
+```bash
+export ARAROOPAT_CAMEL_PYTHON=/path/to/python   # interpreter must have camel-tools installed
+```
+
+If `araroopat` is invoked and neither path resolves to a valid interpreter, you'll get a `CamelBridgeError` with the exact setup commands above. There is **no silent fallback** — using `araroopat` without CAMeL is a configuration error.
 
 ## Testing
 
@@ -215,7 +247,9 @@ Includes epochs, batch size, gradient accumulation, AdamW params, scheduler, cli
 
 ### Evaluation (`evaluation:`)
 
-- **`intrinsic_metrics`**: run tokenizer intrinsic eval
+- **`intrinsic_metrics`**: run tokenizer intrinsic eval (size + coverage)
+- **`morphological_metrics`**: also run the Arabic morphological metrics (root / pattern / morpheme). Default: `true`.
+- **`morph_sample_size`**: number of distinct words to sample for the morphological metrics. Default: `500`.
 - **`downstream_metrics`**: run downstream evaluation
 - **`num_eval_samples`**: number of texts/examples to evaluate on
 - generation defaults used by some tasks: `generation_max_new_tokens`, `generation_temperature`, `generation_do_sample`
@@ -255,6 +289,59 @@ Tasks live in `src/arabic_eval/tasks/` and register via `task_registry`.
   - `السياق: ...`
   - `السؤال: ...`
   - `الإجابة:`
+- **`acva`**, **`alghafa`**, **`culture_arabic_mmlu`**, **`arabic_exam`**: LightEval log-likelihood MCQ benchmarks. Each fine-tunes on its 10 % SFT split and evaluates on the 90 % held-out split.
+
+## Intrinsic metrics
+
+`compute_intrinsic_metrics()` (in `src/arabic_eval/tokenizers/intrinsic_metrics.py`) reports two groups of metrics, written to `intrinsic_metrics.json` (and merged into `all_metrics.json`).
+
+### Size / coverage
+
+| Metric | Meaning |
+|---|---|
+| `fertility` | avg tokens per whitespace word (lower = more efficient) |
+| `compression_ratio` | avg characters per token |
+| `unk_rate` | fraction of all tokens that are `<unk>` |
+| `vocab_coverage` | fraction of unique words with no `<unk>` token |
+| `avg_token_count` | avg tokens per text |
+| `vocab_size` | tokenizer vocabulary size |
+
+### Arabic morphological
+
+These quantify how well a tokenizer respects Arabic root-and-pattern morphology. Sampled over `evaluation.morph_sample_size` distinct words (default 500). See [CLAUDE.md](CLAUDE.md) for definitions and the architectural-extremes caveat.
+
+| Metric | Meaning |
+|---|---|
+| `root_conservation_rate` | % of words whose root letters all fall within a single token (root not split) |
+| `pattern_conservation_rate` | % of words whose stem-span pattern (wazn — clitics trimmed) is recoverable from a single token |
+| `morpheme_integrity_rate` | % of Farasa internal morpheme boundaries (e.g. `و\|ال\|كتاب`) that align with token boundaries |
+| `root_bearing_token_pct` | % of tokens (across the sample) that contain at least one full root |
+| `pattern_bearing_token_pct` | % of tokens whose stem span matches a known pattern |
+
+**Backends** (best to worst, with automatic fallback):
+
+1. `qalsadi.analex.Analex.check_word` — proper morphological roots (recommended; install via the `[morphological]` extras).
+2. `tashaphyne.stemming.ArabicLightStemmer` — light stemmer; pulled in transitively by `qalsadi`.
+3. Consonant-skeleton heuristic — strips diacritics + matres lectionis (ا/و/ي).
+
+`morpheme_integrity_rate` requires Java + Farasa; if either is unavailable the metric is reported as `null` (not `0.0`) so it can't be confused with a real "no boundaries respected" result.
+
+**How to read the numbers** (architectural ceilings to flag, not bugs):
+
+- **CharacterBERT** ≈ 1.0 on root conservation by construction (whole word never split) and ≈ 0.0 on morpheme integrity (no internal token boundaries to honor).
+- **char-JABER** ≈ 0.0 on root conservation (single-char tokens can't hold a 3-letter root) and ≈ 1.0 on morpheme integrity (every char boundary is a token boundary, so all morpheme boundaries are mechanically respected).
+- **MorphoBPE** ≈ 1.0 on morpheme integrity *non-trivially* — by design, since Farasa pre-segments before BPE training.
+- **BPE / WordPiece** sit in the middle; `morpheme_integrity_rate` is the cleanest discriminator among subword tokenizers.
+
+Sample comparison from a smoke run on a small synthetic corpus:
+
+| Tokenizer | root_cons | patt_cons | morph_int | root_bear% | patt_bear% |
+|---|---:|---:|---:|---:|---:|
+| BPE-2000      | 0.359 | 0.518 | 0.435 | 22.5 | 22.5 |
+| WordPiece-500 | 0.692 | 1.000 | 0.000 | 74.4 | 74.4 |
+| MorphoBPE-500 | 0.692 | 1.000 | **1.000** | 36.3 | 36.3 |
+| CharacterBERT | 0.692 | 1.000 | 0.000 | 74.4 | 74.4 |
+| char-JABER    | 0.000 | 0.000 | 1.000 | 0.0  | 0.0  |
 
 ## Outputs
 
@@ -316,8 +403,14 @@ class MyTokenizer(...):
 
 - **HuggingFace gated model (LLaMA)**: set `HF_TOKEN` (or run `huggingface-cli login`) and ensure you have access to the model id in `model.name_or_path`.
 - **Farasa / `morpho_bpe` fails**: install Java (JRE/JDK) so `farasapy` can run the segmenter.
+- **`morpheme_integrity_rate: null` in results**: Farasa is unavailable (no Java, or `farasapy` failed to launch the segmenter). Install a JRE; the other morphological metrics still work without it.
+- **`root_bearing_token_pct: null` in results**: every token cleaned to an empty string. Most often this is byte-level encoding leaking through — make sure new tokenizers either populate readable token strings in `TokenizerOutput.tokens` or extend `clean_token_string` / `_try_decode_bytelevel` in `tokenizers/morphological_utils.py`.
+- **Roots look wrong (e.g. `لكتب` for `والكتاب`)**: the `[morphological]` extras aren't installed and the consonant-skeleton fallback is in use. Run `pip install -e ".[morphological]"` for proper qalsadi roots.
+- **`CamelBridgeError: Camel subprocess interpreter not found ...`**: the `araroopat` tokenizer needs the separate `.venv-camel` (see the AraRooPat section under Install). Either run the 3 setup commands or point `$ARAROOPAT_CAMEL_PYTHON` at an interpreter that has `camel-tools`.
+- **`CamelBridgeError: Camel subprocess exited unexpectedly (EOF on stdout)`**: the camel server crashed. The exception message includes the captured stderr — usually a missing data package (run `.venv-camel/bin/camel_data -i light`) or a corrupted `~/.camel_tools/` cache.
 - **OOM on `char_jaber`**: sequences are much longer; reduce `task.params.max_length`, reduce `training.batch_size`, increase gradient accumulation, or run on a larger GPU.
 - **CharacterBERT generation**: `LlamaAdapter.generate(...)` raises `NotImplementedError` for `character_cnn` embedding type, so QA evaluation will fall back to empty predictions (F1/EM will be poor). Use tasks/metrics that do not require generation, or extend generation support for that mode.
+- **CharacterBERT on LightEval benchmarks**: reports `accuracy=0.0` — log-likelihood scoring is unsupported by the word-level CharCNN. Expected, not a bug.
 
 ## License
 

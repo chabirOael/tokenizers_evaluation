@@ -32,7 +32,12 @@ class Evaluator:
         self.eval_texts = eval_texts or []
         self.output_dir = output_dir
 
-    def run_intrinsic(self, num_samples: Optional[int] = 5000) -> Dict[str, float]:
+    def run_intrinsic(
+        self,
+        num_samples: Optional[int] = 5000,
+        morphological_metrics: bool = True,
+        morph_sample_size: int = 500,
+    ) -> Dict[str, float]:
         """Compute intrinsic tokenizer metrics."""
         texts = (
             self.eval_texts
@@ -44,7 +49,12 @@ class Evaluator:
             return {}
 
         logger.info("Running intrinsic evaluation on %d texts", len(texts))
-        metrics = compute_intrinsic_metrics(self.tokenizer, texts)
+        metrics = compute_intrinsic_metrics(
+            self.tokenizer,
+            texts,
+            morphological_metrics=morphological_metrics,
+            morph_sample_size=morph_sample_size,
+        )
         save_json(metrics, f"{self.output_dir}/intrinsic_metrics.json")
         return metrics
 

@@ -131,6 +131,40 @@ class CharJaberCollator:
         return {"input_ids": padded_ids, "attention_mask": attention_mask, "labels": labels}
 
 
+class CharformerCollator:
+    """Collate batches for Charformer (1-D byte ID sequences).
+
+    Shape-wise identical to ``CharJaberCollator``: input_ids is a single byte
+    stream per example. The downsampling that Charformer applies happens
+    inside the model (GBST), not here, so the collator just builds a flat
+    byte-level batch and lets the adapter shrink the attention mask.
+
+    Default ``max_length`` is 2048 because Arabic UTF-8 inflates ~2-3x over
+    char counts (each Arabic char is 2 bytes), so a typical paragraph that
+    fits in 512 BPE tokens needs ~2-3k bytes.
+    """
+
+    def __init__(self, pad_token_id: int = 0, max_length: int = 2048) -> None:
+        self.pad_token_id = pad_token_id
+        self.max_length = max_length
+
+    def __call__(self, batch: List[Dict[str, Any]]) -> Dict[str, torch.Tensor]:
+        input_ids = [torch.tensor(ex["input_ids"][: self.max_length], dtype=torch.long)
+                     for ex in batch]
+        max_len = max(t.size(0) for t in input_ids)
+
+        padded_ids = torch.full((len(batch), max_len), self.pad_token_id, dtype=torch.long)
+        attention_mask = torch.zeros(len(batch), max_len, dtype=torch.long)
+
+        for i, ids in enumerate(input_ids):
+            padded_ids[i, : ids.size(0)] = ids
+            attention_mask[i, : ids.size(0)] = 1
+
+        labels = padded_ids.clone()
+        labels[attention_mask == 0] = -100
+        return {"input_ids": padded_ids, "attention_mask": attention_mask, "labels": labels}
+
+
 def get_collator(embedding_type: str, pad_token_id: int = 0, **kwargs):
     """Factory: return the right collator for a tokenizer's embedding type."""
     if embedding_type == "standard":
@@ -144,5 +178,7 @@ def get_collator(embedding_type: str, pad_token_id: int = 0, **kwargs):
         return CharacterCNNCollator(pad_token_id=pad_token_id, **cnn_kwargs)
     elif embedding_type == "char_jaber":
         return CharJaberCollator(pad_token_id=pad_token_id, **kwargs)
+    elif embedding_type == "charformer":
+        return CharformerCollator(pad_token_id=pad_token_id, **kwargs)
     else:
         raise ValueError(f"Unknown embedding type: {embedding_type}")

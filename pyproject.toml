@@ -13,14 +13,18 @@ dependencies = [
     #   pip install torch --index-url https://download.pytorch.org/whl/cu128
     # Do NOT use the default PyPI torch (cu130) — it requires driver >= 575.
     "torch>=2.1.0",
-    "transformers>=4.36.0",
+    # transformers/numpy floors are pinned for lighteval>=0.11 compatibility.
+    # Bumping these undoes the silent downgrade caused by an earlier
+    # `camel-tools` install (which pinned numpy<2 / transformers<4.54).
+    # camel-tools no longer lives in the main env — see [araroopat-camel].
+    "transformers>=4.54.0",
     "tokenizers>=0.15.0",
     "datasets>=2.16.0",
     "accelerate>=0.25.0",
     "farasapy>=0.0.14",
     "pydantic>=2.5.0",
     "pyyaml>=6.0",
-    "numpy>=1.24.0",
+    "numpy>=2.0.0",
     "tqdm>=4.66.0",
     "wandb>=0.16.0",
     "tabulate>=0.9.0",
@@ -30,6 +34,30 @@ dependencies = [
 [project.optional-dependencies]
 lighteval = [
     "lighteval==0.11.0",
+]
+morphological = [
+    # Optional helpers for Arabic morphological intrinsic metrics. Without
+    # these, root extraction falls back to a consonant-skeleton heuristic;
+    # the other metrics still work via Farasa (already a required dep).
+    "qalsadi>=0.5",
+    "pyarabic>=0.6.15",
+]
+araroopat-camel = [
+    # CAMeL Tools — required by the araroopat (Arabic Roots & Patterns)
+    # tokenizer for morphological analysis (Analyzer + MLEDisambiguator)
+    # and surface generation (Generator + MorphologyDB).
+    #
+    # IMPORTANT: install this into a SEPARATE virtualenv (e.g. .venv-camel),
+    # NOT the main .venv. camel-tools<1.5 pins numpy<2 and transformers<4.54,
+    # which conflicts with lighteval>=0.11. The main process talks to a
+    # camel subprocess running in this env via the bridge in
+    # `src/arabic_eval/tokenizers/araroopat_bridge.py`.
+    #
+    # Setup (one-time):
+    #   python -m venv .venv-camel
+    #   .venv-camel/bin/pip install -e ".[araroopat-camel]"
+    #   .venv-camel/bin/camel_data -i light
+    "camel-tools>=1.5.0",
 ]
 dev = [
     "pytest>=7.4.0",

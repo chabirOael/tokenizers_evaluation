@@ -1,0 +1,38 @@
+experiment:
+  name: "araroopat_intrinsic_smoke"
+  description: "AraRooPat smoke test — train on a tiny corpus, intrinsic metrics only."
+  output_dir: "outputs/experiments/araroopat_intrinsic_smoke"
+
+data:
+  dataset_name: "Jr23xd23/ArabicText-Large"
+  max_train_samples: 2000        # small corpus for fast iteration
+  max_eval_samples: 500
+  preprocessing:
+    normalize_unicode: true
+    remove_diacritics: false
+    min_text_length: 10
+
+tokenizer:
+  type: "araroopat"
+  vocab_size: null
+  params:
+    max_roots: 2000              # smaller for smoke test
+    max_patterns: 200
+    min_root_freq: 1             # keep everything we see (small corpus)
+    min_pattern_freq: 1
+    generator_timeout_ms: 50
+    use_diacritized_surface: false
+    cache_corpus_analysis: true
+    add_bos_eos: true
+  save_path: "outputs/tokenizers/araroopat_smoke"
+
+task:
+  type: "text_generation"
+  params:
+    max_length: 256
+
+evaluation:
+  intrinsic_metrics: true
+  morphological_metrics: true
+  morph_sample_size: 100         # small sample for fast smoke test
+  downstream_metrics: false      # smoke test: skip model training

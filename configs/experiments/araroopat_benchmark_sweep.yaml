@@ -1,0 +1,98 @@
+experiment:
+  name: "araroopat_benchmark_sweep"
+  description: >
+    AraRooPat tokenizer evaluated on the 4 LightEval Arabic benchmarks
+    (ACVA, Alghafa, Culture-Arabic-MMLU, Arabic-Exam). Each benchmark is split
+    10% SFT / 90% eval; the model is fine-tuned on the 10% then scored via
+    LightEval log-likelihood on the 90%. Text-generation and QA are excluded.
+  output_dir: "outputs/experiments/araroopat_benchmark_sweep"
+  seed: 42
+
+# Main Arabic corpus — used only for tokenizer training and intrinsic metrics.
+data:
+  dataset_name: "Jr23xd23/ArabicText-Large"
+  cache_dir: "outputs/data_cache"
+  max_train_samples: null
+  max_eval_samples: 5000
+  preprocessing:
+    normalize_unicode: true
+    remove_diacritics: false
+    min_text_length: 10
+
+model:
+  type: "llama"
+  name_or_path: "meta-llama/Llama-3.2-1B"
+  dtype: "bfloat16"
+  device: "auto"
+
+training:
+  num_epochs: 3
+  batch_size: 4
+  gradient_accumulation_steps: 8
+  learning_rate: 2.0e-5
+  weight_decay: 0.01
+  warmup_ratio: 0.1
+  lr_scheduler: "cosine"
+  max_grad_norm: 1.0
+  bf16: true
+  fp16: false
+  save_steps: 200
+  eval_steps: 200
+  logging_steps: 50
+  save_total_limit: 2
+  early_stopping_patience: 3
+
+evaluation:
+  intrinsic_metrics: true
+  morphological_metrics: true
+  morph_sample_size: 500
+  downstream_metrics: true
+  num_eval_samples: null   # use all 90 % examples for final evaluation
+
+sweep:
+  tokenizers:
+    - type: "araroopat"
+      vocab_sizes: [null]   # vocab is derived from max_roots + max_patterns
+      params:
+        # Balanced tier (~10.7K vocab, ~94% coverage). See configs/tokenizers/araroopat.yaml.
+        max_roots: 10000
+        max_patterns: 500
+        min_root_freq: 2
+        min_pattern_freq: 2
+        generator_timeout_ms: 50
+        use_diacritized_surface: false
+        cache_corpus_analysis: true
+        add_bos_eos: true
+
+  tasks:
+    - type: "acva"
+      params:
+        dataset_name: "OALL/ACVA"
+        dataset_config: null
+        train_split_ratio: 0.10
+        max_length: 512
+        seed: 42
+
+    - type: "alghafa"
+      params:
+        dataset_name: "OALL/AlGhafa-Arabic-LLM-Benchmark-Native"
+        dataset_config: null
+        train_split_ratio: 0.10
+        max_length: 512
+        seed: 42
+
+    - type: "culture_arabic_mmlu"
+      params:
+        dataset_name: "OALL/Arabic_MMLU"
+        dataset_config: null
+        train_split_ratio: 0.10
+        max_length: 512
+        seed: 42
+
+    - type: "arabic_exam"
+      params:
+        dataset_name: "MBZUAI/ArabicMMLU"
+        dataset_config: null
+        train_split_ratio: 0.10
+        max_length: 512
+        seed: 42

@@ -72,6 +72,8 @@ class TrainingConfig(BaseModel):
 
 class EvaluationConfig(BaseModel):
     intrinsic_metrics: bool = True
+    morphological_metrics: bool = True
+    morph_sample_size: int = 500
     downstream_metrics: bool = True
     num_eval_samples: Optional[int] = 5_000  # None = no cap (use full eval split)
     generation_max_new_tokens: int = 128

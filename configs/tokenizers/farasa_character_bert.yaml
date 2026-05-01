@@ -1,0 +1,7 @@
+tokenizer:
+  type: "farasa_character_bert"
+  vocab_size: null  # Char vocab built from data; morpheme vocab capped via max_word_vocab
+  params:
+    max_char_len: 25       # morphemes are shorter than whole words
+    max_word_vocab: 50000  # output-head vocab over morphemes (not words)
+  save_path: "outputs/tokenizers/farasa_character_bert"

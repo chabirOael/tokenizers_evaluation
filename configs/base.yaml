@@ -39,6 +39,8 @@ training:
 
 evaluation:
   intrinsic_metrics: true
+  morphological_metrics: true
+  morph_sample_size: 500
   downstream_metrics: true
   num_eval_samples: 5000
   generation_max_new_tokens: 128

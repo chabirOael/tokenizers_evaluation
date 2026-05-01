@@ -21,6 +21,7 @@ class EmbeddingType:
     STANDARD = "standard"             # nn.Embedding (BPE, WordPiece, MorphoBPE)
     CHARACTER_CNN = "character_cnn"   # CharCNN (CharacterBERT)
     CHAR_JABER = "char_jaber"         # char-JABER character embedding
+    CHARFORMER = "charformer"         # Charformer GBST: byte embed -> block enum/score/mix -> downsample
 
 
 class BaseTokenizer(ABC):
