@@ -293,7 +293,7 @@ Tasks live in `src/arabic_eval/tasks/` and register via `task_registry`.
 
 ## Intrinsic metrics
 
-`compute_intrinsic_metrics()` (in `src/arabic_eval/tokenizers/intrinsic_metrics.py`) reports two groups of metrics, written to `intrinsic_metrics.json` (and merged into `all_metrics.json`).
+`compute_intrinsic_metrics()` (in `src/arabic_eval/evaluation/intrinsic_metrics.py`) reports two groups of metrics, written to `intrinsic_metrics.json` (and merged into `all_metrics.json`).
 
 ### Size / coverage
 
@@ -404,7 +404,7 @@ class MyTokenizer(...):
 - **HuggingFace gated model (LLaMA)**: set `HF_TOKEN` (or run `huggingface-cli login`) and ensure you have access to the model id in `model.name_or_path`.
 - **Farasa / `morpho_bpe` fails**: install Java (JRE/JDK) so `farasapy` can run the segmenter.
 - **`morpheme_integrity_rate: null` in results**: Farasa is unavailable (no Java, or `farasapy` failed to launch the segmenter). Install a JRE; the other morphological metrics still work without it.
-- **`root_bearing_token_pct: null` in results**: every token cleaned to an empty string. Most often this is byte-level encoding leaking through — make sure new tokenizers either populate readable token strings in `TokenizerOutput.tokens` or extend `clean_token_string` / `_try_decode_bytelevel` in `tokenizers/morphological_utils.py`.
+- **`root_bearing_token_pct: null` in results**: every token cleaned to an empty string. Most often this is byte-level encoding leaking through — make sure new tokenizers either populate readable token strings in `TokenizerOutput.tokens` or extend `clean_token_string` / `_try_decode_bytelevel` in `tokenizers/utils/arabic_text.py`.
 - **Roots look wrong (e.g. `لكتب` for `والكتاب`)**: the `[morphological]` extras aren't installed and the consonant-skeleton fallback is in use. Run `pip install -e ".[morphological]"` for proper qalsadi roots.
 - **`CamelBridgeError: Camel subprocess interpreter not found ...`**: the `araroopat` tokenizer needs the separate `.venv-camel` (see the AraRooPat section under Install). Either run the 3 setup commands or point `$ARAROOPAT_CAMEL_PYTHON` at an interpreter that has `camel-tools`.
 - **`CamelBridgeError: Camel subprocess exited unexpectedly (EOF on stdout)`**: the camel server crashed. The exception message includes the captured stderr — usually a missing data package (run `.venv-camel/bin/camel_data -i light`) or a corrupted `~/.camel_tools/` cache.

@@ -9,7 +9,7 @@ from tqdm import tqdm
 from arabic_eval.models.base import BaseModelAdapter
 from arabic_eval.tasks.base import BaseTask
 from arabic_eval.tokenizers.base import BaseTokenizer
-from arabic_eval.tokenizers.intrinsic_metrics import compute_intrinsic_metrics
+from arabic_eval.evaluation.intrinsic_metrics import compute_intrinsic_metrics
 from arabic_eval.utils.io import save_json
 
 logger = logging.getLogger("arabic_eval.evaluation")

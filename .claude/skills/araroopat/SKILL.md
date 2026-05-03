@@ -351,7 +351,7 @@ This is "Option D" from the design discussion. Tempting because araroopat's stru
 ```
 
 **Files:**
-- `src/arabic_eval/tokenizers/araroopat_camel_server.py` — runs *inside* `.venv-camel`. Imports `camel_tools` directly. Reads NDJSON from stdin, writes NDJSON to stdout. Three ops: `analyze` (batch words → list-of-lists of trimmed analysis dicts), `generate` (root + bare pattern → stem string or null), `shutdown`.
+- `src/arabic_eval/tools/araroopat_camel_server.py` — runs *inside* `.venv-camel`. Imports `camel_tools` directly. Reads NDJSON from stdin, writes NDJSON to stdout. Three ops: `analyze` (batch words → list-of-lists of trimmed analysis dicts), `generate` (root + bare pattern → stem string or null), `shutdown`.
 - `src/arabic_eval/tokenizers/araroopat_bridge.py` — runs in main `.venv`. `CamelBridge` class spawns the server subprocess lazily, correlates requests by integer `id`, enforces a per-request `select()` timeout (default 5s), and registers an `atexit` handler to send `shutdown` cleanly.
 - `src/arabic_eval/tokenizers/araroopat_backend.py` — `MorphAnalyzer` wraps the bridge. The pure-Python post-processing (clitic surface translation, pattern normalization, NTWS rejection, `Analysis` dataclass) lives here, untouched by the move.
 

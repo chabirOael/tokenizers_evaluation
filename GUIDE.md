@@ -551,7 +551,7 @@ This generates **3 + 1 + 1 = 5 tokenizer configs × 2 tasks = 10 experiments**.
 
 ## Intrinsic Tokenizer Metrics
 
-Computed before any model training in [src/arabic_eval/tokenizers/intrinsic_metrics.py](src/arabic_eval/tokenizers/intrinsic_metrics.py):
+Computed before any model training in [src/arabic_eval/evaluation/intrinsic_metrics.py](src/arabic_eval/evaluation/intrinsic_metrics.py):
 
 ```
   Arabic text sample: "كتب الطالب المقالة"   (3 whitespace words)

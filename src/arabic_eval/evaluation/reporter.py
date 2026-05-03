@@ -12,6 +12,31 @@ from arabic_eval.utils.io import load_json, save_json
 
 logger = logging.getLogger("arabic_eval.evaluation.reporter")
 
+# Tokenizers whose root_conservation_rate hits a mechanical extreme by
+# construction. MEI uses RPS as a multiplier, so these rows should be flagged
+# in comparison tables — same policy as the morphological-metrics docs:
+# report and footnote, don't suppress.
+RPS_MECHANICAL_FLAGS: Dict[str, str] = {
+    "character_bert": "RPS ceiling — never splits a word",
+    "araroopat":      "RPS ceiling — ROOT token IS the root letters",
+    "char_jaber":     "RPS floor — single chars cannot hold a 3-letter root",
+    "charformer":     "RPS floor — single bytes cannot hold an Arabic letter",
+}
+
+# Tasks whose accuracy carries known label-quality noise that the metric
+# itself cannot remove. ACVA (synthetic-generated T/F questions) ships with
+# wrong gold labels for some examples (e.g. "Kabsa is the Saudi national
+# dish" → خطأ; "Kabsa is traditional in Syrian cuisine" → صح) and ~0.6 % of
+# its eval examples appear with both labels in the same partition. Flag
+# these tasks in the per-task comparison table so a reader doesn't read a
+# 41 % accuracy as "this tokenizer is bad at Arabic culture knowledge" when
+# the gold itself is broken. Same policy as RPS_MECHANICAL_FLAGS: report and
+# footnote, don't suppress.
+LABEL_NOISY_TASKS: Dict[str, str] = {
+    "acva": "synthetic-generation label noise + ~30 % duplicates "
+            "+ 51 within-eval label conflicts (see CLAUDE.md → ACVA limitations)",
+}
+
 
 def load_experiment_results(results_dir: str | Path) -> Dict[str, Any]:
     """Load all_metrics.json from an experiment output directory."""
@@ -57,6 +82,84 @@ def build_comparison_table(
         rows.append(row)
 
     return tabulate(rows, headers=headers, tablefmt="grid", floatfmt=".4f")
+
+
+def _build_mei_section(experiments: Dict[str, Dict[str, Any]]) -> List[str]:
+    """Render the MEI (Morphological Efficiency Index) comparison block.
+
+    Returns a list of lines (empty if no experiment carries an ``mei`` record).
+    Rows where MEI was successfully computed are tabulated; rows where it was
+    not are summarized after the table with their ``status``. Tokenizers with
+    a mechanical RPS extreme (CharBERT, AraRooPat, char-JABER, Charformer) are
+    flagged with an asterisk and footnoted.
+    """
+    has_any_mei = any("mei" in r for r in experiments.values())
+    if not has_any_mei:
+        return []
+
+    lines: List[str] = []
+    lines.append("## Composite Metric: MEI (Morphological Efficiency Index)")
+    lines.append("")
+    lines.append("MEI = (accuracy × RPS × compression) / inference_time_sec")
+    lines.append("Defined only for the LightEval MCQ task family.")
+    lines.append("")
+
+    headers = [
+        "Experiment", "Tokenizer", "MEI", "Accuracy", "RPS",
+        "Compression", "Time (s)",
+    ]
+    rows: List[List[Any]] = []
+    skipped: List[tuple] = []  # (name, status)
+    flagged: Dict[str, str] = {}  # tokenizer_type -> footnote text
+
+    def _fmt(x: Any) -> str:
+        if x is None:
+            return "—"
+        if isinstance(x, float):
+            return f"{x:.4f}"
+        return str(x)
+
+    for name, results in sorted(experiments.items()):
+        record = results.get("mei")
+        if record is None:
+            continue
+        tok_type = (results.get("config") or {}).get("tokenizer", "?")
+        status = record.get("status")
+        if status != "ok":
+            skipped.append((name, tok_type, status))
+            continue
+        inputs = record.get("inputs") or {}
+        flag = RPS_MECHANICAL_FLAGS.get(tok_type)
+        display_tok = f"{tok_type}*" if flag else tok_type
+        if flag:
+            flagged[tok_type] = flag
+        rows.append([
+            name,
+            display_tok,
+            _fmt(record.get("mei")),
+            _fmt(inputs.get("accuracy")),
+            _fmt(inputs.get("rps")),
+            _fmt(inputs.get("compression")),
+            _fmt(inputs.get("inference_time_sec")),
+        ])
+
+    if rows:
+        lines.append(tabulate(rows, headers=headers, tablefmt="grid"))
+        lines.append("")
+
+    if flagged:
+        lines.append("Footnotes (mechanical RPS extremes — flag, don't over-interpret):")
+        for tok_type, note in sorted(flagged.items()):
+            lines.append(f"  * {tok_type}: {note}")
+        lines.append("")
+
+    if skipped:
+        lines.append("MEI not computed for the following experiments:")
+        for name, tok_type, status in skipped:
+            lines.append(f"  - {name} ({tok_type}): status={status}")
+        lines.append("")
+
+    return lines
 
 
 def _flatten_metrics(d: Dict[str, Any], prefix: str = "") -> Dict[str, Any]:
@@ -118,10 +221,21 @@ def generate_report(
                 task_data[name] = results["downstream"][task_name]
 
         if task_data:
-            lines.append(f"## Downstream Task: {task_name}")
+            heading_suffix = " †" if task_name in LABEL_NOISY_TASKS else ""
+            lines.append(f"## Downstream Task: {task_name}{heading_suffix}")
             lines.append("")
             lines.append(build_comparison_table(task_data))
             lines.append("")
+            if task_name in LABEL_NOISY_TASKS:
+                lines.append(f"† {LABEL_NOISY_TASKS[task_name]}")
+                lines.append("")
+
+    # Composite (MEI) section — only experiments where MEI was actually
+    # computed (status == "ok") are shown in the main table; everything else
+    # is summarized below.
+    mei_lines = _build_mei_section(experiments)
+    if mei_lines:
+        lines.extend(mei_lines)
 
     report = "\n".join(lines)
 

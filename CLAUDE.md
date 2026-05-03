@@ -114,8 +114,9 @@ Special tokens for all: `<pad>` (0), `<s>` (1), `</s>` (2), `<unk>` (3).
 4. **Intrinsic evaluation** — compute fertility, compression ratio, UNK rate, vocab coverage
 5. **Load LLM** and call `adapt_to_tokenizer()` — resizes/replaces embedding layers
 6. **Fine-tune** — training loop with gradient accumulation, mixed precision (bf16), cosine LR schedule, early stopping
-7. **Downstream evaluation** — perplexity for text generation, F1/EM for QA
-8. **Save results** as JSON to output directory
+7. **Downstream evaluation** — perplexity for text generation, F1/EM for QA, accuracy for LightEval MCQ. Wall-clock wrapped via `time.perf_counter()` after a tokenizer warmup encode (so lazy backends — AraRooPat's CAMeL bridge, Farasa Java subprocess — don't get billed to the timed region). Result stored as `inference_time_sec` in the downstream block.
+8. **Composite metric** — for LightEval MCQ tasks only, `compute_mei()` produces the Morphological Efficiency Index from the four inputs above. Stored at top-level `results["mei"]`. See *MEI* section below.
+9. **Save results** as JSON to output directory
 
 `run_sweep(config)` iterates over the Cartesian product of (tokenizer types x vocab sizes x tasks) and generates a comparison report.
 
@@ -123,6 +124,7 @@ For **LightEval benchmark tasks** the pipeline flow adapts automatically:
 - Steps 1–4 are unchanged (main Arabic dataset used for tokenizer training and intrinsic metrics).
 - Step 6 fine-tunes on the **10 % benchmark split** (the task's `get_dataloader()` returns this).
 - Step 7 evaluates on the **90 % benchmark split** via LightEval log-likelihood scoring.
+- Step 8 computes MEI; `compute_mei` short-circuits with `status="task_not_mcq"` for non-LightEval tasks.
 
 ## CLI Commands
 
@@ -200,7 +202,7 @@ Tokenizers are trained from scratch. Then: load LLaMA with pretrained weights in
 - Optional position-wise score calibration (`block_attention=true`) implements `P̂ = softmax(P P^T) P` from §2.1.4 of the paper. The paper finds this helps in English and is neutral multilingually.
 - The transformer operates on the *downsampled* sequence (length ~L/d_s). `_forward_charformer` shrinks the byte-level attention mask by OR-reducing windows of size `d_s`, then passes `inputs_embeds` (already downsampled by GBST) to the model. The replaced `lm_head` (`CharformerOutputHead`) upsamples back to byte length via `ConvTranspose1d` so byte-level labels align with logits.
 - Auto-regressive `generate()` is **not supported** — GBST pools blocks `X[i:i+b]`, so position `i` sees up to position `i+M-1`. The original Charformer is encoder-decoder, sidestepping causality; in our decoder-only setup, only teacher-forced losses (LM perplexity, LightEval log-likelihood MCQ) are well-defined.
-- Mechanical extremes on morphological metrics: each token is one byte, which cannot hold a 3-letter Arabic root (each Arabic letter is 2 bytes). Expect `root_conservation_rate ≈ 0`, `pattern_conservation_rate ≈ 0`, and `morpheme_integrity_rate ≈ 1` — same family of mechanical extremes as char-JABER. The token-level inventory metrics (`root_bearing_token_pct`, `pattern_bearing_token_pct`) are explicitly reported as `0.0` (not `None`) when the cleaned-token list is empty but raw tokens were generated; this distinguishes the byte-level mechanical zero from "not measured."
+- Mechanical extremes on morphological metrics: each token is one byte, which cannot hold a 3-letter Arabic root (each Arabic letter is 2 bytes). Expect `root_conservation_rate ≈ 0`, `pattern_conservation_rate ≈ 0`. Unlike char-JABER, however, `morpheme_integrity_rate` and `clitic_separation_accuracy` are reported as `None` (not ≈1.0): byte tokens never reconstruct to Arabic-letter offsets, so `aligned_token_offsets` always fails and integrity/CSA are *not measurable*. The discriminating metric for Charformer is `semantic_fragmentation_ratio` (alignment-free, observed ~5.4 on a 240-sentence smoke — the highest in the panel by construction). The token-level inventory metrics (`root_bearing_token_pct`, `pattern_bearing_token_pct`) are explicitly reported as `0.0` (not `None`) when the cleaned-token list is empty but raw tokens were generated; this distinguishes the byte-level mechanical zero from "not measured."
 
 ### AraRooPat (Arabic Roots & Patterns)
 - The tokenizer file (`tokenizers/araroopat.py`) holds the encode/decode/state machinery; CAMeL Tools integration lives in `tokenizers/araroopat_backend.py` (analyzer + MLE disambiguator + generator + LRU caches + configurable timeout).
@@ -217,7 +219,7 @@ Tokenizers are trained from scratch. Then: load LLaMA with pretrained weights in
 - **Provenance trail**: `vocab_metadata.json` records per-root and per-pattern `{id, freq, source, examples}` plus the full proclitic/enclitic frequency maps. Use it to answer "where did this token come from?" without re-running.
 - **CAMeL Tools dep conflicts — solved via subprocess bridge.** `camel-tools>=1.5` pins `numpy<2` and `transformers<4.54`, which conflicts with `lighteval>=0.11`. Rather than force-choosing one, araroopat runs CAMeL in an isolated `.venv-camel` and the main `.venv` talks to it over stdin/stdout NDJSON.
   - **Setup (one-time):** `python -m venv .venv-camel && .venv-camel/bin/pip install -e ".[araroopat-camel]" && .venv-camel/bin/camel_data -i light`
-  - **Files:** server runs in `.venv-camel` (`src/arabic_eval/tokenizers/araroopat_camel_server.py`); client runs in main `.venv` (`src/arabic_eval/tokenizers/araroopat_bridge.py`); the `MorphAnalyzer` in `araroopat_backend.py` wraps the bridge and exposes `analyze` / `analyze_many` / `generate`.
+  - **Files:** server runs in `.venv-camel` (`src/arabic_eval/tools/araroopat_camel_server.py`); client runs in main `.venv` (`src/arabic_eval/tokenizers/araroopat_bridge.py`); the `MorphAnalyzer` in `araroopat_backend.py` wraps the bridge and exposes `analyze` / `analyze_many` / `generate`.
   - **Wire format:** one NDJSON line per request/response, integer `id` for correlation. Three ops: `analyze` (batch of words → list-of-lists of trimmed analysis dicts), `generate` (root + bare pattern → stem string or null), `shutdown`.
   - **Fail-loud:** missing `.venv-camel`, server crash (EOF), non-JSON, or per-request error all raise `CamelBridgeError`. There is no silent degradation — using araroopat without camel makes no sense (every word would route to `[LIT_*]`). Override the interpreter via `$ARAROOPAT_CAMEL_PYTHON` if `.venv-camel` lives elsewhere.
   - **Main env stays clean:** `.venv` no longer installs camel-tools at all. The `[morphological]` extras now contain only `qalsadi` + `pyarabic` (used by `morphological_utils.py` for the metrics, no version conflict). camel-tools moved to its own `[araroopat-camel]` extras.
@@ -240,7 +242,7 @@ Character-level tokenization produces sequences ~4-6x longer. Default `max_lengt
 - Early stopping on `eval_loss` with patience=3
 - Checkpoint management with `save_total_limit=2`
 
-### Intrinsic Metrics (`src/arabic_eval/tokenizers/intrinsic_metrics.py`)
+### Intrinsic Metrics (`src/arabic_eval/evaluation/intrinsic_metrics.py`)
 
 **Size / coverage metrics** (always on):
 - **Fertility**: avg tokens per whitespace word
@@ -249,15 +251,19 @@ Character-level tokenization produces sequences ~4-6x longer. Default `max_lengt
 - **Vocab coverage**: fraction of unique words with no UNK tokens
 - **Avg token count**: avg tokens per text
 
-**Arabic morphological metrics** (controlled by `evaluation.morphological_metrics`, default `true`; helpers in `tokenizers/morphological_utils.py`):
-- **`root_conservation_rate`** — % of sampled words whose 3/4-letter root appears as a subsequence inside a *single* token. Penalizes tokenizers that cut through a root.
-- **`pattern_conservation_rate`** — % of words whose stem-span pattern (root letters + their immediate vowel context, clitics trimmed via `stem_pattern_span`) is recoverable from a single token. Distinguishes BPE/WordPiece splits that destroy the wazn from ones that preserve it.
+**Arabic morphological metrics** (controlled by `evaluation.morphological_metrics`, default `true`; backends `RootExtractor` + `MorphemeSegmenter` live at the bottom of `evaluation/intrinsic_metrics.py`; token-string normalization helpers in `tokenizers/utils/arabic_text.py`; clitic surface sets sourced from `araroopat_backend.PROCLITIC_SURFACES` / `ENCLITIC_SURFACES`):
+- **`root_conservation_rate`** (RPS) — % of sampled words whose 3/4-letter root appears as a subsequence inside a *single* token. Penalizes tokenizers that cut through a root.
+- **`pattern_conservation_rate`** (PIS) — % of words whose stem-span pattern (root letters + their immediate vowel context, clitics trimmed via `stem_pattern_span`) is recoverable from a single token. Distinguishes BPE/WordPiece splits that destroy the wazn from ones that preserve it.
 - **`morpheme_integrity_rate`** — % of Farasa internal morpheme boundaries (e.g. `و|ال|كتاب`) that align with token boundaries. Averaged only over multi-morpheme words. Requires Java (Farasa subprocess); set to `None` if Farasa fails to load.
+- **`clitic_separation_accuracy`** (CSA) — % of clitic↔stem boundaries (proclitic-end / enclitic-start positions) that align with token boundaries. Boundaries are detected by walking proclitics from the left of the Farasa segmentation and enclitics from the right, using the CAMeL Tools clitic surface inventory shared with AraRooPat. `ك` is correctly disambiguated by position (proclitic on the left, enclitic on the right). Pooled across the sample (not per-word averaged) so words with more clitics weigh proportionally. Returns `None` when Farasa is unavailable, alignment fails, or no clitic boundaries exist in the sample. Accuracy ceiling: Farasa is occasionally inconsistent on the `أ` question proclitic.
+- **`semantic_fragmentation_ratio`** (SFR) — total *raw* (pre-clean) non-special tokens divided by total Farasa morphemes across the sample. Alignment-free — token and morpheme counts both work even when `aligned_token_offsets` fails (ByteLevel BPE artifacts, etc.) so byte-level tokenizers like Charformer report a real (high) fragmentation rather than `None`. SFR ≈ 1.0 means tokens align with morpheme grain; SFR > 1.0 means over-fragmentation; SFR < 1.0 means under-segmentation (one token spans multiple morphemes).
 - **`root_bearing_token_pct`** — % of all tokens (across the sample) that contain at least one full root from the sample's root set. Token-level inventory metric.
 - **`pattern_bearing_token_pct`** — % of all tokens whose stem span matches a known pattern from the sample's pattern set.
 
 **Architectural reading of the metrics** (use this as a sanity check, not a bug):
-- Each whitespace-bounded word is the unit for CharBERT and char-JABER, so two of the metrics hit a mechanical extreme on those tokenizers and should be reported but flagged: CharBERT trivially scores ~1.0 on `root_conservation_rate` (whole word never split → root never split) and ~0.0 on `morpheme_integrity_rate` (no internal token boundaries → none align with morpheme boundaries). char-JABER is the mirror: ~0.0 on `root_conservation_rate` (single-char tokens can't hold a 3-letter root) and ~1.0 on `morpheme_integrity_rate` (every char boundary is a token boundary, so morpheme boundaries are mechanically respected). MorphoBPE hits ~1.0 on `morpheme_integrity_rate` *non-trivially* — by design, since it pre-segments with Farasa before training BPE.
+- Each whitespace-bounded word is the unit for CharBERT and char-JABER, so two of the metrics hit a mechanical extreme on those tokenizers and should be reported but flagged: CharBERT trivially scores high (but not exactly 1.0 — qalsadi extracts roots that aren't literal subsequences for some weak/irregular forms; observed 0.67 on a 240-sentence smoke) on `root_conservation_rate` (whole word never split → root never split) and ~0.0 on both `morpheme_integrity_rate` and `clitic_separation_accuracy` (no internal token boundaries → no morpheme/clitic boundary aligns). char-JABER is the mirror: ~0.0 on `root_conservation_rate` (single-char tokens can't hold a 3-letter root) and ~1.0 on `morpheme_integrity_rate` AND `clitic_separation_accuracy` (every char boundary is a token boundary). MorphoBPE hits ~1.0 on `morpheme_integrity_rate` AND `clitic_separation_accuracy` *non-trivially* — by design, since it pre-segments with Farasa before training BPE.
+- **`semantic_fragmentation_ratio`** is the new discriminator: char-JABER ~2.7, Charformer ~5.4, MorphoBPE ~1.0, BPE ~1.1, CharBERT ~0.5 (1 token per multi-morpheme word) on the same 240-sentence smoke. SFR > 1.0 = over-fragmentation; SFR < 1.0 = under-segmentation; SFR ≈ 1.0 = morpheme-aligned grain.
+- **CSA vs `morpheme_integrity_rate`**: CSA restricts to clitic boundaries; integrity covers ALL Farasa boundaries. They satisfy the invariant `integrity == 1.0 ⇒ CSA == 1.0` (clitic boundaries ⊆ all boundaries). Among Farasa-aware tokenizers (MorphoBPE / FarasaCharBERT) both are ~1.0 by construction; among plain subword tokenizers (BPE / WordPiece) CSA isolates clitic-handling specifically, which is the actually-discriminating signal. Don't drop one in favor of the other — integrity catches stem-internal splits (BPE chopping a root in half), CSA does not.
 - **Farasa-CharacterBERT** (`farasa_character_bert`): each morpheme is exactly one input unit, so `morpheme_integrity_rate` ≈ 1.0 *mechanically* (Farasa boundaries are token boundaries by construction — same logic as char-JABER but at morpheme granularity). `root_conservation_rate` is high but not at the ceiling (~0.75–0.85 typical; observed 0.775 on a 200-sentence smoke test) because the root sits inside the unsplit stem morpheme, but Farasa occasionally over-segments the stem itself. Among Farasa-aware tokenizers (MorphoBPE vs FarasaCharBERT), `morpheme_integrity_rate` does *not* discriminate — use `root_conservation_rate` and downstream task scores to break the tie.
 - **AraRooPat** (`araroopat`): `root_conservation_rate` and `pattern_conservation_rate` both → ~1.0 *by construction* — each ROOT token's metric-string IS the root letters and each PAT token's metric-string is the cleaned inflected stem (which contains the root letters in their pattern-positioned context). `morpheme_integrity_rate` ≈ 1.0 too (clitics are separate tokens). The metric headroom (smoke test on 200 sentences gave 0.54 root, 0.66 pattern — well below the ceiling) is *not* a bug in the tokenizer — it comes from (a) ~30% of words on the LIT fallback path because CAMeL's MSA database doesn't cover them (rare nouns, proper names — coverage rises with corpus scale to ~85–95%), and (b) qalsadi (the metric's extractor) disagreeing with CAMeL on the root for some words. Among morphology-aware tokenizers (MorphoBPE / FarasaCharBERT / AraRooPat), break ties with downstream MCQ scores rather than the conservation metrics.
 
@@ -278,6 +284,17 @@ Character-level tokenization produces sequences ~4-6x longer. Default `max_lengt
 - **Question answering** (`tasks/question_answering.py`): F1 and Exact Match on ARCD dataset. QA is framed as generation (Arabic prompt: `السياق: ... \nالسؤال: ... \nالإجابة:`)
 - **LightEval benchmarks** (`tasks/lighteval_benchmarks.py`): accuracy via log-likelihood multiple-choice scoring on ACVA, Alghafa, Culture-Arabic-MMLU, and Arabic-Exam. See [LightEval Benchmarks](#lighteval-benchmarks-acva-alghafa-culture-arabic-mmlu-arabic-exam) below.
 
+### MEI — Morphological Efficiency Index (`compute_mei` in `evaluation/metrics.py`)
+
+`MEI = (accuracy × RPS × compression) / inference_time_sec`. A composite per-experiment number that asks: *is good downstream accuracy aligned with high root preservation and high compression, per unit of inference time?*
+
+- **Scope**: defined only for LightEval MCQ tasks (`acva`, `alghafa`, `culture_arabic_mmlu`, `arabic_exam`). Detection in the pipeline uses `isinstance(task, LightEvalBenchmarkTask)` so adding a new LightEval benchmark requires no MEI changes.
+- **Inputs**: `accuracy` (LightEval MCQ result), `RPS` = `root_conservation_rate` (intrinsic block), `compression` = `compression_ratio` (intrinsic block), `inference_time_sec` (wall-clock around `task.evaluate()`, persisted in the downstream block).
+- **Record shape**: `{"mei": float|None, "status": "ok"|"task_not_mcq"|"missing_<input>"|"zero_time", "inputs": {...}}` at top-level `results["mei"]` in `all_metrics.json`. Inputs are echoed back so the JSON is self-describing — no need to re-read `intrinsic_metrics.json` to debug a `None` MEI.
+- **Warmup**: pipeline does one throwaway `tokenizer.encode("نص قصير للإحماء")` before `time.perf_counter()` starts. Required for fairness — without it, AraRooPat's CAMeL bridge spawn (~1–2 s) and Farasa Java subprocess startup get billed to the morphology-aware tokenizers' MEI denominator.
+- **Mechanical-extreme flagging**: `RPS_MECHANICAL_FLAGS` in `evaluation/reporter.py` is the single source of truth for which tokenizers have a forced RPS (CharBERT and AraRooPat at the ceiling; char-JABER and Charformer at the floor). The sweep `comparison_report.txt` asterisks those tokenizers in the MEI table and prints a footnote. Don't strip the footnote — it's load-bearing for correct interpretation.
+- **Tests**: `tests/test_mei.py` covers the typed-status logic, including the "real-zero is `status=ok`, missing-input is `status=missing_*`" distinction.
+
 ## LightEval Benchmarks (ACVA, Alghafa, Culture-Arabic-MMLU, Arabic-Exam)
 
 ### Overview
@@ -287,9 +304,9 @@ These four multiple-choice benchmarks are used to evaluate the impact of tokeniz
 | Registry Key | Class | Default Dataset | Metric |
 |---|---|---|---|
 | `acva` | `ACVATask` | `OALL/ACVA` | accuracy |
-| `alghafa` | `AlghafaTask` | `OALL/AlGhafa-Native` | accuracy |
-| `culture_arabic_mmlu` | `CultureArabicMMLUTask` | `acmc/arabic_culture_mmlu` | accuracy |
-| `arabic_exam` | `ArabicExamTask` | `arabic_exam` | accuracy |
+| `alghafa` | `AlghafaTask` | `OALL/AlGhafa-Arabic-LLM-Benchmark-Native` | accuracy |
+| `culture_arabic_mmlu` | `CultureArabicMMLUTask` | `OALL/Arabic_MMLU` | accuracy |
+| `arabic_exam` | `ArabicExamTask` | `MBZUAI/ArabicMMLU` | accuracy |
 
 ### Data Split Strategy
 
@@ -299,6 +316,8 @@ All examples across all predefined splits of each benchmark are pooled, then spl
 - **90 %** → reserved for LightEval evaluation (never seen during training)
 
 The same seed is used across all tokenizer variants in a sweep so every experiment evaluates on the identical 90 % partition.
+
+**Stratified per-sub-config split** (multi-config benchmarks). For ACVA (58 cultural topics), Alghafa (sub-tasks), and Arabic_Exam (school subjects), the 10/90 split is applied **within each sub-config** rather than globally. This guarantees ≥ 1 SFT example per sub-config — random global sampling at 10 % could otherwise leave small configs entirely unrepresented in fine-tuning. Per-config seeds are derived as `seed + crc32(config_name)` so the split is fully deterministic. Single-config benchmarks (Culture_Arabic_MMLU) degenerate to one `_default` group → behaviour matches a global split. Note: the floor→ceil rounding required to guarantee coverage shifts the SFT total up by ~one example per sub-config compared to the pre-stratification implementation, so historic run totals will not match exactly. Lives in `LightEvalBenchmarkTask._get_splits` ([tasks/lighteval_benchmarks.py](src/arabic_eval/tasks/lighteval_benchmarks.py)).
 
 ### Evaluation Methodology (LightEval)
 
@@ -310,11 +329,13 @@ log P(" A" | context)  …  log P(" D" | context)
 
 using the fine-tuned model's forward pass (`_compute_loglikelihood`), then predicts `argmax`. This matches LightEval's standard log-likelihood MCQ protocol exactly. The wrapper implements the same `loglikelihood(requests)` interface as LightEval's `LightevalModel`, so it can be substituted into a full LightEval pipeline if needed.
 
-**CharacterBERT limitation**: `character_cnn` embedding does not support token-level log-likelihoods; accuracy will be reported as 0.0 for that embedding type.
+**CharacterBERT log-likelihood note**: `character_cnn` is scored using the *word-level* logits (the model's `lm_head` indexes the word vocabulary; the `char_ids` 3-D batch flows into the CharCNN, the transformer output is projected to the word vocab, and the continuation scoring sums log P(word) over the continuation's word-vocab IDs). This is implemented in the `character_cnn` branch of `_compute_loglikelihood`. The result is a real accuracy in `[0, 1]` — *not* a 0.0 fallback. **`farasa_character_bert` shares the same `embedding_type` and the same scoring path**; the only difference is that its `lm_head` indexes a *morpheme* vocabulary, so continuation scoring is over morpheme-vocab IDs rather than word-vocab IDs. Both produce real, comparable accuracies on `acva` / `alghafa` / `culture_arabic_mmlu` / `arabic_exam`.
+
+**ACVA word-based scoring note**: ACVA is True/False, not 4-way MCQ, and its continuation pool is just `صح` / `خطأ` (rendered as letter `أ` / `ب` in vanilla LightEval). When scored with single-letter continuations, 99 % of model decisions ended up as near-tie log-likelihoods (differences < 1e-3) dominated by the per-letter unigram prior — accuracy clustered around the majority-class baseline regardless of tokenizer. ACVATask therefore overrides the default scoring hooks to score the words `" صح"` / `" خطأ"` directly: the prompt drops the `أ./ب.` choice listing, SFT supervision ends with the answer word, and `_build_continuations` returns `[" صح", " خطأ"]`. Letter scoring is preserved for the other three benchmarks (which are genuinely 4-way MCQ). The override is implemented via three hooks on `LightEvalBenchmarkTask` (`_format_eval_context`, `_build_continuations`, `_format_sft_text`) — same pattern any future task can use to swap continuations without touching the wrapper. The label strings are centralised on `ACVATask.LABELS` (a tuple, single source of truth) so switching to e.g. `صحيح` / `خاطئ` is a one-line change.
 
 ### Fine-tuning Data Format
 
-Each MCQ example is formatted as a plain-text causal-LM sequence:
+For 4-way MCQ benchmarks (`alghafa` / `culture_arabic_mmlu` / `arabic_exam`) each example is formatted as a plain-text causal-LM sequence:
 
 ```
 السؤال: {question}
@@ -326,7 +347,25 @@ D. {choice_D}
 الإجابة: {correct_letter}
 ```
 
+For **ACVA** (True/False), the choice listing is dropped and the answer is the word itself:
+
+```
+السؤال: {question}
+الإجابة: {صح|خطأ}
+```
+
 This is tokenised and passed through the existing `Trainer` using the standard collator for the active embedding type.
+
+### Known limitations: ACVA label quality
+
+ACVA's gold labels were synthetically generated and ship with non-trivial noise. A direct inspection of the public dataset surfaced:
+
+- **Wrong gold labels for factually contradicting claims.** Example: `الكبسة هي طبق وطني سعودي` (Kabsa is the Saudi national dish) is labelled `خطأ` (FALSE), and `الكبسة هي وجبة تقليدية في المطبخ السوري` (Kabsa is traditional in Syrian cuisine) is labelled `صح` (TRUE) — the opposite of the factual record. The dataset author's synthetic generator hallucinated cultural facts.
+- **~30 % duplicate rate.** Because the 58 sub-configs share questions (e.g. an "Arabs discovered cosmic violet waves" claim appears in `Arab_Empire`, `Arabic_Astronomy`, `Arab_Achievement_Discovery`, …), the merged eval split has 5673 unique questions out of 8100 rows.
+- **51 within-eval label conflicts.** The same question appears with both `صح` and `خطأ` golds in the same partition.
+- **Pseudo-random model behaviour under letter-based scoring** (now mitigated by word-based scoring, see above).
+
+The word-scoring override mitigates the pseudo-random behaviour but does **not** fix the upstream gold-label problem. Treat ACVA accuracy as label-noisy: cross-validate against the other three benchmarks before drawing tokenizer conclusions. The sweep `comparison_report.txt` flags ACVA with a dagger `†` and a footnote — keep the footnote (it's the equivalent of `RPS_MECHANICAL_FLAGS` for label-noisy tasks; the single source of truth is `LABEL_NOISY_TASKS` in [evaluation/reporter.py](src/arabic_eval/evaluation/reporter.py)).
 
 ### Key Classes (`src/arabic_eval/tasks/lighteval_benchmarks.py`)
 
@@ -365,7 +404,7 @@ task:
     seed: 42
 ```
 
-> **Note:** `dataset_name` for `culture_arabic_mmlu` (`acmc/arabic_culture_mmlu`) and `arabic_exam` (`arabic_exam`) are best-effort defaults. Update them to the confirmed HuggingFace Hub paths before running.
+> **Note:** Confirmed Hub defaults are: `acva` → `OALL/ACVA`; `alghafa` → `OALL/AlGhafa-Arabic-LLM-Benchmark-Native`; `culture_arabic_mmlu` → `OALL/Arabic_MMLU`; `arabic_exam` → `MBZUAI/ArabicMMLU`. Override via `params.dataset_name` if a benchmark moves on the Hub.
 
 ## Config Reference
 
@@ -420,6 +459,7 @@ evaluation:
   morph_sample_size: 500        # # of distinct words to sample for them
   downstream_metrics: true
   num_eval_samples: 5000
+  failure_reports: false        # Per-task CSV of failing eval cases (LightEval MCQ only)
 ```
 
 ### Sweep YAML structure (for full_sweep.yaml)
@@ -453,15 +493,15 @@ sweep:
         seed: 42
     - type: "alghafa"
       params:
-        dataset_name: "OALL/AlGhafa-Native"
+        dataset_name: "OALL/AlGhafa-Arabic-LLM-Benchmark-Native"
         train_split_ratio: 0.10
     - type: "culture_arabic_mmlu"
       params:
-        dataset_name: "acmc/arabic_culture_mmlu"
+        dataset_name: "OALL/Arabic_MMLU"
         train_split_ratio: 0.10
     - type: "arabic_exam"
       params:
-        dataset_name: "arabic_exam"
+        dataset_name: "MBZUAI/ArabicMMLU"
         train_split_ratio: 0.10
 ```
 
@@ -472,16 +512,24 @@ Each experiment produces:
 outputs/experiments/<name>/
   config.json               # Full resolved config
   intrinsic_metrics.json    # Fertility, compression, UNK rate, coverage
-  all_metrics.json          # Combined intrinsic + downstream results
+  all_metrics.json          # Combined intrinsic + downstream + mei (top-level "mei" key for LightEval MCQ tasks)
   training/
     train_results.json      # Loss, steps, time
     best/                   # Best checkpoint (early stopping)
     final/                  # Final checkpoint
     checkpoint-*/           # Periodic checkpoints
+  failure_reports/          # Only when evaluation.failure_reports=true
+    <task_name>_accuracy_failures.csv   # LightEval MCQ tasks only
   experiment.log            # Full log file
 ```
 
-Sweep mode additionally generates: `comparison_report.txt` and `comparison_report.json` in the sweep output directory.
+Sweep mode additionally generates: `comparison_report.txt` and `comparison_report.json` in the sweep output directory. The text report includes a "Composite Metric: MEI" section with per-experiment rows + an asterisk-and-footnote on tokenizers with mechanical RPS extremes (`RPS_MECHANICAL_FLAGS` in `evaluation/reporter.py`).
+
+### Failure-case CSV reports (opt-in)
+
+When `evaluation.failure_reports: true`, LightEval MCQ tasks (`acva`, `alghafa`, `culture_arabic_mmlu`, `arabic_exam`) write one CSV per task with one row per wrong-answer example. Columns: `index, question, choice_0..N, gold_idx/letter, pred_idx/letter, ll_0..N, ll_margin`. The `ll_margin = ll_pred - ll_gold` diagnostic distinguishes confident-wrong (large positive margin) from near-tie failures (~0). UTF-8-BOM encoding so Excel renders Arabic correctly.
+
+QA and text_generation **do not** support failure reporting; the pipeline detects this via `inspect.signature(task.evaluate)` and silently skips. To opt a new task in, just add `failure_report_dir: Optional[Path] = None` to its `evaluate()` signature and handle it — no base-class change needed.
 
 ## Dependencies
 
@@ -499,5 +547,5 @@ Optional `[morphological]` extras for full Arabic morphological metrics: `qalsad
 - The `models/__init__.py` and `tasks/__init__.py` use try/except on imports, so model and task registries will be empty if torch/transformers are not installed. The pipeline script (`pipeline/experiment.py`) force-imports them, so missing deps will surface at experiment runtime.
 - `torch.cuda.amp.autocast` in the trainer uses `device_type="cuda"` — will need adjustment for non-CUDA accelerators (e.g., MPS).
 - LightEval benchmark tasks (`acva`, `alghafa`, `culture_arabic_mmlu`, `arabic_exam`) fine-tune on the **10 % split only**; the 90 % eval split is never used during training. The `get_dataloader(split="test")` call from the Trainer also returns the 10 % split to avoid contamination.
-- CharacterBERT (`character_cnn`) returns `accuracy=0.0` on LightEval benchmarks because log-likelihood scoring requires token-level logits over a standard vocabulary — not supported by the word-level CharCNN architecture. **`farasa_character_bert` inherits the same limitation** (shared `embedding_type=character_cnn`): no `generate()` for QA, accuracy=0.0 on log-likelihood benchmarks, output head is a morpheme vocab instead of a word vocab.
-- The `dataset_name` defaults for `culture_arabic_mmlu` (`acmc/arabic_culture_mmlu`) and `arabic_exam` (`arabic_exam`) are best-effort; confirm the exact HuggingFace Hub paths before running and update the YAML configs accordingly.
+- CharacterBERT (`character_cnn`) **does** support LightEval log-likelihood scoring — the `character_cnn` branch in `_compute_loglikelihood` runs the CharCNN on `char_ids` and scores continuations against the word-vocabulary `lm_head`. Returns a real accuracy in `[0, 1]`. **`farasa_character_bert` shares the same path** (same `embedding_type=character_cnn`); its `lm_head` indexes a *morpheme* vocab instead of a word vocab, so scoring is over morpheme-vocab IDs. The shared remaining limitation is **autoregressive `generate()`**, which `LlamaAdapter.generate()` raises `NotImplementedError` for on `CHARACTER_CNN` — so QA evaluation falls back to empty predictions for both. (Older docs claimed `accuracy=0.0` on log-likelihood for these tokenizers; that was true before the `character_cnn` branch was added in `_compute_loglikelihood` and is no longer accurate.)
+- The `dataset_name` defaults (in `configs/tasks/*.yaml` and `_default_dataset_name()` on each task class): `acva` → `OALL/ACVA`; `alghafa` → `OALL/AlGhafa-Arabic-LLM-Benchmark-Native`; `culture_arabic_mmlu` → `OALL/Arabic_MMLU`; `arabic_exam` → `MBZUAI/ArabicMMLU`. Override via the `params.dataset_name` field if a benchmark moves on the Hub.

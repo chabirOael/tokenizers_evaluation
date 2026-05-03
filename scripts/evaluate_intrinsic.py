@@ -14,7 +14,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from arabic_eval.data.loader import load_arabic_dataset, extract_texts
-from arabic_eval.tokenizers.intrinsic_metrics import compute_intrinsic_metrics
+from arabic_eval.evaluation.intrinsic_metrics import compute_intrinsic_metrics
 from arabic_eval.utils.logging import setup_logger
 from arabic_eval.utils.io import save_json
 

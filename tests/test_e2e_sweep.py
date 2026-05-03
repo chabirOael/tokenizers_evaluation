@@ -79,6 +79,9 @@ SAMPLE_QA: Dict[str, List] = {
 # Schema: separate A/B/C/D columns + answer letter (handled by _parse_mcq_generic).
 # ---------------------------------------------------------------------------
 
+# MCQ fixture in the ABCD schema: question + A/B/C/D + answer letter.
+# Used by `culture_arabic_mmlu` (which delegates to `_parse_mcq_generic`,
+# the only built-in parser that accepts ABCD).
 SAMPLE_MCQ_DATA: Dict[str, List] = {
     "question": [
         "ما هي عاصمة الجزائر؟",
@@ -97,12 +100,70 @@ SAMPLE_MCQ_DATA: Dict[str, List] = {
     "answer": ["A", "B", "A", "A", "A", "B", "A", "A"],
 }
 
+# ACVA: True/False schema — `question` + `answer` ∈ {صح, خطأ}.
+# Matches `ACVATask._parse_example`.
+SAMPLE_ACVA_DATA: Dict[str, List] = {
+    "question": [
+        "الجزائر بلد في شمال أفريقيا",
+        "الشمس تغرب من الشرق",
+        "اللغة العربية لغة سامية",
+        "النيل أقصر نهر في العالم",
+        "القاهرة عاصمة مصر",
+        "السنة الميلادية فيها عشرة أشهر",
+        "الذهب معدن أصفر",
+        "النحاس معدن أبيض",
+    ],
+    "answer": ["صح", "خطأ", "صح", "خطأ", "صح", "خطأ", "صح", "خطأ"],
+}
+
+# AlGhafa: query + sol1..sol4 + label (1-indexed string).
+# Matches `AlghafaTask._parse_example`.
+SAMPLE_ALGHAFA_DATA: Dict[str, List] = {
+    "query": [
+        "ما هي عاصمة الجزائر؟",
+        "كم عدد أيام الأسبوع؟",
+        "ما هو لون السماء؟",
+        "ما هي أكبر قارة في العالم؟",
+        "ما هي عاصمة مصر؟",
+        "كم عدد أشهر السنة؟",
+        "ما هو أطول نهر في العالم؟",
+        "من نزل عليه القرآن الكريم؟",
+    ],
+    "sol1": ["الجزائر", "خمسة", "أزرق", "آسيا", "القاهرة", "عشرة", "النيل", "الله"],
+    "sol2": ["وهران", "سبعة", "أحمر", "أفريقيا", "الإسكندرية", "اثنا عشر", "الأمازون", "محمد"],
+    "sol3": ["قسنطينة", "ستة", "أخضر", "أوروبا", "أسوان", "ثمانية", "المسيسيبي", "جبريل"],
+    "sol4": ["عنابة", "ثمانية", "أصفر", "أمريكا", "الجيزة", "خمسة عشر", "اليانغتسي", "موسى"],
+    "label": ["1", "2", "1", "1", "1", "2", "1", "2"],
+}
+
+# ArabicExam (MBZUAI/ArabicMMLU): Question + Option 1..4 + Answer Key (letter).
+# Matches `ArabicExamTask._parse_example`.
+SAMPLE_ARABICEXAM_DATA: Dict[str, List] = {
+    "Question": [
+        "ما هي عاصمة الجزائر؟",
+        "كم عدد أيام الأسبوع؟",
+        "ما هو لون السماء؟",
+        "ما هي أكبر قارة في العالم؟",
+        "ما هي عاصمة مصر؟",
+        "كم عدد أشهر السنة؟",
+        "ما هو أطول نهر في العالم؟",
+        "من نزل عليه القرآن الكريم؟",
+    ],
+    "Option 1": ["الجزائر", "خمسة", "أزرق", "آسيا", "القاهرة", "عشرة", "النيل", "الله"],
+    "Option 2": ["وهران", "سبعة", "أحمر", "أفريقيا", "الإسكندرية", "اثنا عشر", "الأمازون", "محمد"],
+    "Option 3": ["قسنطينة", "ستة", "أخضر", "أوروبا", "أسوان", "ثمانية", "المسيسيبي", "جبريل"],
+    "Option 4": ["عنابة", "ثمانية", "أصفر", "أمريكا", "الجيزة", "خمسة عشر", "اليانغتسي", "موسى"],
+    "Answer Key": ["A", "B", "A", "A", "A", "B", "A", "B"],
+}
+
 # Benchmark dataset names patched by the mock factory.
+# Routing in `_mock_load_dataset_factory` selects the appropriate
+# per-task fixture above.
 _BENCHMARK_NAMES = frozenset({
     "OALL/ACVA",
     "OALL/AlGhafa-Native",
     "acmc/arabic_culture_mmlu",
-    "arabic_exam",
+    "MBZUAI/ArabicMMLU",
 })
 
 
@@ -189,16 +250,24 @@ class FakeLlamaForCausalLM(nn.Module):
     def save_pretrained(self, path: Any) -> None:  # no-op in tests
         pass
 
-    # ---- Standard forward (standard + char_jaber embedding types) ----
+    # ---- Forward (standard + char_jaber + character_cnn embedding types) ----
 
     def forward(
         self,
         input_ids: Optional[torch.Tensor] = None,
         attention_mask: Optional[torch.Tensor] = None,
         labels: Optional[torch.Tensor] = None,
+        inputs_embeds: Optional[torch.Tensor] = None,
         **kwargs: Any,
     ) -> _FakeOutput:
-        x = self.model.embed_tokens(input_ids)
+        # Mirror real LlamaForCausalLM: prefer inputs_embeds when supplied,
+        # else look up via embed_tokens. CharacterBERT's
+        # _forward_character_cnn precomputes the CharCNN embeddings and
+        # passes them as inputs_embeds (with input_ids=None).
+        if inputs_embeds is not None:
+            x = inputs_embeds
+        else:
+            x = self.model.embed_tokens(input_ids)
         for layer in self.model.layers:
             x = layer(x, attention_mask)[0]
         x = self.model.norm(x)
@@ -250,12 +319,39 @@ def _make_mcq_dataset():
     return Dataset.from_dict(SAMPLE_MCQ_DATA)
 
 
+def _make_acva_dataset():
+    from datasets import Dataset
+    return Dataset.from_dict(SAMPLE_ACVA_DATA)
+
+
+def _make_alghafa_dataset():
+    from datasets import Dataset
+    return Dataset.from_dict(SAMPLE_ALGHAFA_DATA)
+
+
+def _make_arabicexam_dataset():
+    from datasets import Dataset
+    return Dataset.from_dict(SAMPLE_ARABICEXAM_DATA)
+
+
+# Benchmark name → dataset-builder. Each task's `_parse_example` accepts
+# only its own dataset's schema, so the mock must hand each task a fixture
+# that matches what its parser expects.
+_BENCHMARK_BUILDERS = {
+    "OALL/ACVA": _make_acva_dataset,
+    "OALL/AlGhafa-Native": _make_alghafa_dataset,
+    "acmc/arabic_culture_mmlu": _make_mcq_dataset,  # ABCD via _parse_mcq_generic
+    "MBZUAI/ArabicMMLU": _make_arabicexam_dataset,
+}
+
+
 def _mock_load_dataset_factory():
     """Returns a callable that fakes load_dataset for all four call sites.
 
     Routing logic:
       - ARCD / qa names  → QA dataset (context/question/answers)
-      - Known benchmark names (ACVA, Alghafa, …) → MCQ dataset (A/B/C/D cols)
+      - Known benchmark names (ACVA, Alghafa, Culture-MMLU, ArabicExam) →
+        per-task MCQ fixture matching that task's native schema
       - Everything else  → plain Arabic text dataset
     """
     from datasets import DatasetDict
@@ -264,18 +360,18 @@ def _mock_load_dataset_factory():
     text_dd = DatasetDict({"train": text_ds, "test": text_ds})
     qa_ds = _make_qa_dataset()
     qa_dd = DatasetDict({"train": qa_ds, "test": qa_ds})
-    mcq_ds = _make_mcq_dataset()
-    # Single split only — avoids duplicating questions when concatenate_datasets
-    # is called over all splits in LightEvalBenchmarkTask._load_all_examples().
-    mcq_dd = DatasetDict({"train": mcq_ds})
+
+    # Build all benchmark datasets once. Single-split DatasetDict avoids
+    # duplicating questions when concatenate_datasets is called across
+    # splits in LightEvalBenchmarkTask._load_all_examples().
+    bench_ds = {n: build() for n, build in _BENCHMARK_BUILDERS.items()}
+    bench_dd = {n: DatasetDict({"train": ds}) for n, ds in bench_ds.items()}
 
     def _mock(name, config=None, cache_dir=None, split=None, **kwargs):
         name_str = str(name)
-        is_benchmark = name_str in _BENCHMARK_NAMES
-        is_qa = ("arcd" in name_str or "qa" in name_str.lower()) and not is_benchmark
-
-        if is_benchmark:
-            return mcq_ds if split is not None else mcq_dd
+        if name_str in bench_ds:
+            return bench_ds[name_str] if split is not None else bench_dd[name_str]
+        is_qa = "arcd" in name_str or "qa" in name_str.lower()
         if is_qa:
             return qa_ds if split is not None else qa_dd
         return text_ds if split is not None else text_dd
@@ -327,7 +423,7 @@ _TASK_CASES = [
     ),
     pytest.param(
         "arabic_exam",
-        {"dataset_name": "arabic_exam", "train_split_ratio": 0.50, "max_length": 32, "seed": 0},
+        {"dataset_name": "MBZUAI/ArabicMMLU", "train_split_ratio": 0.50, "max_length": 32, "seed": 0},
         id="arabic_exam",
     ),
 ]
@@ -460,7 +556,7 @@ class TestTokenizerUnit:
 
     @pytest.mark.parametrize("tok_type,tok_params,vocab_size", _TOK_CASES)
     def test_intrinsic_metrics(self, patched_env, tok_type, tok_params, vocab_size):
-        from arabic_eval.tokenizers.intrinsic_metrics import compute_intrinsic_metrics
+        from arabic_eval.evaluation.intrinsic_metrics import compute_intrinsic_metrics
 
         tok = _build_tokenizer(tok_type, tok_params, vocab_size)
         metrics = compute_intrinsic_metrics(tok, ARABIC_TEXTS[:4])
@@ -695,27 +791,87 @@ class TestLightEvalBenchmarks:
 
     # --- MCQ parsing ---
 
-    @pytest.mark.parametrize("task_type", ["acva", "alghafa", "culture_arabic_mmlu", "arabic_exam"])
-    def test_parse_example_abcd_schema(self, patched_env, task_type):
-        """_parse_example must handle the A/B/C/D column + answer letter schema."""
+    @pytest.mark.parametrize("task_type,raw,expected_question,expected_answer,n_choices", [
+        # ACVA: T/F schema. answer ∈ {صح, خطأ} → index 0/1, choices = [صح, خطأ].
+        (
+            "acva",
+            {"question": "الجزائر بلد في شمال أفريقيا", "answer": "صح"},
+            "الجزائر بلد في شمال أفريقيا",
+            0,
+            2,
+        ),
+        (
+            "acva",
+            {"question": "الشمس تغرب من الشرق", "answer": "خطأ"},
+            "الشمس تغرب من الشرق",
+            1,
+            2,
+        ),
+        # AlGhafa: query + sol1..sol4 + label (1-indexed string). label="2" → idx 1.
+        (
+            "alghafa",
+            {
+                "query": "ما هي عاصمة الجزائر؟",
+                "sol1": "الجزائر", "sol2": "وهران", "sol3": "قسنطينة", "sol4": "عنابة",
+                "label": "1",
+            },
+            "ما هي عاصمة الجزائر؟",
+            0,
+            4,
+        ),
+        # CultureArabicMMLU: ABCD + answer letter. Routes through _parse_mcq_generic.
+        (
+            "culture_arabic_mmlu",
+            {
+                "question": "ما هي عاصمة الجزائر؟",
+                "A": "الجزائر", "B": "وهران", "C": "قسنطينة", "D": "عنابة",
+                "answer": "C",
+            },
+            "ما هي عاصمة الجزائر؟",
+            2,
+            4,
+        ),
+        # ArabicExam: Question + Option 1..4 + Answer Key (letter). "B" → idx 1.
+        (
+            "arabic_exam",
+            {
+                "Question": "ما هي عاصمة الجزائر؟",
+                "Option 1": "الجزائر", "Option 2": "وهران",
+                "Option 3": "قسنطينة", "Option 4": "عنابة",
+                "Answer Key": "B",
+            },
+            "ما هي عاصمة الجزائر؟",
+            1,
+            4,
+        ),
+    ])
+    def test_parse_example_native_schema(
+        self, patched_env, task_type, raw, expected_question, expected_answer, n_choices
+    ):
+        """Each task's _parse_example must accept its own native schema.
+
+        ACVA = T/F (صح/خطأ); Alghafa = query+sol1..4+label;
+        CultureArabicMMLU = ABCD via _parse_mcq_generic;
+        ArabicExam = "Question"+"Option N"+"Answer Key".
+        """
         import arabic_eval.tasks  # noqa
         from arabic_eval.registry import task_registry
-        task = task_registry.get(task_type)({"dataset_name": "OALL/ACVA"})
-        raw = {
-            "question": "ما هي عاصمة الجزائر؟",
-            "A": "الجزائر", "B": "وهران", "C": "قسنطينة", "D": "عنابة",
-            "answer": "A",
-        }
+        task = task_registry.get(task_type)({})
         parsed = task._parse_example(raw)
-        assert parsed is not None, f"{task_type}: _parse_example returned None for valid ABCD row"
-        assert parsed["question"] == "ما هي عاصمة الجزائر؟"
-        assert len(parsed["choices"]) == 4
-        assert parsed["answer"] == 0  # A → index 0
+        assert parsed is not None, f"{task_type}: _parse_example returned None for valid native row"
+        assert parsed["question"] == expected_question
+        assert len(parsed["choices"]) == n_choices
+        assert parsed["answer"] == expected_answer
 
     def test_parse_example_choices_list_schema(self, patched_env):
-        """_parse_example must handle the choices-list + integer answer schema."""
-        from arabic_eval.tasks.lighteval_benchmarks import ACVATask
-        task = ACVATask({"dataset_name": "OALL/ACVA"})
+        """`_parse_mcq_generic` must handle the choices-list + integer answer schema.
+
+        Tested via CultureArabicMMLUTask, the only built-in task that
+        delegates to the generic parser. ACVA / Alghafa / ArabicExam each
+        accept only their own native schema by design.
+        """
+        from arabic_eval.tasks.lighteval_benchmarks import CultureArabicMMLUTask
+        task = CultureArabicMMLUTask({})
         raw = {
             "question": "كم عدد الأيام في الأسبوع؟",
             "choices": ["خمسة", "ستة", "سبعة", "ثمانية"],
@@ -801,17 +957,25 @@ class TestLightEvalBenchmarks:
         assert "num_samples" in metrics
         assert metrics["num_samples"] >= 0
 
-    def test_character_bert_evaluate_returns_zero_accuracy(self, patched_env):
-        """CharacterBERT must return accuracy=0.0 — log-likelihood not supported."""
+    def test_character_bert_evaluate_returns_valid_accuracy(self, patched_env):
+        """CharacterBERT log-likelihood is supported via word-level logits.
+
+        The character_cnn branch in `_compute_loglikelihood` uses the
+        CharCNN's word vocabulary directly (continuation word IDs are
+        looked up against the word-level lm_head). So unlike generation
+        (which is genuinely unsupported), CharacterBERT does produce a
+        real accuracy in [0, 1] on the LightEval log-likelihood path.
+
+        (Older docs still claim CharBERT returns 0.0 here — that's stale;
+        the implementation was upgraded since.)
+        """
         task = self._make_task()
         adapter, tok = self._make_adapted_adapter(
             "character_bert", {"max_char_len": 10, "max_word_vocab": 200}, None
         )
         metrics = task.evaluate(adapter, tok, split="test", max_samples=2)
-        assert metrics["accuracy"] == 0.0, (
-            "CharacterBERT (character_cnn) must always report accuracy=0.0 "
-            "because token-level log-likelihood is not supported"
-        )
+        assert "accuracy" in metrics
+        assert 0.0 <= metrics["accuracy"] <= 1.0
 
     # --- LightEvalModelWrapper ---
 
@@ -850,10 +1014,12 @@ class TestLightEvalBenchmarks:
             {"question": "ما هي عاصمة الجزائر؟", "choices": ["الجزائر", "وهران", "قسنطينة", "عنابة"], "answer": 0},
             {"question": "كم عدد أيام الأسبوع؟", "choices": ["خمسة", "سبعة", "ستة", "ثمانية"], "answer": 1},
         ]
-        result = wrapper.evaluate_mcq(examples)
-        assert "accuracy" in result and "num_samples" in result
-        assert result["num_samples"] == 2
-        assert 0.0 <= result["accuracy"] <= 1.0
+        metrics, failures = wrapper.evaluate_mcq(examples)
+        assert "accuracy" in metrics and "num_samples" in metrics
+        assert metrics["num_samples"] == 2
+        assert 0.0 <= metrics["accuracy"] <= 1.0
+        # collect_failures defaults to False → empty failure list.
+        assert failures == []
 
     # --- Multi-config dataset fallback ---
 
@@ -862,7 +1028,8 @@ class TestLightEvalBenchmarks:
         must enumerate sub-configs and merge their examples."""
         from arabic_eval.tasks.lighteval_benchmarks import ACVATask
 
-        mcq_ds = _make_mcq_dataset()
+        # ACVA's parser accepts the T/F schema only; use the matching fixture.
+        acva_ds = _make_acva_dataset()
 
         def _load_requiring_config(name, config=None, cache_dir=None, **kwargs):
             if config is None:
@@ -870,7 +1037,7 @@ class TestLightEvalBenchmarks:
                     "Config name is missing. Pick one among: ['cfg_a', 'cfg_b']"
                 )
             from datasets import DatasetDict
-            return DatasetDict({"train": mcq_ds})
+            return DatasetDict({"train": acva_ds})
 
         def _config_names(name):
             return ["cfg_a", "cfg_b"]
@@ -883,7 +1050,7 @@ class TestLightEvalBenchmarks:
             examples = task._load_all_examples()
 
         # 2 configs × 8 rows each = 16 examples total
-        assert len(examples) == 2 * len(SAMPLE_MCQ_DATA["question"]), (
+        assert len(examples) == 2 * len(SAMPLE_ACVA_DATA["question"]), (
             "Multi-config merge must include examples from all sub-configs"
         )
 
@@ -891,7 +1058,7 @@ class TestLightEvalBenchmarks:
         """Broken sub-configs must be skipped with a warning, not raise."""
         from arabic_eval.tasks.lighteval_benchmarks import ACVATask
 
-        mcq_ds = _make_mcq_dataset()
+        acva_ds = _make_acva_dataset()
 
         def _load_requiring_config(name, config=None, cache_dir=None, **kwargs):
             if config is None:
@@ -899,7 +1066,7 @@ class TestLightEvalBenchmarks:
             if config == "broken":
                 raise RuntimeError("Dataset not found")
             from datasets import DatasetDict
-            return DatasetDict({"train": mcq_ds})
+            return DatasetDict({"train": acva_ds})
 
         def _config_names(name):
             return ["good", "broken"]
@@ -912,15 +1079,15 @@ class TestLightEvalBenchmarks:
             examples = task._load_all_examples()
 
         # Only the "good" config's examples should be present
-        assert len(examples) == len(SAMPLE_MCQ_DATA["question"])
+        assert len(examples) == len(SAMPLE_ACVA_DATA["question"])
 
     # --- All four benchmark task types via task registry ---
 
     @pytest.mark.parametrize("task_type,dataset_name", [
-        pytest.param("acva",               "OALL/ACVA",               id="acva"),
-        pytest.param("alghafa",            "OALL/AlGhafa-Native",     id="alghafa"),
-        pytest.param("culture_arabic_mmlu","acmc/arabic_culture_mmlu",id="culture_arabic_mmlu"),
-        pytest.param("arabic_exam",        "arabic_exam",             id="arabic_exam"),
+        pytest.param("acva",               "OALL/ACVA",                id="acva"),
+        pytest.param("alghafa",            "OALL/AlGhafa-Native",      id="alghafa"),
+        pytest.param("culture_arabic_mmlu","acmc/arabic_culture_mmlu", id="culture_arabic_mmlu"),
+        pytest.param("arabic_exam",        "MBZUAI/ArabicMMLU",        id="arabic_exam"),
     ])
     def test_all_benchmark_tasks_load_examples(self, patched_env, task_type, dataset_name):
         """Every registered benchmark task must load >0 examples from the mock."""
@@ -936,6 +1103,199 @@ class TestLightEvalBenchmarks:
         assert len(all_ex) > 0, f"{task_type}: no examples loaded from mock dataset"
         for ex in all_ex:
             assert "question" in ex and "choices" in ex and "answer" in ex
+
+    # --- ACVA word-based scoring (label constants + hooks) ---
+
+    def test_acva_labels_constants_match_dataset_strings(self, patched_env):
+        """ACVATask.LABELS is the single source of truth for the T/F label
+        strings. Parser, eval continuations, and SFT supervision all read
+        from this tuple — changing it (e.g. to صحيح/خاطئ) must propagate."""
+        from arabic_eval.tasks.lighteval_benchmarks import ACVATask
+        assert ACVATask.LABEL_TRUE == "صح"
+        assert ACVATask.LABEL_FALSE == "خطأ"
+        assert ACVATask.LABELS == ("صح", "خطأ")
+
+        # The parser still accepts the dataset's raw label strings and maps
+        # them to the canonical 0 = TRUE / 1 = FALSE indexing.
+        task = ACVATask({"dataset_name": "OALL/ACVA"})
+        true_row = task._parse_example({"question": "س", "answer": ACVATask.LABEL_TRUE})
+        false_row = task._parse_example({"question": "س", "answer": ACVATask.LABEL_FALSE})
+        assert true_row is not None and true_row["answer"] == 0
+        assert false_row is not None and false_row["answer"] == 1
+        # Choices are populated from LABELS, not hardcoded.
+        assert true_row["choices"] == list(ACVATask.LABELS)
+
+    def test_acva_build_continuations_returns_word_pair(self, patched_env):
+        """ACVA scores the words صح/خطأ; other benchmarks still use
+        Arabic letters. Both branches must round-trip through the hook."""
+        from arabic_eval.tasks.lighteval_benchmarks import ACVATask, CultureArabicMMLUTask
+        acva = ACVATask({"dataset_name": "OALL/ACVA"})
+        ex = {"question": "x", "choices": list(ACVATask.LABELS), "answer": 0}
+        assert acva._build_continuations(ex) == [" صح", " خطأ"]
+
+        # Letter-based benchmarks unaffected by the refactor.
+        mmlu = CultureArabicMMLUTask({})
+        ex4 = {"question": "x", "choices": ["a", "b", "c", "d"], "answer": 0}
+        assert mmlu._build_continuations(ex4) == [" أ", " ب", " ج", " د"]
+
+    def test_acva_format_sft_text_uses_word_not_letter(self, patched_env):
+        """SFT supervision must end with the word the eval will score
+        against, otherwise the model never learns to emit صح/خطأ."""
+        from arabic_eval.tasks.lighteval_benchmarks import ACVATask
+        task = ACVATask({"dataset_name": "OALL/ACVA"})
+        ex_true = {"question": "الكبسة سعودية", "choices": list(ACVATask.LABELS), "answer": 0}
+        ex_false = {"question": "الكبسة مصرية", "choices": list(ACVATask.LABELS), "answer": 1}
+        assert task._format_sft_text(ex_true).endswith(" صح")
+        assert task._format_sft_text(ex_false).endswith(" خطأ")
+        # And the displayed prompt drops the "أ./ب." choice listing — only
+        # the question and "الإجابة:" should appear before the answer word.
+        assert "أ. صح" not in task._format_sft_text(ex_true)
+        assert "ب. خطأ" not in task._format_sft_text(ex_true)
+
+    def test_acva_evaluate_uses_word_continuations(self, patched_env, tmp_path):
+        """Integration: task.evaluate() must score " صح"/" خطأ", not letters.
+        Patching the per-pair log-likelihood fn lets us capture every
+        continuation passed to the model without running a real forward."""
+        import arabic_eval.tasks  # noqa
+        from arabic_eval.registry import task_registry
+        from unittest.mock import patch
+
+        task = task_registry.get("acva")({
+            "dataset_name": "OALL/ACVA",
+            "train_split_ratio": 0.50,
+            "max_length": 32,
+            "seed": 0,
+        })
+
+        # Capture every continuation that flows into the per-pair fn so we
+        # can assert ACVA scored words, not letters.
+        seen_continuations: List[str] = []
+
+        def _fake_ll(model, tokenizer, ctx, cont, max_length=512):
+            seen_continuations.append(cont)
+            # Bias toward " صح" so accuracy is non-trivially in [0, 1] and
+            # we exercise both gold = 0 and gold = 1 paths in evaluate_mcq.
+            return 0.0 if cont.strip() == "صح" else -1.0
+
+        adapter, tok = self._make_adapted_adapter()
+        with patch(
+            "arabic_eval.tasks.lighteval_benchmarks._compute_loglikelihood",
+            side_effect=_fake_ll,
+        ):
+            metrics = task.evaluate(adapter, tok, split="test", max_samples=4)
+
+        assert "accuracy" in metrics
+        assert 0.0 <= metrics["accuracy"] <= 1.0
+        # Every captured continuation must be one of the ACVA words. If any
+        # letter slipped through, the override didn't take.
+        unique = set(seen_continuations)
+        assert unique <= {" صح", " خطأ"}, (
+            f"ACVA evaluate scored non-ACVA continuations: {unique - {' صح', ' خطأ'}}"
+        )
+        # And both options were scored at least once across the eval set.
+        assert " صح" in unique and " خطأ" in unique
+
+    # --- Stratified per-sub-config split (multi-config benchmarks) ---
+
+    def test_stratified_split_covers_all_sub_configs(self, patched_env):
+        """When a multi-config benchmark is loaded, the 10/90 split must
+        guarantee ≥ 1 SFT example per sub-config — the whole point of
+        stratification (random global sampling can leave small configs
+        entirely unrepresented in the SFT split)."""
+        from datasets import Dataset, DatasetDict
+        from arabic_eval.tasks.lighteval_benchmarks import ACVATask
+        from unittest.mock import patch
+
+        # Three configs of unequal sizes — small ones are exactly the case
+        # that random global sampling would miss with a 10% SFT ratio.
+        per_config = {
+            "tiny":  ["صح", "خطأ", "صح"],                          # 3 rows
+            "small": ["صح"] * 4 + ["خطأ"] * 4,                     # 8 rows
+            "big":   ["صح"] * 8 + ["خطأ"] * 8,                     # 16 rows
+        }
+
+        def _load(name, config=None, cache_dir=None, **kwargs):
+            if config is None:
+                raise ValueError("Config name is missing.")
+            answers = per_config[config]
+            ds = Dataset.from_dict({
+                "question": [f"q{config}_{i}" for i in range(len(answers))],
+                "answer": answers,
+            })
+            return DatasetDict({"train": ds})
+
+        with (
+            patch("arabic_eval.tasks.lighteval_benchmarks.load_dataset", side_effect=_load),
+            patch(
+                "arabic_eval.tasks.lighteval_benchmarks.get_dataset_config_names",
+                side_effect=lambda name: list(per_config.keys()),
+            ),
+        ):
+            task = ACVATask({
+                "dataset_name": "OALL/ACVA",
+                "train_split_ratio": 0.10,
+                "seed": 42,
+            })
+            ft, ev = task._get_splits()
+
+        # Every sub-config must appear in BOTH the SFT and eval splits at
+        # least once (assuming each has ≥ 2 rows — `tiny` has 3, fine).
+        ft_configs = {ex.get("_source_config") for ex in ft}
+        ev_configs = {ex.get("_source_config") for ex in ev}
+        assert ft_configs == set(per_config.keys()), (
+            f"SFT split missing configs: {set(per_config.keys()) - ft_configs}"
+        )
+        assert ev_configs == set(per_config.keys()), (
+            f"Eval split missing configs: {set(per_config.keys()) - ev_configs}"
+        )
+        # And the totals add up (no rows lost).
+        assert len(ft) + len(ev) == sum(len(v) for v in per_config.values())
+
+    def test_source_config_tag_stamped_on_every_example(self, patched_env):
+        """Loader must stamp `_source_config` on every parsed dict so the
+        stratified split has something to group by. Single-config datasets
+        get the sentinel `_default`."""
+        from datasets import Dataset, DatasetDict
+        from arabic_eval.tasks.lighteval_benchmarks import ACVATask
+        from unittest.mock import patch
+
+        # Multi-config path: distinct stamps from distinct configs.
+        per_config_data = {
+            "alpha": Dataset.from_dict({"question": ["q1"], "answer": ["صح"]}),
+            "beta":  Dataset.from_dict({"question": ["q2"], "answer": ["خطأ"]}),
+        }
+
+        def _load(name, config=None, cache_dir=None, **kwargs):
+            if config is None:
+                raise ValueError("Config name is missing.")
+            return DatasetDict({"train": per_config_data[config]})
+
+        with (
+            patch("arabic_eval.tasks.lighteval_benchmarks.load_dataset", side_effect=_load),
+            patch(
+                "arabic_eval.tasks.lighteval_benchmarks.get_dataset_config_names",
+                side_effect=lambda name: list(per_config_data.keys()),
+            ),
+        ):
+            task = ACVATask({"dataset_name": "OALL/ACVA"})
+            examples = task._load_all_examples()
+
+        sources = sorted({ex["_source_config"] for ex in examples})
+        assert sources == ["alpha", "beta"]
+
+        # Single-config path: every example tagged "_default".
+        single_ds = _make_acva_dataset()
+
+        def _load_single(name, config=None, cache_dir=None, **kwargs):
+            return DatasetDict({"train": single_ds})
+
+        with patch(
+            "arabic_eval.tasks.lighteval_benchmarks.load_dataset",
+            side_effect=_load_single,
+        ):
+            task2 = ACVATask({"dataset_name": "OALL/ACVA"})
+            examples2 = task2._load_all_examples()
+        assert all(ex["_source_config"] == "_default" for ex in examples2)
 
 
 # ===========================================================================
@@ -1042,13 +1402,12 @@ def test_e2e_full_sweep(patched_env, tok_type, tok_params, vocab_size, task_type
         if isinstance(metric_val, (int, float)):
             assert metric_val >= 0, f"Downstream metric must be >= 0, got {metric_val}"
 
-    # LightEval-specific: accuracy must be in [0, 1]
+    # LightEval-specific: accuracy must be in [0, 1]. CharacterBERT now
+    # supports log-likelihood scoring via word-level logits (see the
+    # character_cnn branch in `_compute_loglikelihood`), so it returns
+    # a real accuracy in [0, 1] — not the 0.0 fallback older docs claim.
     is_lighteval = task_type in {"acva", "alghafa", "culture_arabic_mmlu", "arabic_exam"}
     if is_lighteval and "accuracy" in task_metrics:
         assert 0.0 <= task_metrics["accuracy"] <= 1.0, (
             f"LightEval accuracy must be in [0,1], got {task_metrics['accuracy']}"
         )
-        if tok_type == "character_bert":
-            assert task_metrics["accuracy"] == 0.0, (
-                "CharacterBERT must always report accuracy=0.0 for LightEval tasks"
-            )

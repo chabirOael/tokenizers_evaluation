@@ -4,7 +4,7 @@ from __future__ import annotations
 import math
 import re
 from collections import Counter
-from typing import Dict, List
+from typing import Any, Dict, List, Optional
 
 
 def compute_perplexity(avg_loss: float) -> float:
@@ -43,6 +43,59 @@ def compute_f1(prediction: str, ground_truth: str) -> float:
 def compute_exact_match(prediction: str, ground_truth: str) -> float:
     """Exact match after normalization."""
     return float(normalize_answer(prediction) == normalize_answer(ground_truth))
+
+
+def compute_mei(
+    accuracy: Optional[float],
+    rps: Optional[float],
+    compression: Optional[float],
+    inference_time_sec: Optional[float],
+    is_lighteval_mcq: bool,
+) -> Dict[str, Any]:
+    """Morphological Efficiency Index.
+
+    MEI = (accuracy * RPS * compression) / inference_time_sec
+
+    Asks whether high downstream accuracy is aligned with high root preservation
+    and high compression, *per unit of inference time*. Defined only for the
+    LightEval MCQ task family (acva / alghafa / culture_arabic_mmlu / arabic_exam)
+    where ``accuracy`` is the natural primary metric.
+
+    Args:
+        accuracy: LightEval MCQ accuracy in [0, 1].
+        rps: ``root_conservation_rate`` from the intrinsic morphological metrics.
+        compression: ``compression_ratio`` (avg chars per token) from intrinsic
+            metrics.
+        inference_time_sec: wall-clock seconds for the evaluation pass.
+        is_lighteval_mcq: True iff the active task is a LightEval MCQ benchmark.
+
+    Returns:
+        ``{"mei": float|None, "status": str, "inputs": {...}}``. The ``status``
+        is ``"ok"`` on success, otherwise one of:
+        ``"task_not_mcq"``, ``"missing_accuracy"``, ``"missing_rps"``,
+        ``"missing_compression"``, ``"missing_time"``, ``"zero_time"``.
+    """
+    inputs = {
+        "accuracy": accuracy,
+        "rps": rps,
+        "compression": compression,
+        "inference_time_sec": inference_time_sec,
+    }
+    if not is_lighteval_mcq:
+        return {"mei": None, "status": "task_not_mcq", "inputs": inputs}
+    if accuracy is None:
+        return {"mei": None, "status": "missing_accuracy", "inputs": inputs}
+    if rps is None:
+        return {"mei": None, "status": "missing_rps", "inputs": inputs}
+    if compression is None:
+        return {"mei": None, "status": "missing_compression", "inputs": inputs}
+    if inference_time_sec is None:
+        return {"mei": None, "status": "missing_time", "inputs": inputs}
+    if inference_time_sec <= 0:
+        return {"mei": None, "status": "zero_time", "inputs": inputs}
+
+    mei = (accuracy * rps * compression) / inference_time_sec
+    return {"mei": round(mei, 6), "status": "ok", "inputs": inputs}
 
 
 def aggregate_qa_metrics(

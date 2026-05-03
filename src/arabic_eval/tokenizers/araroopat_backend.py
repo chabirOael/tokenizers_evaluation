@@ -85,7 +85,7 @@ def _norm_clitic(value: Optional[str]) -> Optional[str]:
 # clitic vocab. The original tags are still recorded in
 # ``vocab_metadata.json`` for provenance.
 #
-# This table is duplicated in `araroopat_camel_server.py` (which can't
+# This table is duplicated in `arabic_eval.tools.araroopat_camel_server` (which can't
 # import this module since it runs in a different venv). Keep them in
 # sync if you add tags.
 # ---------------------------------------------------------------------------
@@ -121,6 +121,58 @@ CAMEL_CLITIC_SURFACE: Dict[str, str] = {
     "2d_dobj": "كما", "2d_poss": "كما", "2d_pron": "كما",
     "3d_dobj": "هما", "3d_poss": "هما", "3d_pron": "هما",
 }
+
+
+# ---------------------------------------------------------------------------
+# Tag → bucket assignment (proclitic vs enclitic).
+#
+# CAMeL stacks clitics outer-to-inner as prc3 > prc2 > prc1 > prc0 on the
+# prefix side and enc0 on the suffix side. The bucketing here mirrors the
+# comments in CAMEL_CLITIC_SURFACE above — promoted to code so it can be
+# consumed by the morphological metrics (`clitic_separation_accuracy`).
+#
+# Keep these in sync with CAMEL_CLITIC_SURFACE: every key in the table
+# must appear in exactly one of the two sets.
+# ---------------------------------------------------------------------------
+
+_PROCLITIC_TAGS: frozenset = frozenset({
+    # prc3 — question proclitic
+    "AAA_quest", "Aa_quest",
+    # prc2 — conjunctions and subordinators
+    "wa_conj", "wa_part", "wa_prep", "wa_sub",
+    "fa_conj", "fa_rc", "fa_conn", "fa_sub", "fa_part",
+    # prc1 — prepositions / future / connective
+    "bi_prep", "bi_part", "ka_prep",
+    "li_prep", "li_jus", "li_sub", "sa_fut", "ta_prep",
+    # prc0 — definite article / negation
+    "Al_det", "lA_neg", "mA_neg", "mA_part", "mA_rel", "ma_rel",
+})
+
+_ENCLITIC_TAGS: frozenset = frozenset({
+    "1s_dobj", "1s_poss", "1s_pron",
+    "2ms_dobj", "2ms_poss", "2ms_pron",
+    "2fs_dobj", "2fs_poss", "2fs_pron",
+    "3ms_dobj", "3ms_poss", "3ms_pron",
+    "3fs_dobj", "3fs_poss", "3fs_pron",
+    "1p_dobj", "1p_poss", "1p_pron",
+    "2mp_dobj", "2mp_poss", "2mp_pron",
+    "2fp_dobj", "2fp_poss", "2fp_pron",
+    "3mp_dobj", "3mp_poss", "3mp_pron",
+    "3fp_dobj", "3fp_poss", "3fp_pron",
+    "2d_dobj", "2d_poss", "2d_pron",
+    "3d_dobj", "3d_poss", "3d_pron",
+})
+
+# Surface-form sets derived from the table. `ك` and `ي` deliberately appear
+# in both because the same Arabic surface can be a proclitic (e.g. ka_prep
+# "like") or an enclitic (e.g. 2ms_pron "your"); position disambiguates
+# at metric time.
+PROCLITIC_SURFACES: frozenset = frozenset(
+    CAMEL_CLITIC_SURFACE[t] for t in _PROCLITIC_TAGS
+)
+ENCLITIC_SURFACES: frozenset = frozenset(
+    CAMEL_CLITIC_SURFACE[t] for t in _ENCLITIC_TAGS
+)
 
 
 def clitic_surface(tag: Optional[str]) -> Optional[str]:

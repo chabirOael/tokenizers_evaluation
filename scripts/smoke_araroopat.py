@@ -14,7 +14,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from arabic_eval.tokenizers.araroopat import AraRooPatTokenizer
-from arabic_eval.tokenizers.intrinsic_metrics import compute_intrinsic_metrics
+from arabic_eval.evaluation.intrinsic_metrics import compute_intrinsic_metrics
 
 
 # 200-ish short Arabic sentences covering common verbs, nouns, clitics,

@@ -1,0 +1,17 @@
+experiment:
+  name: "bpe_32k_text_generation"
+  description: "Evaluate BPE 32K tokenizer on text generation perplexity"
+  output_dir: "outputs/experiments/bpe_32k_generation"
+
+tokenizer:
+  type: "bpe"
+  vocab_size: 32000
+  params:
+    min_frequency: 2
+  save_path: "outputs/tokenizers/bpe_32k"
+
+task:
+  type: "text_generation"
+  params:
+    max_length: 512
+    stride: 256

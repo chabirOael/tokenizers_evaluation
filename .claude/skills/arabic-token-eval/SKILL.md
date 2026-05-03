@@ -38,17 +38,19 @@ If a user is choosing between these, the right answer depends on what kind of co
 
 ## Morphological metrics — interpreting and not over-interpreting
 
-Five metrics live in `src/arabic_eval/tokenizers/intrinsic_metrics.py`:
+Five metrics live in `src/arabic_eval/evaluation/intrinsic_metrics.py`:
 
 | Metric | What it measures | Mechanical extremes (flag, don't fix) |
 |---|---|---|
-| `root_conservation_rate` | root letters all inside one token | CharBERT ≈ 1.0 by construction; char-JABER ≈ 0.0 by construction; FarasaCharBERT typically high (~0.75–0.85, observed 0.775 on smoke test) — root usually sits inside a non-split stem morpheme but Farasa over-segmentation occasionally splits it |
-| `pattern_conservation_rate` | stem-span pattern (clitics trimmed) recoverable from one token | CharBERT high; char-JABER 0.0; FarasaCharBERT high (clitics already stripped by Farasa, stem morpheme not further split) |
-| `morpheme_integrity_rate` | Farasa morpheme boundaries that align with token boundaries | MorphoBPE ≈ 1.0 (non-trivial — by design); CharBERT ≈ 0.0; char-JABER ≈ 1.0 (mechanical); FarasaCharBERT ≈ 1.0 (mechanical — each morpheme is exactly one unit, so Farasa boundaries trivially become token boundaries) |
+| `root_conservation_rate` (RPS) | root letters all inside one token | CharBERT high but not 1.0 (qalsadi extracts non-subsequence roots for irregular forms; observed 0.67); char-JABER ≈ 0.0 by construction; FarasaCharBERT typically high (~0.75–0.85, observed 0.775 on smoke test) — root usually sits inside a non-split stem morpheme but Farasa over-segmentation occasionally splits it |
+| `pattern_conservation_rate` (PIS) | stem-span pattern (clitics trimmed) recoverable from one token | CharBERT high; char-JABER 0.0; FarasaCharBERT high (clitics already stripped by Farasa, stem morpheme not further split) |
+| `morpheme_integrity_rate` | Farasa morpheme boundaries that align with token boundaries | MorphoBPE ≈ 1.0 (non-trivial — by design); CharBERT ≈ 0.0; char-JABER ≈ 1.0 (mechanical); FarasaCharBERT ≈ 1.0 (mechanical); Charformer = `None` (byte tokens never reconstruct to Arabic-letter offsets, so alignment fails uniformly — *not measurable*, not 1.0) |
+| `clitic_separation_accuracy` (CSA) | clitic↔stem boundaries that align with token boundaries | char-JABER ≈ 1.0 (every char boundary is a token boundary, mechanical); MorphoBPE ≈ 1.0 (Farasa pre-segments clitics — non-trivial); CharBERT ≈ 0.0 (no internal boundaries); BPE / WordPiece varies — this is the discriminating signal among plain subword tokenizers; Charformer = `None` (alignment-dependent, see above) |
+| `semantic_fragmentation_ratio` (SFR) | raw_tokens / Farasa morphemes — alignment-free | char-JABER ~2.7; Charformer ~5.4 (each Arabic char = 2 bytes); MorphoBPE ~1.0; BPE ~1.1; CharBERT ~0.5 (under-segments — 1 token per multi-morpheme word); SFR ≈ 1.0 = morpheme-aligned grain; >1 over-fragments; <1 under-segments |
 | `root_bearing_token_pct` | % of tokens containing a full root from the sample | char-JABER ≈ 0% mechanical; Charformer ≈ 0% mechanical (one byte cannot hold a 3-letter root, and most Arabic letters span 2 bytes) |
 | `pattern_bearing_token_pct` | % of tokens whose stem span matches a sample pattern | char-JABER ≈ 0% mechanical; Charformer ≈ 0% mechanical |
 
-**Charformer is the most extreme mechanical case for Arabic.** Each token is one *byte*, not one character — and most Arabic letters are 2 bytes in UTF-8. So *every* root-, pattern-, and morpheme-conservation metric is mechanically zero or mechanically one, with no learning signal in the metric itself. That doesn't mean Charformer is bad; it means these metrics tell you nothing about Charformer. Use downstream task scores (LightEval log-likelihood MCQ) to compare it against the others.
+**Charformer is the most extreme mechanical case for Arabic.** Each token is one *byte*, not one character — and most Arabic letters are 2 bytes in UTF-8. Root and pattern conservation are mechanical zeros, bearing-token metrics are mechanical zeros (raw count > 0 but cleaned tokens are empty). Crucially, `morpheme_integrity_rate` and `clitic_separation_accuracy` are reported as **`None`** (not 1.0) — alignment-dependent metrics rely on `aligned_token_offsets` which fails uniformly for byte tokens (they don't reconstruct to Arabic-letter offsets). The discriminator for Charformer is `semantic_fragmentation_ratio`, which IS alignment-free (raw token count / Farasa morpheme count) and runs at ~5.4 — the highest in the panel. Don't try to "fix" the `None` to 1.0; it correctly reflects that the metric is not measurable for this tokenizer family.
 
 **Don't suppress the mechanical extremes.** Reporting `~1.0` for CharBERT on root conservation and `~1.0` for char-JABER / FarasaCharBERT on morpheme integrity is correct and useful — it shows the architectural ceiling. Do flag them in comparison tables (e.g. with an asterisk + footnote) so a reader doesn't conclude char-JABER or FarasaCharBERT is the "best" tokenizer for morphology.
 
@@ -89,12 +91,12 @@ The HF `tokenizers` `ByteLevel` pre-tokenizer (used by our `BPETokenizer`) emits
 - Farasa init takes ~2 s per word for the very first call (subprocess startup) then settles to ~20 words/sec. For a 500-word sample that's ~30 s overhead per experiment — don't be surprised by it on sweeps.
 - `farasapy` warns about "interactive mode" on long lines; benign, but if it gets noisy in sweeps switch `MorphemeSegmenter._ensure()` to `interactive=False`.
 
-### CharacterBERT input is 3D, generation is unsupported
+### CharacterBERT input is 3D, generation is unsupported (but log-likelihood IS supported)
 
 - Input shape: `[batch, seq_len, max_char_len]`. Don't try to feed `input_ids` to a model adapter expecting it; use `char_ids`.
 - `LlamaAdapter.generate()` raises `NotImplementedError` for `CHARACTER_CNN`. QA evaluation falls back to empty predictions. Don't add a generation loop without redesigning the output head — the word-vocab lm_head can't reconstruct OOV words.
-- LightEval log-likelihood scoring is unsupported for `character_cnn`; accuracy is reported as 0.0 on `acva`/`alghafa`/etc. Expected, not a bug.
-- **`farasa_character_bert` inherits all of these limitations** — it shares `embedding_type=character_cnn` so the adapter, collator, generation block, and LightEval limitation apply identically. Output head is morpheme-vocab instead of word-vocab; OOV behavior is generally better (morpheme inventory is smaller than word inventory) but the auto-regressive generation problem is unchanged.
+- LightEval log-likelihood scoring **IS** supported for `character_cnn`. The `character_cnn` branch in `_compute_loglikelihood` (`tasks/lighteval_benchmarks.py:118`) feeds `char_ids` through the CharCNN and scores continuations against the *word-vocabulary* `lm_head`. CharBERT returns a real accuracy in `[0, 1]` — not 0.0. (Older docs and tests claimed 0.0; that was true before this branch was added and is no longer accurate. If you see a comment or test asserting "CharBERT must return accuracy=0.0", it's stale.)
+- **`farasa_character_bert` inherits the same paths** — same `embedding_type=character_cnn`, same adapter, same collator, same `generate()` NotImplementedError, same log-likelihood support. The only difference is that its `lm_head` indexes a *morpheme* vocab instead of a word vocab, so continuation scoring is over morpheme-vocab IDs. Real accuracy in `[0, 1]` on log-likelihood benchmarks.
 
 ### char-JABER sequence length
 
@@ -118,6 +120,17 @@ Things that bite when working with it:
 
 - **Generation isn't supported, and that's fine for the current task suite.** With text_generation and question_answering being phased out, Charformer's coverage is: intrinsic metrics ✓, perplexity (teacher-forced) ✓, LightEval log-likelihood MCQ ✓. No generation path needed.
 
+### Optional eval features: opt-in via signature, not via abstract base
+
+When adding an *optional* per-task evaluation feature (failure-case CSVs, per-example diagnostics, attention dumps, etc.), do **not** widen `BaseTask.evaluate()` in [tasks/base.py](src/arabic_eval/tasks/base.py). Instead:
+
+1. Add the kwarg (e.g. `failure_report_dir: Optional[Path] = None`) to the *concrete* `evaluate()` of the task(s) that support it.
+2. In [pipeline/experiment.py](src/arabic_eval/pipeline/experiment.py), gate the kwarg via `inspect.signature(task.evaluate).parameters` — only pass it when the active task accepts it; log-and-skip otherwise.
+
+Why: the four LightEval MCQ tasks share `LightEvalBenchmarkTask.evaluate`, while QA / text_generation have entirely different evaluation shapes (generation, sliding-window perplexity). Forcing every task to accept (and ignore) the kwarg pollutes signatures and creates pressure to half-implement the feature for tasks where it doesn't make sense. Signature-based gating keeps the abstract contract minimal and lets each family opt in cleanly. Used today for `failure_reports` (LightEval-only); reuse this pattern for any future per-task evaluation switch.
+
+The `failure_reports` CSV: one row per wrong-answer example; per-choice log-likelihoods + an `ll_margin = ll_pred - ll_gold`. The margin is the diagnostic — it separates "model was confidently wrong" from "model was nearly right." When users ask "why is accuracy bad?", the histogram of `ll_margin` answers it more usefully than the raw accuracy number does.
+
 ## Common workflows
 
 ### Adding a new tokenizer (checklist)
@@ -134,7 +147,7 @@ Things that bite when working with it:
 
 ```python
 from arabic_eval.tokenizers.<your_tok> import YourTokenizer
-from arabic_eval.tokenizers.intrinsic_metrics import compute_morphological_metrics
+from arabic_eval.evaluation.intrinsic_metrics import compute_morphological_metrics
 texts = [...] * 10  # ~150–200 short Arabic sentences
 tok = YourTokenizer(); tok.train(texts, vocab_size=500)
 m = compute_morphological_metrics(tok, texts, sample_size=40, use_farasa=True)
@@ -156,6 +169,7 @@ For a fast turnaround experiment (e.g. iterating on training hyperparameters) se
 
 - **"Just split each token character by character to compute root conservation."** No — the metric is *per-token*; that would conflate the metric with the tokenizer's granularity. The right algorithm is `contains_subsequence(token, root)` over each *whole* token, which is what's implemented.
 - **"CharBERT scores 100% on root conservation, so it must be the best Arabic tokenizer."** It hits the architectural ceiling because it doesn't split at all. Use `morpheme_integrity_rate` and downstream task scores to break ties.
+- **"Just widen `BaseTask.evaluate()` to take the new optional eval flag — that's the cleanest way."** No — the LightEval, QA, and text_generation tasks have fundamentally different evaluation shapes; forcing every one to accept (and silently ignore) a new kwarg pollutes signatures and creates pressure to half-implement features where they don't fit. The established pattern is signature-based gating in the pipeline (`inspect.signature(task.evaluate).parameters`). The `failure_reports` flag does this today; new per-task eval flags should follow suit. See §"Optional eval features: opt-in via signature, not via abstract base".
 - **"Add a fallback that returns 0.0 instead of None when Farasa is unavailable."** Don't — `0.0` would be indistinguishable from a real "tokenizer respects no boundaries" result. `None` correctly signals "not measured." (Note: this rule still holds for `morpheme_integrity_rate`. The bearing-token metrics have a *separate* carve-out where `0.0` is the right answer when tokens were generated but cleaned to empty Arabic-letter strings — that's the byte-level mechanical-zero case, see §"Morphological metrics".)
 
 - **"Charformer's GBST is just a tokenizer — go put it in `src/arabic_eval/tokenizers/charformer.py`."** Half right — there is a tokenizer file, but it's a no-op byte encoder. The actual learning is `GBSTEmbedding` in `models/embeddings/charformer_embed.py`. Hyperparameter changes (M, d_s, conv_kernel) flow from the tokenizer YAML's `params` dict through `get_embedding_config()` to the embedding module's constructor; you almost never want to touch the tokenizer file itself.
@@ -166,3 +180,5 @@ For a fast turnaround experiment (e.g. iterating on training hyperparameters) se
 - **"Bump qalsadi to a newer API to avoid the import inside `_ensure_backends`."** The lazy init is intentional — qalsadi loads SQLite databases on construction; eager-importing it slows down every tokenizer-only workflow. Keep it lazy.
 - **"Copy the CharacterBERT class into a new file to add Farasa pre-segmentation."** Don't — `FarasaCharacterBERTTokenizer` shows the right pattern: subclass `CharacterBERTTokenizer`, override `train`/`encode` to apply `segment_with_farasa()` first, then `super()`. Copying the class duplicates ~150 lines (char vocab building, char-id encoding, save/load, special tokens) that have no reason to diverge.
 - **"FarasaCharBERT scores ~1.0 on `morpheme_integrity_rate` so it must beat MorphoBPE on Arabic morphology."** Both score ~1.0 — for FarasaCharBERT it's mechanical (each morpheme is exactly one unit), for MorphoBPE it's by-design but still essentially baked in by the Farasa pre-step. Use `root_conservation_rate` and downstream tasks to break the tie, not integrity.
+- **"CSA and `morpheme_integrity_rate` measure the same thing — drop one."** No: CSA restricts to clitic boundaries (proclitic-end / enclitic-start positions). Integrity covers all Farasa boundaries including stem-internal ones. They satisfy `integrity == 1.0 ⇒ CSA == 1.0` but can disagree in general. Integrity catches stem-internal splits (BPE chopping a root in half); CSA does not. Both are needed.
+- **"Add a `None → 1.0` fallback for Charformer's CSA / integrity since the byte boundaries trivially align."** No: alignment is the protocol for these metrics, and byte tokens don't align to Arabic-letter offsets. Reporting `None` correctly marks the metric as not-measurable for this tokenizer family. SFR is the alignment-free discriminator; that's where Charformer comparisons should land. Forcing 1.0 would falsely suggest Charformer perfectly preserves morpheme/clitic structure when in fact the metric simply can't be computed for it.

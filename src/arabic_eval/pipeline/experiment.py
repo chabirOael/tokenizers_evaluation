@@ -1,15 +1,19 @@
 """End-to-end experiment orchestrator."""
 from __future__ import annotations
 
+import inspect
 import logging
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from arabic_eval.config import ExperimentConfig
 from arabic_eval.data.loader import load_arabic_dataset, extract_texts
 from arabic_eval.evaluation.evaluator import Evaluator
+from arabic_eval.evaluation.metrics import compute_mei
 from arabic_eval.evaluation.reporter import generate_report
 from arabic_eval.registry import model_registry, task_registry, tokenizer_registry
+from arabic_eval.tasks.lighteval_benchmarks import LightEvalBenchmarkTask
 from arabic_eval.training.trainer import Trainer
 from arabic_eval.utils.io import ensure_dir, load_json, save_json
 from arabic_eval.utils.reproducibility import set_seed
@@ -152,12 +156,58 @@ def run_single_experiment(config: ExperimentConfig) -> Dict[str, Any]:
     # ---------------------------------------------------------------
     if config.evaluation.downstream_metrics:
         logger.info("Step 7: Running downstream evaluation...")
-        downstream_metrics = task.evaluate(
-            model, tokenizer,
-            split="test",
-            max_samples=config.evaluation.num_eval_samples,
-        )
+        eval_kwargs: Dict[str, Any] = {
+            "split": "test",
+            "max_samples": config.evaluation.num_eval_samples,
+        }
+        # Pass failure_report_dir only to tasks whose evaluate() accepts it
+        # (currently only the LightEval MCQ benchmarks).
+        if config.evaluation.failure_reports:
+            eval_params = inspect.signature(task.evaluate).parameters
+            if "failure_report_dir" in eval_params:
+                failure_dir = output_dir / "failure_reports"
+                ensure_dir(failure_dir)
+                eval_kwargs["failure_report_dir"] = failure_dir
+            else:
+                logger.info(
+                    "failure_reports=true but task '%s' does not support "
+                    "failure CSV reporting; skipping.", config.task.type,
+                )
+
+        # Warm any lazy tokenizer backends (e.g. araroopat's CAMeL bridge,
+        # Farasa subprocess) before the timer starts. Otherwise subprocess
+        # spawn / DB load gets billed to inference_time on the first call,
+        # unfairly penalizing the affected tokenizers in MEI.
+        try:
+            tokenizer.encode("نص قصير للإحماء")
+        except Exception as e:  # noqa: BLE001
+            logger.warning("Tokenizer warmup failed (non-fatal): %s", e)
+
+        t0 = time.perf_counter()
+        downstream_metrics = task.evaluate(model, tokenizer, **eval_kwargs)
+        inference_time_sec = time.perf_counter() - t0
+        downstream_metrics = dict(downstream_metrics)
+        downstream_metrics["inference_time_sec"] = round(inference_time_sec, 4)
         results["downstream"] = {config.task.type: downstream_metrics}
+        logger.info(
+            "Inference time for task '%s': %.2fs", config.task.type, inference_time_sec
+        )
+
+        # ---------------------------------------------------------------
+        # Step 8: Composite metric — MEI (LightEval MCQ tasks only)
+        # ---------------------------------------------------------------
+        intrinsic_block = results.get("intrinsic", {}) or {}
+        mei_record = compute_mei(
+            accuracy=downstream_metrics.get("accuracy"),
+            rps=intrinsic_block.get("root_conservation_rate"),
+            compression=intrinsic_block.get("compression_ratio"),
+            inference_time_sec=inference_time_sec,
+            is_lighteval_mcq=isinstance(task, LightEvalBenchmarkTask),
+        )
+        results["mei"] = mei_record
+        logger.info(
+            "MEI: %s (status=%s)", mei_record["mei"], mei_record["status"]
+        )
 
     # Save combined results
     save_json(results, output_dir / "all_metrics.json")

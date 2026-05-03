@@ -1,0 +1,165 @@
+# Complete sweep: every tokenizer × every vocab size × every benchmark task.
+#
+# Covers all platform aspects in a single run:
+#   - 5 tokenizer families: BPE, WordPiece, MorphoBPE, CharacterBERT, char-JABER
+#   - 3 vocab sizes for subword tokenizers (16K / 32K / 50K); fixed for char-level
+#   - 4 LightEval benchmark tasks (log-likelihood MCQ scoring):
+#       * acva
+#       * alghafa
+#       * culture_arabic_mmlu
+#       * arabic_exam
+#   - Full intrinsic metric suite, including the Arabic morphological metrics:
+#       * fertility, compression_ratio, unk_rate, vocab_coverage
+#       * root_conservation_rate, pattern_conservation_rate,
+#         morpheme_integrity_rate, root_bearing_token_pct,
+#         pattern_bearing_token_pct
+#
+# Total experiments: 11 tokenizer configs × 4 tasks = 44 runs.
+# Pipeline behavior:
+#   - Each LightEval benchmark fine-tunes on the 10 % SFT split of its own
+#     benchmark dataset and evaluates on the held-out 90 % split.
+#   - Tokenizer training and intrinsic / morphological metrics always use the
+#     main Arabic corpus (Jr23xd23/ArabicText-Large), regardless of which
+#     benchmark task is active.
+#
+# Heads-up:
+#   - MorphoBPE and the morpheme_integrity_rate metric require Java (Farasa).
+#   - CharacterBERT (character_cnn) reports accuracy=0.0 on the four LightEval
+#     benchmarks — log-likelihood scoring is unsupported by the word-level
+#     CharCNN; this is expected and documented in CLAUDE.md.
+#   - Optional dep `pip install -e ".[morphological]"` is recommended to get
+#     proper qalsadi roots (otherwise root extraction falls back to a
+#     consonant-skeleton heuristic; the rest of the metrics still work).
+
+experiment:
+  name: "complete_sweep"
+  description: >
+    All 5 tokenizers × {16K, 32K, 50K} (subword) × 4 LightEval benchmarks
+    (ACVA, Alghafa, Culture-Arabic-MMLU, Arabic-Exam). Reports the full
+    intrinsic + morphological metric suite alongside downstream accuracy.
+  output_dir: "outputs/experiments/complete_sweep"
+  seed: 42
+
+# ---------------------------------------------------------------------------
+# Tokenizer training corpus + held-out eval texts for intrinsic metrics.
+# ---------------------------------------------------------------------------
+data:
+  dataset_name: "Jr23xd23/ArabicText-Large"
+  cache_dir: "outputs/data_cache"
+  train_split: "train"
+  eval_split: "test"
+  max_train_samples: null      # use the full training split
+  max_eval_samples: 5000
+  preprocessing:
+    normalize_unicode: true
+    remove_diacritics: false
+    min_text_length: 10
+
+model:
+  type: "llama"
+  name_or_path: "meta-llama/Llama-3.2-1B"
+  dtype: "bfloat16"
+  device: "auto"
+
+# ---------------------------------------------------------------------------
+# Training settings — tuned for MCQ-style fine-tuning across all 4 benchmarks.
+# Smaller batch + more accumulation keeps OOM in check on long MCQ prompts.
+# ---------------------------------------------------------------------------
+training:
+  num_epochs: 3
+  batch_size: 4
+  gradient_accumulation_steps: 8
+  learning_rate: 2.0e-5
+  weight_decay: 0.01
+  warmup_ratio: 0.1
+  lr_scheduler: "cosine"
+  max_grad_norm: 1.0
+  bf16: true
+  fp16: false
+  save_steps: 500
+  eval_steps: 500
+  logging_steps: 50
+  save_total_limit: 2
+  early_stopping_patience: 3
+  early_stopping_metric: "eval_loss"
+
+# ---------------------------------------------------------------------------
+# Evaluation: full suite, including the Arabic morphological metrics.
+# ---------------------------------------------------------------------------
+evaluation:
+  intrinsic_metrics: true
+  morphological_metrics: true
+  morph_sample_size: 500       # distinct words sampled for root/pattern checks
+  downstream_metrics: true
+  num_eval_samples: null       # use the full 90 % eval split per benchmark
+  generation_max_new_tokens: 128
+  generation_temperature: 1.0
+  generation_do_sample: false
+
+tracking:
+  use_wandb: false
+  wandb_project: "arabic-tokenizer-eval"
+  log_to_file: true
+
+# ---------------------------------------------------------------------------
+# Sweep grid: 5 tokenizer families × 4 LightEval benchmarks.
+# ---------------------------------------------------------------------------
+sweep:
+  tokenizers:
+    - type: "bpe"
+      vocab_sizes: [16000, 32000, 50000]
+      params:
+        min_frequency: 2
+
+    - type: "wordpiece"
+      vocab_sizes: [16000, 32000, 50000]
+      params:
+        min_frequency: 2
+
+    - type: "morpho_bpe"
+      vocab_sizes: [16000, 32000, 50000]
+      params:
+        min_frequency: 2
+
+    - type: "character_bert"
+      vocab_sizes: [null]      # N/A for word-level; word vocab cap below
+      params:
+        max_char_len: 50
+        max_word_vocab: 50000
+
+    - type: "char_jaber"
+      vocab_sizes: [null]      # N/A for character-level
+      params: {}
+
+  tasks:
+    - type: "acva"
+      params:
+        dataset_name: "OALL/ACVA"
+        dataset_config: null
+        train_split_ratio: 0.10
+        max_length: 512
+        seed: 42
+
+    - type: "alghafa"
+      params:
+        dataset_name: "OALL/AlGhafa-Arabic-LLM-Benchmark-Native"
+        dataset_config: null
+        train_split_ratio: 0.10
+        max_length: 512
+        seed: 42
+
+    - type: "culture_arabic_mmlu"
+      params:
+        dataset_name: "OALL/Arabic_MMLU"
+        dataset_config: null
+        train_split_ratio: 0.10
+        max_length: 512
+        seed: 42
+
+    - type: "arabic_exam"
+      params:
+        dataset_name: "MBZUAI/ArabicMMLU"
+        dataset_config: null
+        train_split_ratio: 0.10
+        max_length: 512
+        seed: 42

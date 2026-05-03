@@ -39,7 +39,7 @@ from arabic_eval.tokenizers.araroopat_backend import (
     naive_pattern_fill,
 )
 from arabic_eval.tokenizers.base import BaseTokenizer, EmbeddingType, TokenizerOutput
-from arabic_eval.tokenizers.morphological_utils import (
+from arabic_eval.tokenizers.utils.arabic_text import (
     ARABIC_DIACRITICS,
     ARABIC_LETTERS,
     strip_diacritics,

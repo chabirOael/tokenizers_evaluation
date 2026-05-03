@@ -17,7 +17,11 @@ full LightEval pipeline if needed.
 from __future__ import annotations
 
 import logging
+import zlib
 from abc import abstractmethod
+from collections import defaultdict
+from math import ceil
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
@@ -32,6 +36,7 @@ from arabic_eval.models.base import BaseModelAdapter
 from arabic_eval.registry import task_registry
 from arabic_eval.tasks.base import BaseTask
 from arabic_eval.tokenizers.base import BaseTokenizer, EmbeddingType
+from arabic_eval.utils.io import write_failure_csv
 
 logger = logging.getLogger("arabic_eval.tasks.lighteval_benchmarks")
 
@@ -172,33 +177,80 @@ class LightEvalModelWrapper:
             for ctx, cont in requests
         ]
 
-    def evaluate_mcq(self, examples: List[Dict[str, Any]]) -> Dict[str, float]:
+    def evaluate_mcq(
+        self,
+        examples: List[Dict[str, Any]],
+        collect_failures: bool = False,
+        task: Optional["LightEvalBenchmarkTask"] = None,
+    ) -> Tuple[Dict[str, float], List[Dict[str, Any]]]:
         """
         Run LightEval-style multiple-choice accuracy evaluation.
 
-        For each example: build one ``(context, " Letter")`` pair per choice,
+        For each example: build one ``(context, continuation)`` pair per choice,
         call ``loglikelihood``, predict the argmax, compare to ground truth.
+
+        Continuation building delegates to the active task via
+        ``task._format_eval_context(ex)`` and ``task._build_continuations(ex)``.
+        When ``task`` is ``None`` the wrapper falls back to the legacy
+        Arabic-letter scoring (used by direct callers and by the test suite
+        that exercises this wrapper standalone).
+
+        When ``collect_failures`` is True, also returns a list of failure
+        records (one per wrong-answer example) with per-choice log-likelihoods
+        for downstream CSV reporting. When False, the second tuple element is
+        an empty list. The ``gold_letter`` / ``pred_letter`` fields hold the
+        winning continuation string (without leading space) — for ACVA these
+        are the Arabic words ``صح`` / ``خطأ``; for letter-based benchmarks
+        they remain ``أ`` / ``ب`` / ``ج`` / ``د``.
         """
         correct = 0
         total = 0
+        failures: List[Dict[str, Any]] = []
 
-        for ex in tqdm(examples, desc="LightEval MCQ", unit="example"):
-            context = _format_mcq_context(ex["question"], ex["choices"])
-            # LightEval prefixes continuations with a space to match tokenisation.
-            requests: List[Tuple[str, str]] = [
-                (context, " " + (ARABIC_CHOICE_LETTERS[i] if i < len(ARABIC_CHOICE_LETTERS) else str(i)))
-                for i in range(len(ex["choices"]))
-            ]
+        for idx, ex in enumerate(tqdm(examples, desc="LightEval MCQ", unit="example")):
+            if task is not None:
+                context = task._format_eval_context(ex)
+                continuations = task._build_continuations(ex)
+            else:
+                context = _format_mcq_context(ex["question"], ex["choices"])
+                continuations = [
+                    " " + (ARABIC_CHOICE_LETTERS[i] if i < len(ARABIC_CHOICE_LETTERS) else str(i))
+                    for i in range(len(ex["choices"]))
+                ]
+            requests: List[Tuple[str, str]] = [(context, c) for c in continuations]
             log_likelihoods = self.loglikelihood(requests)
             predicted = int(np.argmax(log_likelihoods))
-            if predicted == ex["answer"]:
+            gold = ex["answer"]
+            if predicted == gold:
                 correct += 1
+            elif collect_failures:
+                # The "letter" column holds the winning continuation string —
+                # for ACVA this is the Arabic word, for letter-based benchmarks
+                # it's still the Arabic letter. Strip the leading space.
+                gold_token = continuations[gold].lstrip()
+                pred_token = continuations[predicted].lstrip()
+                record: Dict[str, Any] = {
+                    "index": idx,
+                    "question": ex["question"],
+                    "gold_idx": gold,
+                    "gold_letter": gold_token,
+                    "pred_idx": predicted,
+                    "pred_letter": pred_token,
+                    "ll_margin": round(
+                        float(log_likelihoods[predicted]) - float(log_likelihoods[gold]), 6
+                    ),
+                }
+                for i, choice in enumerate(ex["choices"]):
+                    record[f"choice_{i}"] = choice
+                    record[f"ll_{i}"] = round(float(log_likelihoods[i]), 6)
+                failures.append(record)
             total += 1
 
-        return {
+        metrics = {
             "accuracy": round(correct / max(total, 1), 4),
             "num_samples": total,
         }
+        return metrics, failures
 
 
 # ---------------------------------------------------------------------------
@@ -320,6 +372,37 @@ class LightEvalBenchmarkTask(BaseTask):
         ...
 
     # ------------------------------------------------------------------
+    # Prompt / continuation hooks (overridable by subclasses)
+    # ------------------------------------------------------------------
+    # The default implementations match LightEval's letter-based MCQ protocol:
+    # the prompt lists choices as "أ. <choice_0>", "ب. <choice_1>", …, ends
+    # with "الإجابة:", and the model is scored on the continuation " أ" / " ب"
+    # / etc. Subclasses (e.g. ``ACVATask``) can override these hooks to score
+    # words instead of letters when single-letter continuations carry too
+    # little signal.
+
+    def _format_eval_context(self, ex: Dict[str, Any]) -> str:
+        """Context string fed to the model at eval time (everything before
+        the continuation). Default: standard MCQ prompt with letter-labelled
+        choices."""
+        return _format_mcq_context(ex["question"], ex["choices"])
+
+    def _build_continuations(self, ex: Dict[str, Any]) -> List[str]:
+        """Continuation strings (one per choice, in answer-index order). Each
+        starts with a leading space to match LightEval's tokenisation
+        convention. Default: Arabic letters " أ", " ب", " ج", " د", …"""
+        n = len(ex["choices"])
+        return [
+            " " + (ARABIC_CHOICE_LETTERS[i] if i < len(ARABIC_CHOICE_LETTERS) else str(i))
+            for i in range(n)
+        ]
+
+    def _format_sft_text(self, ex: Dict[str, Any]) -> str:
+        """Full text used for supervised fine-tuning (context + correct
+        continuation). Default: ``_format_mcq_full`` (letter-based)."""
+        return _format_mcq_full(ex["question"], ex["choices"], ex["answer"])
+
+    # ------------------------------------------------------------------
     # Data loading and splitting
     # ------------------------------------------------------------------
 
@@ -354,7 +437,14 @@ class LightEvalBenchmarkTask(BaseTask):
         # Merge all predefined splits so the 10/90 split is our own, not the
         # dataset author's, preventing unintentional data leakage.
         combined = concatenate_datasets(list(raw_ds.values()))
-        return self._parse_combined(combined, context=f"{self.dataset_name} (config={self.dataset_config!r})")
+        # Single-config case: use a sentinel group name. Stratified split in
+        # _get_splits then degenerates to one group → behaviour matches the
+        # pre-stratification code-path modulo the floor→ceil rounding change.
+        return self._parse_combined(
+            combined,
+            context=f"{self.dataset_name} (config={self.dataset_config!r})",
+            source_config=self.dataset_config or "_default",
+        )
 
     def _load_all_configs_merged(self) -> List[Dict[str, Any]]:
         """Enumerate every sub-config of a multi-config dataset and merge examples.
@@ -384,7 +474,14 @@ class LightEvalBenchmarkTask(BaseTask):
                 raw_ds = load_dataset(self.dataset_name, config_name, cache_dir=self.cache_dir)
                 combined = concatenate_datasets(list(raw_ds.values()))
                 n_before = len(all_examples)
-                all_examples.extend(self._parse_combined(combined, context=config_name, quiet=True))
+                all_examples.extend(
+                    self._parse_combined(
+                        combined,
+                        context=config_name,
+                        source_config=config_name,
+                        quiet=True,
+                    )
+                )
                 logger.debug("Config '%s': +%d examples", config_name, len(all_examples) - n_before)
             except Exception as exc:
                 logger.warning("Skipping config '%s' of '%s': %s", config_name, self.dataset_name, exc)
@@ -414,13 +511,22 @@ class LightEvalBenchmarkTask(BaseTask):
         self,
         combined,
         context: str = "",
+        source_config: str = "_default",
         quiet: bool = False,
     ) -> List[Dict[str, Any]]:
-        """Parse a concatenated dataset into validated MCQ dicts."""
+        """Parse a concatenated dataset into validated MCQ dicts.
+
+        Each parsed dict is stamped with a private ``_source_config`` key
+        recording the originating sub-config name, used by
+        ``_get_splits`` to stratify the 10/90 partition so every sub-config
+        is represented in the SFT split. Single-config datasets use the
+        sentinel ``"_default"``.
+        """
         examples: List[Dict[str, Any]] = []
         for raw in combined:
             parsed = self._parse_example(dict(raw))
             if parsed is not None:
+                parsed["_source_config"] = source_config
                 examples.append(parsed)
 
         if not examples and not quiet:
@@ -434,21 +540,72 @@ class LightEvalBenchmarkTask(BaseTask):
         return examples
 
     def _get_splits(self) -> Tuple[List[Dict], List[Dict]]:
-        """Return ``(finetune_10pct, eval_90pct)``, memoised per instance."""
+        """Return ``(finetune_split, eval_split)`` with stratified sub-config
+        coverage, memoised per instance.
+
+        For multi-config benchmarks (ACVA's 58 cultural topics, Alghafa's
+        sub-tasks, Arabic_Exam's school subjects), random global sampling can
+        leave entire sub-configs unrepresented in the small SFT split. This
+        method instead splits **within each sub-config** using a per-group
+        seed derived from ``self.seed`` and a CRC32 hash of the config name,
+        guaranteeing ≥ 1 SFT example per sub-config while staying fully
+        deterministic.
+
+        Single-config datasets degenerate to one ``_default`` group →
+        behaviour matches the unstratified code-path modulo the floor→ceil
+        rounding change for tiny groups.
+
+        Note: the rounding change (``int`` → ``max(1, ceil(...))``) shifts
+        the SFT total up by ~one example per sub-config compared to the
+        pre-stratification implementation. This is the fix that guarantees
+        coverage; comparison-table consumers should be aware that historic
+        run totals will not match exactly.
+        """
         if self._cached_splits is None:
             all_examples = self._load_all_examples()
-            rng = np.random.default_rng(self.seed)
-            indices = rng.permutation(len(all_examples))
-            n_train = max(1, int(len(all_examples) * self.train_split_ratio))
-            train_ex = [all_examples[i] for i in indices[:n_train]]
-            eval_ex = [all_examples[i] for i in indices[n_train:]]
+
+            groups: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+            for ex in all_examples:
+                groups[ex.get("_source_config", "_default")].append(ex)
+
+            train_ex: List[Dict[str, Any]] = []
+            eval_ex: List[Dict[str, Any]] = []
+            per_config_log: List[Tuple[str, int, int]] = []
+
+            for config_name in sorted(groups.keys()):
+                group = groups[config_name]
+                # Per-config seed: deterministic, depends on master seed and
+                # config name (so renaming the user-set seed shifts every
+                # group consistently, while different configs get distinct
+                # permutations within a single run).
+                grp_seed = (self.seed + zlib.crc32(config_name.encode("utf-8"))) & 0x7FFFFFFF
+                rng = np.random.default_rng(grp_seed)
+                perm = rng.permutation(len(group))
+                # ceil + max(1, ...) so even a 1-row group lands in SFT.
+                n_train = max(1, ceil(len(group) * self.train_split_ratio))
+                n_train = min(n_train, len(group))  # never empty the eval side trivially
+                train_ex.extend(group[i] for i in perm[:n_train])
+                eval_ex.extend(group[i] for i in perm[n_train:])
+                per_config_log.append((config_name, n_train, len(group) - n_train))
+
+            # Final shuffle so the SFT and eval streams aren't ordered by
+            # config (matters for fine-tuning batches drawn without
+            # additional shuffling).
+            master_rng = np.random.default_rng(self.seed)
+            master_rng.shuffle(train_ex)
+            master_rng.shuffle(eval_ex)
+
             self._cached_splits = (train_ex, eval_ex)
             logger.info(
-                "%s split: %d SFT (%.0f%%) | %d eval (%.0f%%)",
-                self.name,
+                "%s split (stratified across %d sub-config(s)): %d SFT (%.0f%%) | %d eval (%.0f%%)",
+                self.name, len(per_config_log),
                 len(train_ex), self.train_split_ratio * 100,
                 len(eval_ex), (1 - self.train_split_ratio) * 100,
             )
+            # DEBUG-level per-config breakdown — handy when investigating
+            # coverage but too noisy at INFO for 58 ACVA configs.
+            for cfg, ntr, nev in per_config_log:
+                logger.debug("  [%s] SFT=%d eval=%d", cfg, ntr, nev)
         return self._cached_splits
 
     def get_fine_tune_examples(self) -> List[Dict[str, Any]]:
@@ -482,10 +639,10 @@ class LightEvalBenchmarkTask(BaseTask):
         if max_samples:
             examples = examples[:max_samples]
 
-        texts = [
-            _format_mcq_full(ex["question"], ex["choices"], ex["answer"])
-            for ex in examples
-        ]
+        # SFT text formatting is delegated to the task so subclasses can
+        # train on word-based continuations (ACVA) without overriding the
+        # whole dataloader path.
+        texts = [self._format_sft_text(ex) for ex in examples]
 
         encodings: List[Dict[str, Any]] = []
         for text in tqdm(texts, desc=f"Tokenising {self.name}", unit="ex", leave=False):
@@ -514,6 +671,7 @@ class LightEvalBenchmarkTask(BaseTask):
         tokenizer: BaseTokenizer,
         split: str = "test",
         max_samples: Optional[int] = None,
+        failure_report_dir: Optional[Path] = None,
     ) -> Dict[str, float]:
         """
         Evaluate on the **90 % held-out split** using LightEval's log-likelihood
@@ -521,6 +679,12 @@ class LightEvalBenchmarkTask(BaseTask):
 
         CharacterBERT (``character_cnn``) is scored using word-level logits;
         the continuation word IDs from the word vocabulary are used directly.
+
+        If ``failure_report_dir`` is given, a ``<task_name>_accuracy_failures.csv``
+        is written there containing one row per wrong-answer example with the
+        question, choices, gold/pred letters, per-choice log-likelihoods, and
+        the ``ll_margin = ll_pred - ll_gold`` (positive = model preferred wrong
+        over right).
         """
         if not LIGHTEVAL_AVAILABLE:
             logger.warning(
@@ -537,8 +701,29 @@ class LightEvalBenchmarkTask(BaseTask):
         )
         model.model.eval()
         wrapper = LightEvalModelWrapper(model, tokenizer, max_length=self.max_length)
-        metrics = wrapper.evaluate_mcq(examples)
+        collect = failure_report_dir is not None
+        # Pass `self` so the wrapper uses this task's prompt/continuation
+        # hooks (ACVA scores صح/خطأ; the rest score letters).
+        metrics, failures = wrapper.evaluate_mcq(
+            examples, collect_failures=collect, task=self
+        )
         logger.info("%s metrics: %s", self.name, metrics)
+
+        if collect:
+            max_choices = max((len(ex["choices"]) for ex in examples), default=0)
+            fieldnames: List[str] = [
+                "index", "question",
+                *[f"choice_{i}" for i in range(max_choices)],
+                "gold_idx", "gold_letter", "pred_idx", "pred_letter",
+                *[f"ll_{i}" for i in range(max_choices)],
+                "ll_margin",
+            ]
+            csv_path = Path(failure_report_dir) / f"{self.name}_accuracy_failures.csv"
+            n_written = write_failure_csv(csv_path, failures, fieldnames)
+            logger.info(
+                "%s: wrote %d failure rows to %s", self.name, n_written, csv_path
+            )
+
         return metrics
 
     @property
@@ -556,7 +741,24 @@ class ACVATask(LightEvalBenchmarkTask):
 
     Schema: id, question, answer — where answer is "صح" (True) or "خطأ" (False).
     This is a True/False dataset; choices are presented as ["صح", "خطأ"].
+
+    ACVA-specific scoring: instead of LightEval's standard letter-based
+    multiple-choice scoring (where the model is asked to emit " أ" or " ب"),
+    ACVA scores the continuation strings ``" صح"`` / ``" خطأ"`` directly.
+    Single-letter continuations carry almost no signal — every Arabic letter
+    has roughly the same unigram prior, so the choice is dominated by noise.
+    Scoring the actual T/F words gives the model lexically meaningful
+    options. SFT formatting matches: training examples end with the full
+    word, not a letter.
     """
+
+    # Single source of truth for the dataset's True/False label strings.
+    # Used by `_parse_example` (matching incoming raw rows), by
+    # `_build_continuations` (eval-time scoring), and by `_format_sft_text`
+    # (training-time supervision). To switch to e.g. صحيح/خاطئ, change here only.
+    LABEL_TRUE = "صح"
+    LABEL_FALSE = "خطأ"
+    LABELS = (LABEL_TRUE, LABEL_FALSE)  # index 0 = TRUE, 1 = FALSE
 
     def _default_dataset_name(self) -> str:
         return "OALL/ACVA"
@@ -566,14 +768,35 @@ class ACVATask(LightEvalBenchmarkTask):
         if not question:
             return None
         answer = str(raw.get("answer", "")).strip()
-        choices = ["صح", "خطأ"]
-        if answer == "صح":
+        if answer == self.LABEL_TRUE:
             answer_idx = 0
-        elif answer == "خطأ":
+        elif answer == self.LABEL_FALSE:
             answer_idx = 1
         else:
             return None
-        return {"question": question, "choices": choices, "answer": answer_idx}
+        return {
+            "question": question,
+            "choices": list(self.LABELS),
+            "answer": answer_idx,
+        }
+
+    # ---- ACVA-specific prompt / continuation hooks ----
+
+    def _format_eval_context(self, ex: Dict[str, Any]) -> str:
+        # ACVA is True/False — no need to display "أ. صح / ب. خطأ" choice
+        # lines because the answer is the word itself, not a letter.
+        return f"السؤال: {ex['question']}\nالإجابة:"
+
+    def _build_continuations(self, ex: Dict[str, Any]) -> List[str]:
+        # Score the words themselves, in the same index order as `choices`
+        # (so argmax over log-likelihoods → answer index, unchanged).
+        return [f" {label}" for label in self.LABELS]
+
+    def _format_sft_text(self, ex: Dict[str, Any]) -> str:
+        # SFT supervision must match eval scoring: train on the word, not
+        # the letter, otherwise the model never sees " صح"/" خطأ" during
+        # fine-tuning.
+        return f"{self._format_eval_context(ex)} {self.LABELS[ex['answer']]}"
 
     @property
     def name(self) -> str:

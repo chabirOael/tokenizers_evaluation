@@ -1,7 +1,7 @@
 """Subprocess bridge to the CAMeL Tools server.
 
-Runs in the main `.venv`. Spawns `araroopat_camel_server.py` inside
-`.venv-camel` (which has `camel-tools` installed) and exchanges NDJSON
+Runs in the main `.venv`. Spawns `arabic_eval.tools.araroopat_camel_server`
+inside `.venv-camel` (which has `camel-tools` installed) and exchanges NDJSON
 over stdin/stdout. Single-threaded use only — one outstanding request
 at a time, correlated by integer id.
 
@@ -85,7 +85,7 @@ def _resolve_camel_python() -> Path:
 
 # Module path passed to `python -m`. Importable from .venv-camel as long
 # as the repo's `src/` is on its PYTHONPATH (we set it explicitly).
-_SERVER_MODULE = "arabic_eval.tokenizers.araroopat_camel_server"
+_SERVER_MODULE = "arabic_eval.tools.araroopat_camel_server"
 
 # Default per-request read timeout. Generation calls were previously
 # bounded by `generator_timeout_ms` (default 50ms) on a per-call basis.
@@ -101,7 +101,7 @@ _BANNER_ID = 0
 
 
 class CamelBridge:
-    """Single-threaded NDJSON client for `araroopat_camel_server.py`.
+    """Single-threaded NDJSON client for `arabic_eval.tools.araroopat_camel_server`.
 
     Use one instance per process. Methods are not safe to call from
     multiple threads concurrently (no request-id locking).

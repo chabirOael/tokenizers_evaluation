@@ -79,6 +79,7 @@ class EvaluationConfig(BaseModel):
     generation_max_new_tokens: int = 128
     generation_temperature: float = 1.0
     generation_do_sample: bool = False
+    failure_reports: bool = False  # If true, write per-task CSVs of failing eval cases
 
 
 class TrackingConfig(BaseModel):

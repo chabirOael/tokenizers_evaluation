@@ -13,7 +13,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from arabic_eval.tokenizers.farasa_character_bert import FarasaCharacterBERTTokenizer
-from arabic_eval.tokenizers.intrinsic_metrics import compute_morphological_metrics
+from arabic_eval.evaluation.intrinsic_metrics import compute_morphological_metrics
 
 
 SEED_TEXTS = [
