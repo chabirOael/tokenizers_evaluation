@@ -116,7 +116,14 @@ tokenizers_evaluation/
 │   │   ├── base.py
 │   │   ├── text_generation.py
 │   │   ├── question_answering.py
-│   │   └── lighteval_benchmarks.py
+│   │   └── lighteval/             ← LightEval MCQ benchmark package
+│   │       ├── __init__.py        ← auto-imports the 4 dataset modules
+│   │       ├── base.py            ← abstract LightEvalBenchmarkTask + scoring infra
+│   │       ├── utils.py           ← opt-in helpers (prompt formatters, loader, …)
+│   │       ├── acva.py
+│   │       ├── alghafa.py
+│   │       ├── culture_arabic_mmlu.py
+│   │       └── arabic_exam.py
 │   │
 │   ├── training/
 │   │   ├── trainer.py             ← fine-tuning loop

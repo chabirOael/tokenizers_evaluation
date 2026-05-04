@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import copy
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 import yaml
 from pydantic import BaseModel, Field
@@ -51,6 +51,18 @@ class TaskConfig(BaseModel):
     })
 
 
+class FineTuningConfig(BaseModel):
+    """Master switches for the fine-tuning step.
+
+    Hyperparameters that govern *how* fine-tuning runs (lr, batch_size, etc.)
+    stay at the top level of TrainingConfig; this sub-section holds the
+    on/off-style flags. ``enabled`` defaults to True so every existing config
+    keeps fine-tuning by default; set ``training.ft.enabled: false`` in YAML
+    to skip step 6 and evaluate the pretrained model directly.
+    """
+    enabled: bool = True
+
+
 class TrainingConfig(BaseModel):
     num_epochs: int = 3
     batch_size: int = 8
@@ -68,6 +80,8 @@ class TrainingConfig(BaseModel):
     save_total_limit: int = 2
     early_stopping_patience: Optional[int] = 3
     early_stopping_metric: str = "eval_loss"
+    completion_only_loss: bool = False
+    ft: FineTuningConfig = Field(default_factory=FineTuningConfig)
 
 
 class EvaluationConfig(BaseModel):
@@ -80,6 +94,13 @@ class EvaluationConfig(BaseModel):
     generation_temperature: float = 1.0
     generation_do_sample: bool = False
     failure_reports: bool = False  # If true, write per-task CSVs of failing eval cases
+    # LightEval MCQ scoring normalization. ``"char"`` (default) is the
+    # existing per-character-length normalization; ``"pmi"`` subtracts the
+    # unconditioned per-continuation log-likelihood (LightEval's
+    # ``LogProbPMINorm``) which corrects for letter / answer-text priors;
+    # ``"char+pmi"`` reports both. Default stays ``"char"`` so existing
+    # run JSONs remain reproducible — opt in per-experiment YAML.
+    score_normalization: Literal["char", "pmi", "char+pmi"] = "char"
 
 
 class TrackingConfig(BaseModel):

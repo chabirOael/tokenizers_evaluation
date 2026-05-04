@@ -257,14 +257,16 @@ Forget any of the three and offsets drift by 1+ chars per diacritic, integrity a
 Any composite metric that *multiplies* one of these morphological metrics inherits its mechanical-extreme problem. The current example is **MEI** (`compute_mei` in [src/arabic_eval/evaluation/metrics.py](src/arabic_eval/evaluation/metrics.py)):
 
 ```
-MEI = (accuracy × RPS × compression) / inference_time_sec
+MEI = (accuracy × RPS × compression × num_eval_rows) / inference_time_sec
+    = (accuracy × RPS × compression) / (inference_time_sec / num_eval_rows)
 ```
 
 A few facts about MEI that are load-bearing for any future composite in this family:
 
+- **Per-row time normalization.** The `num_eval_rows` factor (= `downstream[<task>].num_samples`) makes MEI comparable across LightEval MCQ tasks that differ in eval-set size — e.g. ACVA (~7.3K rows) vs Alghafa (~18.6K rows). Without it, the time term scales with dataset size and depresses MEI on bigger benchmarks for reasons unrelated to per-example efficiency. Within a task all tokenizers share the same row count, so the factor is a constant scale and rankings stay invariant; across tasks it removes the size contamination. Time is normalized **per-row, not per-token**, on purpose: `compression` already captures sequence-length differences in the numerator, so dividing by per-token time would double-count length.
 - **Scope guard is by class, not name.** `compute_mei` takes `is_lighteval_mcq: bool`; the pipeline computes that with `isinstance(task, LightEvalBenchmarkTask)` rather than a hardcoded set of registry keys. This stays correct as new LightEval benchmarks are added (the `arabic-token-eval` skill documents that as a supported extension path).
 - **The mechanical-flag inventory has one home.** `RPS_MECHANICAL_FLAGS` in `src/arabic_eval/evaluation/reporter.py` is the canonical list of tokenizers whose RPS is mechanically forced. The reporter footnotes them in the MEI table. **Do not redefine this inventory** in a new file when you add another composite — import from `reporter` or refactor the constant up to a shared module.
-- **Self-describing record shape.** MEI returns `{"mei": float|None, "status": str, "inputs": {accuracy, rps, compression, inference_time_sec}}` with typed status codes (`ok`, `task_not_mcq`, `missing_<input>`, `zero_time`). The saved JSON is readable without re-running. Reuse this shape for any future composite — see `tests/test_mei.py` for the corner cases (real-zero is `status=ok`, missing-inputs are typed).
+- **Self-describing record shape.** MEI returns `{"mei": float|None, "status": str, "inputs": {accuracy, rps, compression, inference_time_sec, num_eval_rows}}` with typed status codes (`ok`, `task_not_mcq`, `missing_<input>`, `zero_time`, `zero_rows`). The saved JSON is readable without re-running, and `scripts/recompute_mei.py` exploits the echoed inputs to migrate archived MEI numbers in-place when the formula changes. Reuse this shape for any future composite — see `tests/test_mei.py` for the corner cases (real-zero is `status=ok`, missing-inputs are typed).
 - **Tokenizer warmup before the inference timer.** The pipeline runs one throwaway `tokenizer.encode("نص قصير للإحماء")` before `time.perf_counter()` so AraRooPat's CAMeL bridge spawn (~1–2 s) and Farasa Java subprocess startup don't get billed to MEI's denominator. **If you write a new composite that uses inference time, copy this pattern**, not just the timing line — without warmup, the rate metric is systematically unfair to morphology-aware tokenizers.
 
 ### What MEI predicts across the seven tokenizers
@@ -286,6 +288,7 @@ The MEI sweep report flags AraRooPat / CharBERT / char-JABER / Charformer with a
 
 The instinct is to reuse RPS straight. Push back if the proposal:
 - Skips the warmup step (will produce systematically unfair numbers for AraRooPat).
+- Uses raw wall-clock time without dividing by row count (depresses scores on larger eval sets for reasons unrelated to the tokenizer; per-row normalization is the standard).
 - Hardcodes a tokenizer-name allowlist instead of using `isinstance(task, LightEvalBenchmarkTask)` (will silently miss new benchmarks).
 - Returns a bare float-or-None (loses the "why is this None?" debugging signal).
 - Redefines `RPS_MECHANICAL_FLAGS` instead of importing it (drift between two reports is inevitable).

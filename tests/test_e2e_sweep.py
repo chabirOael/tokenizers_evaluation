@@ -116,8 +116,10 @@ SAMPLE_ACVA_DATA: Dict[str, List] = {
     "answer": ["صح", "خطأ", "صح", "خطأ", "صح", "خطأ", "صح", "خطأ"],
 }
 
-# AlGhafa: query + sol1..sol4 + label (1-indexed string).
-# Matches `AlghafaTask._parse_example`.
+# AlGhafa: query + sol1..sol5 + label (0-indexed string, matches the
+# OALL/AlGhafa-Native dataset and LightEval's reference adapter).
+# Matches `AlghafaTask._parse_example`. Last row exercises the sol5 path
+# used by the two grounded-statement sub-configs (label="4" → fifth option).
 SAMPLE_ALGHAFA_DATA: Dict[str, List] = {
     "query": [
         "ما هي عاصمة الجزائر؟",
@@ -133,7 +135,8 @@ SAMPLE_ALGHAFA_DATA: Dict[str, List] = {
     "sol2": ["وهران", "سبعة", "أحمر", "أفريقيا", "الإسكندرية", "اثنا عشر", "الأمازون", "محمد"],
     "sol3": ["قسنطينة", "ستة", "أخضر", "أوروبا", "أسوان", "ثمانية", "المسيسيبي", "جبريل"],
     "sol4": ["عنابة", "ثمانية", "أصفر", "أمريكا", "الجيزة", "خمسة عشر", "اليانغتسي", "موسى"],
-    "label": ["1", "2", "1", "1", "1", "2", "1", "2"],
+    "sol5": [None, None, None, None, None, None, None, "إبراهيم"],
+    "label": ["0", "1", "0", "0", "0", "1", "0", "1"],
 }
 
 # ArabicExam (MBZUAI/ArabicMMLU): Question + Option 1..4 + Answer Key (letter).
@@ -363,7 +366,7 @@ def _mock_load_dataset_factory():
 
     # Build all benchmark datasets once. Single-split DatasetDict avoids
     # duplicating questions when concatenate_datasets is called across
-    # splits in LightEvalBenchmarkTask._load_all_examples().
+    # splits in LightEvalBenchmarkTask.load_examples().
     bench_ds = {n: build() for n, build in _BENCHMARK_BUILDERS.items()}
     bench_dd = {n: DatasetDict({"train": ds}) for n, ds in bench_ds.items()}
 
@@ -459,7 +462,7 @@ def patched_env():
         patch("arabic_eval.data.loader.load_dataset",                        side_effect=mock_ds),
         patch("arabic_eval.tasks.text_generation.load_dataset",              side_effect=mock_ds),
         patch("arabic_eval.tasks.question_answering.load_dataset",           side_effect=mock_ds),
-        patch("arabic_eval.tasks.lighteval_benchmarks.load_dataset",         side_effect=mock_ds),
+        patch("arabic_eval.tasks.lighteval.utils.load_dataset",         side_effect=mock_ds),
         patch(
             "arabic_eval.tokenizers.morpho_bpe._get_farasa_segmenter",
             return_value=fake_segmenter,
@@ -807,13 +810,15 @@ class TestLightEvalBenchmarks:
             1,
             2,
         ),
-        # AlGhafa: query + sol1..sol4 + label (1-indexed string). label="2" → idx 1.
+        # AlGhafa: query + sol1..sol5 + label (0-indexed string, matches
+        # OALL/AlGhafa-Native and LightEval's reference adapter). label="0"
+        # → idx 0 → sol1 = "الجزائر" (the correct answer).
         (
             "alghafa",
             {
                 "query": "ما هي عاصمة الجزائر؟",
                 "sol1": "الجزائر", "sol2": "وهران", "sol3": "قسنطينة", "sol4": "عنابة",
-                "label": "1",
+                "label": "0",
             },
             "ما هي عاصمة الجزائر؟",
             0,
@@ -850,7 +855,7 @@ class TestLightEvalBenchmarks:
     ):
         """Each task's _parse_example must accept its own native schema.
 
-        ACVA = T/F (صح/خطأ); Alghafa = query+sol1..4+label;
+        ACVA = T/F (صح/خطأ); Alghafa = query+sol1..5+label (0-indexed);
         CultureArabicMMLU = ABCD via _parse_mcq_generic;
         ArabicExam = "Question"+"Option N"+"Answer Key".
         """
@@ -870,7 +875,7 @@ class TestLightEvalBenchmarks:
         delegates to the generic parser. ACVA / Alghafa / ArabicExam each
         accept only their own native schema by design.
         """
-        from arabic_eval.tasks.lighteval_benchmarks import CultureArabicMMLUTask
+        from arabic_eval.tasks.lighteval.culture_arabic_mmlu import CultureArabicMMLUTask
         task = CultureArabicMMLUTask({})
         raw = {
             "question": "كم عدد الأيام في الأسبوع؟",
@@ -884,7 +889,7 @@ class TestLightEvalBenchmarks:
 
     def test_parse_example_returns_none_for_invalid(self, patched_env):
         """_parse_example must return None for malformed rows (no choices)."""
-        from arabic_eval.tasks.lighteval_benchmarks import ACVATask
+        from arabic_eval.tasks.lighteval.acva import ACVATask
         task = ACVATask({"dataset_name": "OALL/ACVA"})
         assert task._parse_example({"question": "سؤال بدون خيارات"}) is None
         assert task._parse_example({}) is None
@@ -981,7 +986,7 @@ class TestLightEvalBenchmarks:
 
     def test_loglikelihood_returns_one_float_per_request(self, patched_env):
         """LightEvalModelWrapper.loglikelihood must return exactly one float per pair."""
-        from arabic_eval.tasks.lighteval_benchmarks import LightEvalModelWrapper
+        from arabic_eval.tasks.lighteval.base import LightEvalModelWrapper
         adapter, tok = self._make_adapted_adapter()
         wrapper = LightEvalModelWrapper(adapter, tok, max_length=32)
         requests = [
@@ -995,7 +1000,7 @@ class TestLightEvalBenchmarks:
 
     def test_loglikelihood_scores_are_finite(self, patched_env):
         """Log-likelihoods must be finite (not NaN or ±inf)."""
-        from arabic_eval.tasks.lighteval_benchmarks import LightEvalModelWrapper
+        from arabic_eval.tasks.lighteval.base import LightEvalModelWrapper
         adapter, tok = self._make_adapted_adapter()
         wrapper = LightEvalModelWrapper(adapter, tok, max_length=32)
         scores = wrapper.loglikelihood([
@@ -1007,7 +1012,7 @@ class TestLightEvalBenchmarks:
 
     def test_evaluate_mcq_returns_correct_keys(self, patched_env):
         """evaluate_mcq must return both 'accuracy' and 'num_samples'."""
-        from arabic_eval.tasks.lighteval_benchmarks import LightEvalModelWrapper
+        from arabic_eval.tasks.lighteval.base import LightEvalModelWrapper
         adapter, tok = self._make_adapted_adapter()
         wrapper = LightEvalModelWrapper(adapter, tok, max_length=32)
         examples = [
@@ -1024,9 +1029,10 @@ class TestLightEvalBenchmarks:
     # --- Multi-config dataset fallback ---
 
     def test_multi_config_fallback_loads_all_sub_configs(self, patched_env):
-        """When load_dataset raises 'Config name is missing', _load_all_configs_merged
-        must enumerate sub-configs and merge their examples."""
-        from arabic_eval.tasks.lighteval_benchmarks import ACVATask
+        """When load_dataset raises 'Config name is missing', the multi-config
+        code path in load_huggingface_mcq must enumerate sub-configs and merge
+        their examples."""
+        from arabic_eval.tasks.lighteval.acva import ACVATask
 
         # ACVA's parser accepts the T/F schema only; use the matching fixture.
         acva_ds = _make_acva_dataset()
@@ -1043,11 +1049,11 @@ class TestLightEvalBenchmarks:
             return ["cfg_a", "cfg_b"]
 
         with (
-            patch("arabic_eval.tasks.lighteval_benchmarks.load_dataset", side_effect=_load_requiring_config),
-            patch("arabic_eval.tasks.lighteval_benchmarks.get_dataset_config_names", side_effect=_config_names),
+            patch("arabic_eval.tasks.lighteval.utils.load_dataset", side_effect=_load_requiring_config),
+            patch("arabic_eval.tasks.lighteval.utils.get_dataset_config_names", side_effect=_config_names),
         ):
             task = ACVATask({"dataset_name": "OALL/ACVA", "train_split_ratio": 0.50})
-            examples = task._load_all_examples()
+            examples = task.load_examples()
 
         # 2 configs × 8 rows each = 16 examples total
         assert len(examples) == 2 * len(SAMPLE_ACVA_DATA["question"]), (
@@ -1056,7 +1062,7 @@ class TestLightEvalBenchmarks:
 
     def test_multi_config_skips_broken_sub_configs(self, patched_env):
         """Broken sub-configs must be skipped with a warning, not raise."""
-        from arabic_eval.tasks.lighteval_benchmarks import ACVATask
+        from arabic_eval.tasks.lighteval.acva import ACVATask
 
         acva_ds = _make_acva_dataset()
 
@@ -1072,11 +1078,11 @@ class TestLightEvalBenchmarks:
             return ["good", "broken"]
 
         with (
-            patch("arabic_eval.tasks.lighteval_benchmarks.load_dataset", side_effect=_load_requiring_config),
-            patch("arabic_eval.tasks.lighteval_benchmarks.get_dataset_config_names", side_effect=_config_names),
+            patch("arabic_eval.tasks.lighteval.utils.load_dataset", side_effect=_load_requiring_config),
+            patch("arabic_eval.tasks.lighteval.utils.get_dataset_config_names", side_effect=_config_names),
         ):
             task = ACVATask({"dataset_name": "OALL/ACVA"})
-            examples = task._load_all_examples()
+            examples = task.load_examples()
 
         # Only the "good" config's examples should be present
         assert len(examples) == len(SAMPLE_ACVA_DATA["question"])
@@ -1099,7 +1105,7 @@ class TestLightEvalBenchmarks:
             "max_length": 32,
             "seed": 0,
         })
-        all_ex = task._load_all_examples()
+        all_ex = task.load_examples()
         assert len(all_ex) > 0, f"{task_type}: no examples loaded from mock dataset"
         for ex in all_ex:
             assert "question" in ex and "choices" in ex and "answer" in ex
@@ -1110,7 +1116,7 @@ class TestLightEvalBenchmarks:
         """ACVATask.LABELS is the single source of truth for the T/F label
         strings. Parser, eval continuations, and SFT supervision all read
         from this tuple — changing it (e.g. to صحيح/خاطئ) must propagate."""
-        from arabic_eval.tasks.lighteval_benchmarks import ACVATask
+        from arabic_eval.tasks.lighteval.acva import ACVATask
         assert ACVATask.LABEL_TRUE == "صح"
         assert ACVATask.LABEL_FALSE == "خطأ"
         assert ACVATask.LABELS == ("صح", "خطأ")
@@ -1128,7 +1134,8 @@ class TestLightEvalBenchmarks:
     def test_acva_build_continuations_returns_word_pair(self, patched_env):
         """ACVA scores the words صح/خطأ; other benchmarks still use
         Arabic letters. Both branches must round-trip through the hook."""
-        from arabic_eval.tasks.lighteval_benchmarks import ACVATask, CultureArabicMMLUTask
+        from arabic_eval.tasks.lighteval.acva import ACVATask
+        from arabic_eval.tasks.lighteval.culture_arabic_mmlu import CultureArabicMMLUTask
         acva = ACVATask({"dataset_name": "OALL/ACVA"})
         ex = {"question": "x", "choices": list(ACVATask.LABELS), "answer": 0}
         assert acva._build_continuations(ex) == [" صح", " خطأ"]
@@ -1141,7 +1148,7 @@ class TestLightEvalBenchmarks:
     def test_acva_format_sft_text_uses_word_not_letter(self, patched_env):
         """SFT supervision must end with the word the eval will score
         against, otherwise the model never learns to emit صح/خطأ."""
-        from arabic_eval.tasks.lighteval_benchmarks import ACVATask
+        from arabic_eval.tasks.lighteval.acva import ACVATask
         task = ACVATask({"dataset_name": "OALL/ACVA"})
         ex_true = {"question": "الكبسة سعودية", "choices": list(ACVATask.LABELS), "answer": 0}
         ex_false = {"question": "الكبسة مصرية", "choices": list(ACVATask.LABELS), "answer": 1}
@@ -1179,7 +1186,7 @@ class TestLightEvalBenchmarks:
 
         adapter, tok = self._make_adapted_adapter()
         with patch(
-            "arabic_eval.tasks.lighteval_benchmarks._compute_loglikelihood",
+            "arabic_eval.tasks.lighteval.base._compute_loglikelihood",
             side_effect=_fake_ll,
         ):
             metrics = task.evaluate(adapter, tok, split="test", max_samples=4)
@@ -1203,7 +1210,7 @@ class TestLightEvalBenchmarks:
         stratification (random global sampling can leave small configs
         entirely unrepresented in the SFT split)."""
         from datasets import Dataset, DatasetDict
-        from arabic_eval.tasks.lighteval_benchmarks import ACVATask
+        from arabic_eval.tasks.lighteval.acva import ACVATask
         from unittest.mock import patch
 
         # Three configs of unequal sizes — small ones are exactly the case
@@ -1225,9 +1232,9 @@ class TestLightEvalBenchmarks:
             return DatasetDict({"train": ds})
 
         with (
-            patch("arabic_eval.tasks.lighteval_benchmarks.load_dataset", side_effect=_load),
+            patch("arabic_eval.tasks.lighteval.utils.load_dataset", side_effect=_load),
             patch(
-                "arabic_eval.tasks.lighteval_benchmarks.get_dataset_config_names",
+                "arabic_eval.tasks.lighteval.utils.get_dataset_config_names",
                 side_effect=lambda name: list(per_config.keys()),
             ),
         ):
@@ -1256,7 +1263,7 @@ class TestLightEvalBenchmarks:
         stratified split has something to group by. Single-config datasets
         get the sentinel `_default`."""
         from datasets import Dataset, DatasetDict
-        from arabic_eval.tasks.lighteval_benchmarks import ACVATask
+        from arabic_eval.tasks.lighteval.acva import ACVATask
         from unittest.mock import patch
 
         # Multi-config path: distinct stamps from distinct configs.
@@ -1271,14 +1278,14 @@ class TestLightEvalBenchmarks:
             return DatasetDict({"train": per_config_data[config]})
 
         with (
-            patch("arabic_eval.tasks.lighteval_benchmarks.load_dataset", side_effect=_load),
+            patch("arabic_eval.tasks.lighteval.utils.load_dataset", side_effect=_load),
             patch(
-                "arabic_eval.tasks.lighteval_benchmarks.get_dataset_config_names",
+                "arabic_eval.tasks.lighteval.utils.get_dataset_config_names",
                 side_effect=lambda name: list(per_config_data.keys()),
             ),
         ):
             task = ACVATask({"dataset_name": "OALL/ACVA"})
-            examples = task._load_all_examples()
+            examples = task.load_examples()
 
         sources = sorted({ex["_source_config"] for ex in examples})
         assert sources == ["alpha", "beta"]
@@ -1290,11 +1297,11 @@ class TestLightEvalBenchmarks:
             return DatasetDict({"train": single_ds})
 
         with patch(
-            "arabic_eval.tasks.lighteval_benchmarks.load_dataset",
+            "arabic_eval.tasks.lighteval.utils.load_dataset",
             side_effect=_load_single,
         ):
             task2 = ACVATask({"dataset_name": "OALL/ACVA"})
-            examples2 = task2._load_all_examples()
+            examples2 = task2.load_examples()
         assert all(ex["_source_config"] == "_default" for ex in examples2)
 
 
@@ -1411,3 +1418,341 @@ def test_e2e_full_sweep(patched_env, tok_type, tok_params, vocab_size, task_type
         assert 0.0 <= task_metrics["accuracy"] <= 1.0, (
             f"LightEval accuracy must be in [0,1], got {task_metrics['accuracy']}"
         )
+
+
+# ===========================================================================
+# 8. SFT completion-only-loss masking (training.completion_only_loss=True)
+# ===========================================================================
+
+@pytest.mark.usefixtures("patched_env")
+class TestCompletionOnlyLoss:
+    """Coverage for the SFT label-masking path used to fix the always-class
+    collapse on small SFT splits (e.g. ACVA's 902 rows).
+
+    These tests pin the contract:
+      - Default (flag=False) is unchanged: labels == input_ids (mod padding).
+      - Flag=True masks the prompt span to -100 and keeps the answer un-masked.
+      - The completion span is non-empty for both ACVA (word answers) and the
+        4-way letter MCQ tasks — if it ever becomes empty the model gets zero
+        gradient and the run silently no-ops.
+      - encode(prompt) is a stable prefix of encode(full) — the assumption
+        already relied on by `_compute_loglikelihood` at eval time.
+      - Truncation past the prompt drops the example (no zero-grad rows
+        sneak through the dataloader).
+      - Pipeline-side signature gating only passes the kwarg to tasks that
+        accept it (preserves BaseTask abstract contract).
+    """
+
+    def _make_lighteval_task(self, task_type: str = "acva", max_length: int = 128):
+        import arabic_eval.tasks  # noqa: F401
+        from arabic_eval.registry import task_registry
+        params = {
+            "dataset_name": "OALL/ACVA" if task_type == "acva" else "OALL/AlGhafa-Native",
+            "train_split_ratio": 0.50,
+            "max_length": max_length,  # ample headroom so no truncation in unit tests
+            "seed": 0,
+        }
+        return task_registry.get(task_type)(params)
+
+    # ----- Default behaviour preserved (flag=False) -----
+
+    def test_default_no_masking_equals_legacy_behaviour(self, patched_env):
+        """With completion_only_loss=False (default) the explicit labels path
+        is NOT taken; the collator falls back to labels = input_ids.clone().
+        The post-collation labels must equal input_ids on non-pad positions."""
+        task = self._make_lighteval_task("acva")
+        tok = _build_tokenizer("bpe", {"min_frequency": 1}, 100)
+        dl = task.get_dataloader(tok, split="train", batch_size=2)
+        batch = next(iter(dl))
+        ids = batch["input_ids"]
+        labels = batch["labels"]
+        attn = batch["attention_mask"]
+        # Non-pad positions: labels must equal input_ids; pad positions: -100.
+        non_pad = attn == 1
+        assert (labels[non_pad] == ids[non_pad]).all(), (
+            "Default SFT labels must equal input_ids on non-pad positions"
+        )
+        assert (labels[~non_pad] == -100).all()
+
+    # ----- Masked-prompt contract (flag=True) -----
+
+    @staticmethod
+    def _lcp(a, b):
+        n = 0
+        for x, y in zip(a, b):
+            if x != y:
+                break
+            n += 1
+        return n
+
+    def test_completion_only_masks_prompt_keeps_answer(self, patched_env):
+        """With flag=True: labels[:lcp] == -100; labels[lcp:full_len]
+        == input_ids[lcp:full_len] for every (un-padded) row.
+
+        ``lcp`` = longest common prefix of the prompt-only encoding and the
+        full encoding. Tokenizers that auto-append </s> end prompt_enc with
+        EOS at position len(prompt)-1, where full_enc holds the first answer
+        token instead — so we compare against LCP, not len(prompt_enc).
+        """
+        task = self._make_lighteval_task("acva")
+        tok = _build_tokenizer("bpe", {"min_frequency": 1}, 100)
+        dl = task.get_dataloader(
+            tok, split="train", batch_size=4, completion_only_loss=True
+        )
+        batch = next(iter(dl))
+        ids = batch["input_ids"]
+        labels = batch["labels"]
+        attn = batch["attention_mask"]
+
+        examples = task.get_fine_tune_examples()
+        per_row_lcp = []
+        for ex in examples[: ids.size(0)]:
+            prompt_text = task._format_eval_context(ex)
+            full_text = task._format_sft_text(ex)
+            penc = tok.encode(prompt_text, max_length=task.max_length, truncation=True)
+            fenc = tok.encode(full_text, max_length=task.max_length, truncation=True)
+            per_row_lcp.append(self._lcp(penc.input_ids, fenc.input_ids))
+
+        for row_idx, lcp in enumerate(per_row_lcp):
+            row_attn = attn[row_idx].bool()
+            row_full_len = int(row_attn.sum().item())
+            assert (labels[row_idx, :lcp] == -100).all(), (
+                f"Row {row_idx}: prompt span [0:{lcp}) must be -100"
+            )
+            assert (labels[row_idx, lcp:row_full_len]
+                    == ids[row_idx, lcp:row_full_len]).all(), (
+                f"Row {row_idx}: completion span must equal input_ids"
+            )
+            assert (labels[row_idx, row_full_len:] == -100).all()
+            # And: the unmasked span must contain at least one real token
+            assert row_full_len - lcp >= 1, (
+                f"Row {row_idx}: completion span empty (lcp={lcp}, full={row_full_len})"
+            )
+
+    def test_completion_span_nonempty_acva(self, patched_env):
+        """ACVA word-scoring: every kept SFT row must have ≥1 unmasked label
+        token (i.e. the answer survives). If this ever flips to 0 the model
+        gets zero gradient and training is a silent no-op."""
+        task = self._make_lighteval_task("acva")
+        tok = _build_tokenizer("bpe", {"min_frequency": 1}, 100)
+        dl = task.get_dataloader(
+            tok, split="train", batch_size=4, completion_only_loss=True
+        )
+        for batch in dl:
+            n_unmasked_per_row = (batch["labels"] != -100).sum(dim=1)
+            assert (n_unmasked_per_row > 0).all(), (
+                f"Every row must have ≥1 unmasked label; got {n_unmasked_per_row.tolist()}"
+            )
+
+    def test_completion_span_nonempty_letter_mcq(self, patched_env):
+        """4-way letter-scored MCQ (alghafa): same invariant as ACVA but for
+        the unchanged letter-answer SFT format."""
+        task = self._make_lighteval_task("alghafa")
+        tok = _build_tokenizer("bpe", {"min_frequency": 1}, 100)
+        dl = task.get_dataloader(
+            tok, split="train", batch_size=4, completion_only_loss=True
+        )
+        for batch in dl:
+            n_unmasked_per_row = (batch["labels"] != -100).sum(dim=1)
+            assert (n_unmasked_per_row > 0).all()
+
+    # ----- Boundary-stability assumption (the masking depends on it) -----
+
+    @pytest.mark.parametrize("tok_type,tok_params,vocab_size", [
+        pytest.param("bpe",            {"min_frequency": 1}, 100,  id="bpe"),
+        pytest.param("character_bert", {"max_char_len": 10, "max_word_vocab": 200}, None, id="character_bert"),
+    ])
+    def test_prompt_and_full_share_long_prefix(
+        self, patched_env, tok_type, tok_params, vocab_size,
+    ):
+        """Boundary-stability assumption for masking: the longest common
+        prefix of encode(prompt) and encode(full) must be at least
+        len(prompt_enc) - 1 — i.e. at most a single trailing token may
+        diverge (the auto-appended </s>). If a tokenizer ever splits the
+        prompt content differently when an answer is glued on, the masking
+        logic needs revisiting for that family."""
+        tok = _build_tokenizer(tok_type, tok_params, vocab_size)
+        for task_type in ("acva", "alghafa"):
+            task = self._make_lighteval_task(task_type)
+            for ex in task.get_fine_tune_examples()[:4]:
+                prompt = task._format_eval_context(ex)
+                full = task._format_sft_text(ex)
+                penc = tok.encode(prompt, max_length=task.max_length, truncation=True)
+                fenc = tok.encode(full, max_length=task.max_length, truncation=True)
+                assert len(penc.input_ids) < len(fenc.input_ids), (
+                    f"[{tok_type}/{task_type}] full must have more tokens than prompt"
+                )
+                lcp = self._lcp(penc.input_ids, fenc.input_ids)
+                assert lcp >= len(penc.input_ids) - 1, (
+                    f"[{tok_type}/{task_type}] prompt/full share only {lcp}/"
+                    f"{len(penc.input_ids)} tokens — at most 1 trailing-token "
+                    f"divergence (EOS) is supported"
+                )
+                # Answer span must be non-empty
+                assert len(fenc.input_ids) - lcp >= 1, (
+                    f"[{tok_type}/{task_type}] no tokens left after the prompt prefix"
+                )
+
+    # ----- Truncation behaviour -----
+
+    def test_truncated_prompt_drops_example(self, patched_env, caplog):
+        """When max_length cuts off before the answer fits, the example must
+        be skipped (so no all-(-100) rows reach the trainer)."""
+        # max_length=2 forces truncation past the answer for any non-trivial prompt.
+        task = self._make_lighteval_task("acva", max_length=2)
+        tok = _build_tokenizer("bpe", {"min_frequency": 1}, 100)
+        with caplog.at_level("INFO", logger="arabic_eval.tasks.lighteval.base"):
+            dl = task.get_dataloader(
+                tok, split="train", batch_size=2, completion_only_loss=True
+            )
+        # Either the dataloader is empty (all rows dropped) or every kept row
+        # still has ≥1 unmasked label — never both empty AND has zero-grad rows.
+        any_batches = False
+        for batch in dl:
+            any_batches = True
+            n_unmasked_per_row = (batch["labels"] != -100).sum(dim=1)
+            assert (n_unmasked_per_row > 0).all(), (
+                "Truncated rows must be dropped, not passed through with zero grad"
+            )
+        # Confirm the dropped-counter log fired
+        assert any(
+            "completion-only-loss" in rec.message and "dropped" in rec.message
+            for rec in caplog.records
+        ), "Expected completion-only-loss log line with drop counter"
+        # And under aggressive truncation we expect at least some drops
+        log_msgs = [rec.message for rec in caplog.records
+                    if "completion-only-loss" in rec.message]
+        assert log_msgs, "Should have logged the completion-only-loss summary"
+
+    # ----- Pipeline signature-gating -----
+
+    def test_pipeline_passes_flag_only_when_signature_supports_it(self, patched_env):
+        """The pipeline must use inspect.signature to decide whether to forward
+        the kwarg — passing it to a task that doesn't accept it would TypeError.
+        Mirrors the existing failure_report_dir gating pattern."""
+        import inspect
+        from arabic_eval.tasks.lighteval.acva import ACVATask
+        from arabic_eval.tasks.text_generation import TextGenerationTask
+
+        # LightEval MCQ: accepts the kwarg.
+        params = inspect.signature(ACVATask({}).get_dataloader).parameters
+        assert "completion_only_loss" in params, (
+            "LightEval MCQ task get_dataloader must accept completion_only_loss"
+        )
+        # text_generation: must NOT have the kwarg (would mean the abstract
+        # contract leaked into a non-MCQ task).
+        tg_params = inspect.signature(
+            TextGenerationTask({"max_length": 32, "stride": 16}).get_dataloader
+        ).parameters
+        assert "completion_only_loss" not in tg_params, (
+            "Non-MCQ tasks must not gain completion_only_loss in their signature"
+        )
+
+    # ----- Config schema -----
+
+    def test_training_config_default_is_false(self):
+        """Backward compat: existing configs without completion_only_loss
+        must continue to default to False (unmasked LM loss)."""
+        from arabic_eval.config import TrainingConfig
+        assert TrainingConfig().completion_only_loss is False
+        assert TrainingConfig(completion_only_loss=True).completion_only_loss is True
+
+
+# ===========================================================================
+# 9. PMI score normalization end-to-end (run_single_experiment)
+# ===========================================================================
+
+
+@pytest.mark.usefixtures("patched_env")
+class TestScoreNormalizationE2E:
+    """Pipeline-level smoke for ``evaluation.score_normalization``.
+
+    Coverage:
+      * Default ``"char"`` mode produces the legacy metrics shape
+        (no ``accuracy_pmi`` / ``accuracy_char_norm`` keys).
+      * ``"char+pmi"`` mode adds both keys; ``accuracy`` aliases char-norm.
+      * Pipeline signature-gating: passing a non-default value is a no-op
+        for non-LightEval tasks (warning logged).
+    """
+
+    def test_default_char_mode_metrics_shape(self, patched_env):
+        """Default config must produce a metrics JSON with no PMI keys —
+        backward-compat with every existing run JSON in outputs/."""
+        from pathlib import Path
+        from arabic_eval.pipeline.experiment import run_single_experiment
+
+        with tempfile.TemporaryDirectory() as tmp:
+            config = _make_experiment_config(
+                "bpe", {"min_frequency": 1}, 100,
+                "culture_arabic_mmlu",
+                {"dataset_name": "acmc/arabic_culture_mmlu",
+                 "train_split_ratio": 0.50, "max_length": 32, "seed": 0},
+                Path(tmp),
+            )
+            # Default score_normalization="char" is implicit on EvaluationConfig.
+            assert config.evaluation.score_normalization == "char"
+            result = run_single_experiment(config)
+
+        downstream = result["downstream"]["culture_arabic_mmlu"]
+        assert "accuracy" in downstream
+        assert "accuracy_pmi" not in downstream, (
+            "Default char mode must NOT emit accuracy_pmi"
+        )
+        assert "accuracy_char_norm" not in downstream, (
+            "Default char mode must NOT emit accuracy_char_norm"
+        )
+
+    def test_char_plus_pmi_mode_emits_both(self, patched_env):
+        """``score_normalization='char+pmi'`` must add both ``accuracy_pmi`` and
+        ``accuracy_char_norm`` to the downstream metrics; ``accuracy`` aliases
+        char-norm so existing comparison-report consumers keep working."""
+        from pathlib import Path
+        from arabic_eval.pipeline.experiment import run_single_experiment
+
+        with tempfile.TemporaryDirectory() as tmp:
+            config = _make_experiment_config(
+                "bpe", {"min_frequency": 1}, 100,
+                "culture_arabic_mmlu",
+                {"dataset_name": "acmc/arabic_culture_mmlu",
+                 "train_split_ratio": 0.50, "max_length": 32, "seed": 0},
+                Path(tmp),
+            )
+            config.evaluation.score_normalization = "char+pmi"
+            result = run_single_experiment(config)
+
+        downstream = result["downstream"]["culture_arabic_mmlu"]
+        assert "accuracy" in downstream
+        assert "accuracy_char_norm" in downstream
+        assert "accuracy_pmi" in downstream
+        assert downstream["accuracy"] == downstream["accuracy_char_norm"], (
+            "Under char+pmi, the legacy 'accuracy' must alias char-norm"
+        )
+        # Both must be valid probabilities.
+        for key in ("accuracy", "accuracy_char_norm", "accuracy_pmi"):
+            assert 0.0 <= downstream[key] <= 1.0
+
+    def test_non_lighteval_task_pmi_is_silently_ignored(self, patched_env, caplog):
+        """Asking for PMI on text_generation is a no-op (warning + skip), not
+        an exception — same gating pattern as completion_only_loss /
+        failure_report_dir. Non-MCQ tasks must continue to work unchanged."""
+        from pathlib import Path
+        from arabic_eval.pipeline.experiment import run_single_experiment
+
+        with tempfile.TemporaryDirectory() as tmp:
+            config = _make_experiment_config(
+                "bpe", {"min_frequency": 1}, 100,
+                "text_generation",
+                {"max_length": 32, "stride": 16},
+                Path(tmp),
+            )
+            config.evaluation.score_normalization = "char+pmi"
+            with caplog.at_level("WARNING", logger="arabic_eval.pipeline"):
+                result = run_single_experiment(config)
+
+        # text_generation produces 'perplexity' / 'avg_loss', no 'accuracy_*'.
+        # The point is it didn't raise — and we expect a "ignored" warning.
+        assert any(
+            "score_normalization" in rec.message and "ignored" in rec.message
+            for rec in caplog.records
+        ), "Pipeline should warn when PMI is requested for a non-LightEval task"
+        assert "text_generation" in result["downstream"]

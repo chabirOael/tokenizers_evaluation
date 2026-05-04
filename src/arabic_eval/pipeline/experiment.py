@@ -13,7 +13,7 @@ from arabic_eval.evaluation.evaluator import Evaluator
 from arabic_eval.evaluation.metrics import compute_mei
 from arabic_eval.evaluation.reporter import generate_report
 from arabic_eval.registry import model_registry, task_registry, tokenizer_registry
-from arabic_eval.tasks.lighteval_benchmarks import LightEvalBenchmarkTask
+from arabic_eval.tasks.lighteval import LightEvalBenchmarkTask
 from arabic_eval.training.trainer import Trainer
 from arabic_eval.utils.io import ensure_dir, load_json, save_json
 from arabic_eval.utils.reproducibility import set_seed
@@ -125,31 +125,58 @@ def run_single_experiment(config: ExperimentConfig) -> Dict[str, Any]:
     task_cls = task_registry.get(config.task.type)
     task = task_cls(config.task.params)
 
-    train_dataloader = task.get_dataloader(
-        tokenizer, split="train",
-        batch_size=config.training.batch_size,
-        max_samples=config.data.max_train_samples,
-        shuffle=True,
-    )
-    eval_dataloader = task.get_dataloader(
-        tokenizer, split="test",
-        batch_size=config.training.batch_size,
-        max_samples=config.data.max_eval_samples,
-    )
+    if config.training.ft.enabled:
+        # Pass completion_only_loss only to tasks whose get_dataloader() accepts it
+        # (currently only the LightEval MCQ benchmarks). Same signature-gating
+        # pattern used for failure_report_dir below.
+        sft_kwargs: Dict[str, Any] = {}
+        if config.training.completion_only_loss:
+            dl_params = inspect.signature(task.get_dataloader).parameters
+            if "completion_only_loss" in dl_params:
+                sft_kwargs["completion_only_loss"] = True
+            else:
+                logger.warning(
+                    "training.completion_only_loss=true ignored: task '%s' get_dataloader() "
+                    "does not accept the kwarg.",
+                    config.task.type,
+                )
 
-    # ---------------------------------------------------------------
-    # Step 6: Fine-tune
-    # ---------------------------------------------------------------
-    logger.info("Step 6: Fine-tuning model...")
-    trainer = Trainer(
-        model=model,
-        train_dataloader=train_dataloader,
-        eval_dataloader=eval_dataloader,
-        config=config.training.model_dump(),
-        output_dir=str(output_dir / "training"),
-    )
-    train_results = trainer.train()
-    results["training"] = train_results
+        train_dataloader = task.get_dataloader(
+            tokenizer, split="train",
+            batch_size=config.training.batch_size,
+            max_samples=config.data.max_train_samples,
+            shuffle=True,
+            **sft_kwargs,
+        )
+        eval_dataloader = task.get_dataloader(
+            tokenizer, split="test",
+            batch_size=config.training.batch_size,
+            max_samples=config.data.max_eval_samples,
+            **sft_kwargs,
+        )
+
+        # ---------------------------------------------------------------
+        # Step 6: Fine-tune
+        # ---------------------------------------------------------------
+        logger.info("Step 6: Fine-tuning model...")
+        trainer = Trainer(
+            model=model,
+            train_dataloader=train_dataloader,
+            eval_dataloader=eval_dataloader,
+            config=config.training.model_dump(),
+            output_dir=str(output_dir / "training"),
+        )
+        train_results = trainer.train()
+        results["training"] = train_results
+    else:
+        logger.info(
+            "Steps 5-6: Fine-tuning skipped (training.ft.enabled=false). "
+            "Evaluating pretrained model directly."
+        )
+        results["training"] = {
+            "status": "skipped",
+            "reason": "training.ft.enabled=false",
+        }
 
     # ---------------------------------------------------------------
     # Step 7: Downstream evaluation
@@ -160,10 +187,10 @@ def run_single_experiment(config: ExperimentConfig) -> Dict[str, Any]:
             "split": "test",
             "max_samples": config.evaluation.num_eval_samples,
         }
+        eval_params = inspect.signature(task.evaluate).parameters
         # Pass failure_report_dir only to tasks whose evaluate() accepts it
         # (currently only the LightEval MCQ benchmarks).
         if config.evaluation.failure_reports:
-            eval_params = inspect.signature(task.evaluate).parameters
             if "failure_report_dir" in eval_params:
                 failure_dir = output_dir / "failure_reports"
                 ensure_dir(failure_dir)
@@ -172,6 +199,20 @@ def run_single_experiment(config: ExperimentConfig) -> Dict[str, Any]:
                 logger.info(
                     "failure_reports=true but task '%s' does not support "
                     "failure CSV reporting; skipping.", config.task.type,
+                )
+        # Pass score_normalization only to tasks whose evaluate() accepts it
+        # (LightEval MCQ benchmarks). Same signature-gating pattern as
+        # failure_report_dir / completion_only_loss.
+        if config.evaluation.score_normalization != "char":
+            if "score_normalization" in eval_params:
+                eval_kwargs["score_normalization"] = (
+                    config.evaluation.score_normalization
+                )
+            else:
+                logger.warning(
+                    "evaluation.score_normalization=%r ignored: task '%s' "
+                    "evaluate() does not accept the kwarg.",
+                    config.evaluation.score_normalization, config.task.type,
                 )
 
         # Warm any lazy tokenizer backends (e.g. araroopat's CAMeL bridge,
@@ -197,12 +238,24 @@ def run_single_experiment(config: ExperimentConfig) -> Dict[str, Any]:
         # Step 8: Composite metric — MEI (LightEval MCQ tasks only)
         # ---------------------------------------------------------------
         intrinsic_block = results.get("intrinsic", {}) or {}
+        # Prefer PMI accuracy when available — it removes the per-letter /
+        # per-text prior bias and is the corrected scoring. Fall back to
+        # ``accuracy`` (which aliases char-norm under "char+pmi" and is the
+        # only accuracy under "char"-only mode).
+        if "accuracy_pmi" in downstream_metrics:
+            mei_accuracy = downstream_metrics["accuracy_pmi"]
+            mei_accuracy_source = "accuracy_pmi"
+        else:
+            mei_accuracy = downstream_metrics.get("accuracy")
+            mei_accuracy_source = "accuracy"
         mei_record = compute_mei(
-            accuracy=downstream_metrics.get("accuracy"),
+            accuracy=mei_accuracy,
             rps=intrinsic_block.get("root_conservation_rate"),
             compression=intrinsic_block.get("compression_ratio"),
             inference_time_sec=inference_time_sec,
+            num_eval_rows=downstream_metrics.get("num_samples"),
             is_lighteval_mcq=isinstance(task, LightEvalBenchmarkTask),
+            accuracy_source=mei_accuracy_source,
         )
         results["mei"] = mei_record
         logger.info(

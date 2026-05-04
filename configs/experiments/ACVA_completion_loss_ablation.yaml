@@ -1,0 +1,85 @@
+# SFT completion-only-loss ablation on ACVA.
+#
+# Paired with outputs/experiments/ACVA_top_tokenizers_benchmark_sweep/ as the
+# baseline. The only change vs that sweep is training.completion_only_loss=true,
+# plus a reduced tokenizer set (bpe_50k + character_bert) for fast iteration.
+#
+# Hypothesis under test: the always-class collapse on ACVA (5/7 tokenizers
+# locked onto always-predict-صح at acc≈0.595) is caused by full-sequence LM
+# loss starving the answer-token signal. Masking the prompt span to -100 and
+# concentrating gradient on the 1-3 answer tokens should let the model learn
+# question-conditional answers from the same 902-row SFT split.
+
+experiment:
+  name: "ACVA_completion_loss_ablation"
+  description: >
+    SFT completion-only-loss ablation: BPE-50k + CharacterBERT on ACVA, with
+    training.completion_only_loss=true. All other hyperparameters identical
+    to ACVA_top_tokenizers_benchmark_sweep so the comparison is apples-to-apples.
+  output_dir: "outputs/experiments/ACVA_completion_loss_ablation"
+  seed: 42
+
+data:
+  dataset_name: "Jr23xd23/ArabicText-Large"
+  cache_dir: "outputs/data_cache"
+  max_train_samples: null
+  max_eval_samples: 5000
+  preprocessing:
+    normalize_unicode: true
+    remove_diacritics: false
+    min_text_length: 10
+
+model:
+  type: "llama"
+  name_or_path: "meta-llama/Llama-3.2-1B"
+  dtype: "bfloat16"
+  device: "auto"
+
+training:
+  num_epochs: 3
+  batch_size: 4
+  gradient_accumulation_steps: 8
+  learning_rate: 2.0e-5
+  weight_decay: 0.01
+  warmup_ratio: 0.1
+  lr_scheduler: "cosine"
+  max_grad_norm: 1.0
+  bf16: true
+  fp16: false
+  save_steps: 200
+  eval_steps: 200
+  logging_steps: 50
+  save_total_limit: 2
+  early_stopping_patience: 3
+  # The flag under test.
+  completion_only_loss: true
+
+evaluation:
+  intrinsic_metrics: true
+  morphological_metrics: true
+  morph_sample_size: 500
+  downstream_metrics: true
+  num_eval_samples: null      # full 90 % eval split
+  failure_reports: true
+
+sweep:
+  tokenizers:
+    - type: "bpe"
+      vocab_sizes: [50000]
+      params:
+        min_frequency: 2
+
+    - type: "character_bert"
+      vocab_sizes: [null]
+      params:
+        max_char_len: 50
+        max_word_vocab: 50000
+
+  tasks:
+    - type: "acva"
+      params:
+        dataset_name: "OALL/ACVA"
+        dataset_config: null
+        train_split_ratio: 0.10
+        max_length: 512
+        seed: 42

@@ -1,0 +1,10 @@
+# Wraps the pretrained Llama tokenizer; train() is a no-op. vocab_size is fixed
+# at 128256 (matches Llama-3.2-1B's embedding matrix; resize_token_embeddings is
+# a pass-through). The vocab_size field is illustrative — `len(tokenizer)` is
+# what the wrapper actually returns at runtime.
+tokenizer:
+  type: "native_llama"
+  vocab_size: 128256
+  params:
+    model_name_or_path: "meta-llama/Llama-3.2-1B"
+  save_path: "outputs/tokenizers/native_llama"

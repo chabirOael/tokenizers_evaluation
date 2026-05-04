@@ -1,0 +1,83 @@
+# Combined SFT-data-size + completion-only-loss ablation on ACVA.
+#
+# Completes the 2x2 cross with:
+#   PRIOR  (split 0.10, comp_loss=F) - ACVA_top_tokenizers_benchmark_sweep
+#   ABL_A  (split 0.10, comp_loss=T) - ACVA_completion_loss_ablation
+#   ABL_B  (split 0.50, comp_loss=F) - ACVA_split_ratio_ablation
+#   ABL_C  (split 0.50, comp_loss=T) - this config
+#
+# Hypothesis under test: ABL_B (5x SFT data alone) broke the always-class trap
+# but pushed accuracy below majority-class baseline because most predictions
+# collapsed to near-ties (98.6% < 1e-3). ABL_A (masking alone) compressed
+# margins inward without breaking the trap. Combining both -- more answer-
+# token signal AND concentrated gradient on the answer span -- might let the
+# model commit to *correct* discrimination rather than near-tie discrimination.
+# bpe_50k only, mirroring ABL_B's tokenizer scope.
+
+experiment:
+  name: "ACVA_split_and_completion_ablation"
+  description: >
+    Combined ablation: BPE-50k on ACVA, train_split_ratio=0.50 AND
+    completion_only_loss=true. Closes the 2x2 vs the prior sweep, ABL_A,
+    and ABL_B. All other hyperparameters identical to the baseline sweep.
+  output_dir: "outputs/experiments/ACVA_split_and_completion_ablation"
+  seed: 42
+
+data:
+  dataset_name: "Jr23xd23/ArabicText-Large"
+  cache_dir: "outputs/data_cache"
+  max_train_samples: null
+  max_eval_samples: 5000
+  preprocessing:
+    normalize_unicode: true
+    remove_diacritics: false
+    min_text_length: 10
+
+model:
+  type: "llama"
+  name_or_path: "meta-llama/Llama-3.2-1B"
+  dtype: "bfloat16"
+  device: "auto"
+
+training:
+  num_epochs: 3
+  batch_size: 4
+  gradient_accumulation_steps: 8
+  learning_rate: 2.0e-5
+  weight_decay: 0.01
+  warmup_ratio: 0.1
+  lr_scheduler: "cosine"
+  max_grad_norm: 1.0
+  bf16: true
+  fp16: false
+  save_steps: 200
+  eval_steps: 200
+  logging_steps: 50
+  save_total_limit: 2
+  early_stopping_patience: 3
+  # Flag under test (combined with split_ratio=0.50 below).
+  completion_only_loss: true
+
+evaluation:
+  intrinsic_metrics: true
+  morphological_metrics: true
+  morph_sample_size: 500
+  downstream_metrics: true
+  num_eval_samples: null      # full held-out eval split (50 %)
+  failure_reports: true
+
+sweep:
+  tokenizers:
+    - type: "bpe"
+      vocab_sizes: [50000]
+      params:
+        min_frequency: 2
+
+  tasks:
+    - type: "acva"
+      params:
+        dataset_name: "OALL/ACVA"
+        dataset_config: null
+        train_split_ratio: 0.50
+        max_length: 512
+        seed: 42

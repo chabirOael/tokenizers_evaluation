@@ -10,3 +10,7 @@ task:
     # 10 % of total examples used for SFT; 90 % reserved for LightEval evaluation.
     train_split_ratio: 0.10
     seed: 42
+    # When true, drop rows containing Latin-script letters in question / choices /
+    # context before the 10/90 split. Default off — opt in per-experiment for
+    # clean-Arabic-only studies. Logs dropped count + warns on wiped sub-configs.
+    clean_latin_rows: false

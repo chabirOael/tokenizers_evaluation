@@ -17,6 +17,7 @@ Notable contents:
 from __future__ import annotations
 
 import logging
+import re
 from typing import Tuple
 
 logger = logging.getLogger("arabic_eval.tokenizers.utils.arabic_text")
@@ -39,6 +40,31 @@ ARABIC_LONG_VOWELS = set("اوي")
 ARABIC_LETTERS = set(
     "ابتثجحخدذرزسشصضطظعغفقكلمنهويءأإآؤئة"
 )
+
+# ---------------------------------------------------------------------------
+# Latin-script detection (used by the clean_latin_rows filter on LightEval tasks)
+# ---------------------------------------------------------------------------
+
+# Basic Latin (A-Z/a-z) + Latin-1 Supplement letters + Latin Extended-A/B +
+# Latin Extended Additional + Latin Extended-C/D/E. Greek/Cyrillic/Hebrew/CJK
+# are NOT matched — the predicate is named "Latin-script" deliberately so users
+# can filter Arabic+Latin contamination without dropping rows that mix Arabic
+# with other scripts. ASCII digits and punctuation are script-neutral and
+# also not matched.
+_LATIN_LETTER_RE = re.compile(
+    r"[A-Za-zÀ-ɏḀ-ỿⱠ-Ɀ꜠-ꟿꬰ-꭯]"
+)
+
+
+def contains_latin_letters(text) -> bool:
+    """Return True if the string contains any Latin-script letter.
+
+    None / non-str / empty inputs return False (no Latin = pass through).
+    """
+    if not isinstance(text, str) or not text:
+        return False
+    return bool(_LATIN_LETTER_RE.search(text))
+
 
 # Subword prefix markers we may need to strip from token strings.
 # - "##" : WordPiece continuation

@@ -1,0 +1,301 @@
+# =============================================================================
+# Sample experiment YAML — every flag the platform recognises, with comments.
+# Copy this file, rename, edit, and run with:
+#     .venv/bin/python scripts/run_experiment.py --config <yourfile>.yaml
+# Add `--sweep` only when the `sweep:` block is populated (matrix runs).
+#
+# Layered loading:
+#   - The script auto-detects `configs/base.yaml` underneath; values here
+#     override base. Add `--base-config <path>` to point at a different base.
+#   - CLI flags (`--seed`, `--device`) override both YAMLs.
+#
+# Single-run vs sweep:
+#   - For a single experiment, set `tokenizer:` and `task:` (top-level) and
+#     OMIT the `sweep:` block.
+#   - For a sweep (cartesian product of tokenizer × vocab_size × task), populate
+#     `sweep:` and pass `--sweep`. The top-level `tokenizer:` / `task:` are
+#     ignored in sweep mode.
+# =============================================================================
+
+
+# -----------------------------------------------------------------------------
+# experiment — top-level metadata. The loader flattens this block automatically,
+# so `experiment.name` is equivalent to top-level `name`.
+# -----------------------------------------------------------------------------
+experiment:
+  name: "my_experiment"                   # Used in logs and as run identifier
+  description: >                          # Multi-line description (free text)
+    What this experiment is testing and why. Shown in comparison reports.
+  output_dir: "outputs/experiments/my_experiment"  # Where artifacts land
+  seed: 42                                # Master RNG seed (data sampling, splits, model init)
+  deterministic: true                     # Set torch deterministic flags + cudnn benchmark off
+
+
+# -----------------------------------------------------------------------------
+# data — tokenizer-training corpus + intrinsic-metrics text source.
+# (LightEval benchmark datasets are configured under `task.params`, not here.)
+# -----------------------------------------------------------------------------
+data:
+  dataset_name: "Jr23xd23/ArabicText-Large"  # HF dataset identifier
+  dataset_config: null                       # Sub-config name; null = default
+  cache_dir: "outputs/data_cache"            # HF datasets cache; shared across runs
+  train_split: "train"                       # Predefined HF split name
+  eval_split: "test"                         # Predefined HF split name
+  max_train_samples: null                    # null = use all rows
+  max_eval_samples: 10000                    # Cap eval rows for speed
+  preprocessing:
+    normalize_unicode: true                  # NFKC normalization
+    remove_diacritics: false                 # Strip tashkeel — usually keep diacritics for tokenizer training
+    min_text_length: 10                      # Drop rows shorter than this many chars
+
+
+# -----------------------------------------------------------------------------
+# tokenizer — single-experiment tokenizer spec. Ignored when `sweep:` is set.
+# Registry keys: bpe | wordpiece | morpho_bpe | character_bert | char_jaber
+#                farasa_character_bert | charformer | araroopat | native_llama
+# -----------------------------------------------------------------------------
+tokenizer:
+  type: "bpe"                              # See registry list above
+  vocab_size: 32000                        # null for char-level / charformer / native_llama
+  params: {}                               # Constructor + train() kwargs (per-tokenizer; see configs/tokenizers/*.yaml)
+  save_path: "outputs/tokenizers/bpe_32k"  # Where the trained tokenizer is written
+  load_path: null                          # If set, skip training and load from here
+
+
+# -----------------------------------------------------------------------------
+# model — single LLM adapter spec.
+# Registry keys: llama (other adapters can be added under src/arabic_eval/models/)
+# -----------------------------------------------------------------------------
+model:
+  type: "llama"
+  name_or_path: "meta-llama/Llama-3.2-1B"  # HF repo or local path; gated repos need HF_TOKEN
+  dtype: "bfloat16"                        # bfloat16 | float16 | float32 | auto
+  device: "auto"                           # "auto" | "cuda" | "cuda:0" | "cpu"
+  params: {}                               # Adapter-specific kwargs
+
+
+# -----------------------------------------------------------------------------
+# task — single downstream task. Ignored when `sweep:` is set.
+# Pick ONE registry key and the matching params block.
+# Registry keys:
+#   text_generation       — perplexity (sliding-window, stride=256)
+#   question_answering    — F1 + EM on ARCD (generation-based)
+#   acva                  — LightEval Arabic Culture & Values (True/False MCQ, word-scored)
+#   alghafa               — LightEval AlGhafa heterogeneous benchmark (mix of letter / word scoring)
+#   culture_arabic_mmlu   — LightEval translated MMLU (4-way letter MCQ)
+#   arabic_exam           — LightEval ArabicMMLU (4/5-way letter MCQ)
+# -----------------------------------------------------------------------------
+task:
+  type: "text_generation"
+  params:
+    max_length: 512        # Used by text_generation, QA, and LightEval task max_length
+
+# --- Alternative task blocks (uncomment one) ---------------------------------
+
+# task:                                # Question Answering on ARCD
+#   type: "question_answering"
+#   params:
+#     dataset_name: "hsseinmz/arcd"
+#     max_length: 512
+#     generation_max_new_tokens: 32
+
+# task:                                # ACVA (True/False MCQ on Arab cultural knowledge)
+#   type: "acva"
+#   params:
+#     dataset_name: "OALL/ACVA"
+#     dataset_config: null              # null = merge all 58 sub-configs
+#     cache_dir: "outputs/data_cache"
+#     max_length: 512
+#     train_split_ratio: 0.10           # 10 % SFT / 90 % LightEval eval (stratified per-sub-config)
+#     seed: 42                          # Per-config RNG seed for the split
+#     clean_latin_rows: false           # Drop rows containing Latin-script letters before split
+
+# task:                                # AlGhafa (heterogeneous: 2/3/4/5-way MCQ)
+#   type: "alghafa"
+#   params:
+#     dataset_name: "OALL/AlGhafa-Arabic-LLM-Benchmark-Native"
+#     dataset_config: null              # null = merge all 9 sub-configs
+#     train_split_ratio: 0.10
+#     seed: 42
+#     clean_latin_rows: false
+
+# task:                                # Culture-Arabic-MMLU (translated MMLU, 4-way letter MCQ)
+#   type: "culture_arabic_mmlu"
+#   params:
+#     dataset_name: "OALL/Arabic_MMLU"
+#     train_split_ratio: 0.10
+#     seed: 42
+#     clean_latin_rows: false
+
+# task:                                # ArabicExam / MBZUAI ArabicMMLU (4/5-way letter MCQ)
+#   type: "arabic_exam"
+#   params:
+#     dataset_name: "MBZUAI/ArabicMMLU"
+#     train_split_ratio: 0.10
+#     seed: 42
+#     clean_latin_rows: false
+
+
+# -----------------------------------------------------------------------------
+# training — fine-tuning hyperparameters. Top-level fields control HOW training
+# runs; the `ft:` and `lora:` sub-namespaces hold on/off-style flags.
+# -----------------------------------------------------------------------------
+training:
+  # Optimization
+  num_epochs: 3                            # Total epochs over the SFT split
+  batch_size: 8                            # Per-device batch size (effective batch = bs × grad_accum)
+  gradient_accumulation_steps: 4           # Accumulate this many micro-batches before optimizer.step()
+  learning_rate: 2.0e-5                    # AdamW peak LR (cosine-decayed after warmup)
+  weight_decay: 0.01                       # AdamW L2 regularization
+  warmup_ratio: 0.1                        # Linear warmup fraction of total steps
+  lr_scheduler: "cosine"                   # cosine | linear | constant
+  max_grad_norm: 1.0                       # Gradient clipping threshold
+
+  # Mixed precision — pick AT MOST one
+  bf16: true                               # bfloat16 mixed precision (preferred on H100/A100)
+  fp16: false                              # float16 mixed precision (older GPUs)
+
+  # Checkpointing & logging
+  save_steps: 500                          # Save a checkpoint every N optimizer steps
+  eval_steps: 500                          # Run eval-loss every N optimizer steps
+  logging_steps: 50                        # Log train loss every N steps
+  save_total_limit: 2                      # Rolling cap on checkpoints kept on disk
+
+  # Early stopping
+  early_stopping_patience: 3               # Stop after N evals without improvement; null = disabled
+  early_stopping_metric: "eval_loss"       # Which metric to watch
+
+  # Loss masking — opt-in
+  # When true, prompt tokens are masked to -100 so only answer tokens contribute to loss.
+  # Implemented via longest-common-prefix between prompt and full encoding (see CLAUDE.md).
+  # NOTE: this is NEUTRAL-TO-NEGATIVE on noisy short-answer 2-class MCQ (e.g. ACVA);
+  # only opt in for tasks where the answer-token signal is the binding constraint.
+  completion_only_loss: false
+
+  # Master fine-tuning switches. The nested `ft:` namespace leaves room for
+  # future sub-flags (`ft.freeze_layers`, etc.) without bloating TrainingConfig.
+  ft:
+    enabled: true                          # Set false to skip training and evaluate the pretrained model directly
+
+
+# -----------------------------------------------------------------------------
+# evaluation — what to measure and how to score.
+# -----------------------------------------------------------------------------
+evaluation:
+  # Intrinsic tokenizer metrics (always cheap; ~30s per run)
+  intrinsic_metrics: true                  # fertility, compression_ratio, unk_rate, vocab_coverage
+  morphological_metrics: true              # root/pattern conservation, morpheme integrity, CSA, SFR (Java/Farasa required)
+  morph_sample_size: 500                   # Distinct words sampled for morphological metrics
+
+  # Downstream
+  downstream_metrics: true                 # Run the configured task's evaluate()
+  num_eval_samples: 5000                   # Cap on eval rows for speed; null = full eval split
+
+  # Generation defaults (used by text_generation, QA — NOT by LightEval MCQ)
+  generation_max_new_tokens: 128
+  generation_temperature: 1.0
+  generation_do_sample: false              # Greedy decoding when false
+
+  # LightEval MCQ failure-case CSV. One row per wrong answer with per-choice
+  # log-likelihoods and aggregate-score margins. Useful for debugging why a
+  # tokenizer underperforms. Slows eval slightly because we record all rows.
+  failure_reports: false
+
+  # LightEval MCQ score normalization (LightEval terminology)
+  #   "char"      — divide each ll by char length (LogProbCharNorm). Default;
+  #                 byte-identical to legacy runs.
+  #   "pmi"       — subtract unconditioned ll (LogProbPMINorm). Corrects for
+  #                 letter / answer-text priors that dominate weak-signal MCQ.
+  #   "char+pmi"  — compute both. Metrics dict carries `accuracy_char_norm`
+  #                 and `accuracy_pmi`; `accuracy` aliases char-norm for
+  #                 backward compat. ~2× cost on word-scored sub-configs.
+  score_normalization: "char"
+
+
+# -----------------------------------------------------------------------------
+# tracking — experiment tracking integrations.
+# -----------------------------------------------------------------------------
+tracking:
+  use_wandb: false                         # Enable Weights & Biases logging
+  wandb_project: "arabic-tokenizer-eval"   # W&B project name
+  wandb_entity: null                       # W&B team/user; null = personal default
+  log_to_file: true                        # Always write experiment.log under output_dir
+
+
+# -----------------------------------------------------------------------------
+# sweep — Cartesian product of tokenizers × vocab_sizes × tasks. Populate this
+# block AND pass `--sweep` to scripts/run_experiment.py to run a sweep.
+# Leave commented out for single-experiment runs (top-level tokenizer/task used).
+# -----------------------------------------------------------------------------
+# sweep:
+#   tokenizers:
+#     - type: "bpe"
+#       vocab_sizes: [16000, 32000, 50000]
+#       params: {}                              # Optional kwargs forwarded to constructor + train()
+#     - type: "wordpiece"
+#       vocab_sizes: [16000, 32000, 50000]
+#     - type: "morpho_bpe"
+#       vocab_sizes: [16000, 32000, 50000]
+#     - type: "character_bert"
+#       vocab_sizes: [null]                     # null for char-level (vocab built from corpus)
+#     - type: "char_jaber"
+#       vocab_sizes: [null]
+#     - type: "farasa_character_bert"
+#       vocab_sizes: [null]
+#     - type: "charformer"
+#       vocab_sizes: [null]                     # null — fixed 260-id byte vocab
+#     - type: "araroopat"
+#       vocab_sizes: [null]
+#       params:
+#         vocab_budget: "balanced"              # compact | balanced | max — see configs/tokenizers/araroopat.yaml
+#     - type: "native_llama"                    # Baseline-only wrapper; uses pretrained Llama tokenizer
+#       vocab_sizes: [null]                     # vocab is fixed at 128256
+#       params:
+#         model_name_or_path: "meta-llama/Llama-3.2-1B"
+#
+#   tasks:                                      # Each task entry is a `TaskConfig` block (same shape as top-level `task:`)
+#     - type: "acva"
+#       params:
+#         dataset_name: "OALL/ACVA"
+#         train_split_ratio: 0.10
+#         max_length: 512
+#         seed: 42
+#         clean_latin_rows: false
+#
+#     - type: "alghafa"
+#       params:
+#         dataset_name: "OALL/AlGhafa-Arabic-LLM-Benchmark-Native"
+#         train_split_ratio: 0.10
+#         max_length: 512
+#         seed: 42
+#         clean_latin_rows: false
+#
+#     - type: "culture_arabic_mmlu"
+#       params:
+#         dataset_name: "OALL/Arabic_MMLU"
+#         train_split_ratio: 0.10
+#         max_length: 512
+#         seed: 42
+#         clean_latin_rows: false
+#
+#     - type: "arabic_exam"
+#       params:
+#         dataset_name: "MBZUAI/ArabicMMLU"
+#         train_split_ratio: 0.10
+#         max_length: 512
+#         seed: 42
+#         clean_latin_rows: false
+
+
+# =============================================================================
+# Notes
+# -----------------------------------------------------------------------------
+# - HF gated models (Llama-3.2-1B): set HF_TOKEN env var or `huggingface-cli login`.
+# - MorphoBPE / FarasaCharacterBERT: requires Java runtime for Farasa.
+# - AraRooPat: requires .venv-camel virtual env with camel-tools (one-time setup).
+#   See CLAUDE.md → "AraRooPat" → "CAMeL Tools dep conflicts" for setup.
+# - Char-level tokenizers (char_jaber, charformer): produce 4–6× longer sequences;
+#   reduce `task.params.max_length` or `training.batch_size` if hitting OOM.
+# - When mixing `clean_latin_rows: true` with PMI normalization, both effects
+#   are independent — you can opt into either or both per-task.
+# =============================================================================

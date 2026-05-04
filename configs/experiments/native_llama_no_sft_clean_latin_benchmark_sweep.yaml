@@ -1,0 +1,111 @@
+# Baseline (B): native Llama tokenizer + native pretrained weights, NO SFT,
+# clean_latin_rows=TRUE on every task.
+#
+# Pairs with native_llama_no_sft_benchmark_sweep.yaml (baseline A,
+# clean_latin_rows=false). The (A)/(B) delta isolates the effect of the
+# Latin-row filter on the pretrained-model-no-SFT signal: does removing
+# Latin-contaminated rows shift accuracy by more than expected from the
+# row-count change alone?
+#
+# Embedding/lm_head are untouched because vocab matches the model's
+# (resize_token_embeddings(128256) is a no-op when current size already
+# equals new size — see src/arabic_eval/models/embeddings/standard.py),
+# so any (A) vs (B) accuracy gap is caused by the row-set difference,
+# not tokenizer-init noise.
+
+experiment:
+  name: "native_llama_no_sft_clean_latin_benchmark_sweep"
+  description: >
+    Native Llama-3.2-1B + pretrained weights, NO SFT, clean_latin_rows=true on
+    all 4 LightEval Arabic benchmarks. Pairs with the no_sft baseline (A,
+    clean_latin_rows=false) to measure the Latin-filter's effect on
+    pretrained-model-only accuracy.
+  output_dir: "outputs/experiments/native_llama_no_sft_clean_latin_benchmark_sweep"
+  seed: 42
+
+data:
+  dataset_name: "Jr23xd23/ArabicText-Large"
+  cache_dir: "outputs/data_cache"
+  max_train_samples: null
+  max_eval_samples: 5000
+  preprocessing:
+    normalize_unicode: true
+    remove_diacritics: false
+    min_text_length: 10
+
+model:
+  type: "llama"
+  name_or_path: "meta-llama/Llama-3.2-1B"
+  dtype: "bfloat16"
+  device: "auto"
+
+training:
+  num_epochs: 3
+  batch_size: 4
+  gradient_accumulation_steps: 8
+  learning_rate: 2.0e-5
+  weight_decay: 0.01
+  warmup_ratio: 0.1
+  lr_scheduler: "cosine"
+  max_grad_norm: 1.0
+  bf16: true
+  fp16: false
+  save_steps: 200
+  eval_steps: 200
+  logging_steps: 50
+  save_total_limit: 2
+  early_stopping_patience: 3
+  ft:
+    enabled: false   # the flag under test for baseline (B): no SFT
+
+evaluation:
+  intrinsic_metrics: true
+  morphological_metrics: true
+  morph_sample_size: 500
+  downstream_metrics: true
+  num_eval_samples: null      # full 90 % eval split
+  failure_reports: true
+
+sweep:
+  tokenizers:
+    - type: "native_llama"
+      vocab_sizes: [null]      # pretrained vocab is fixed at 128256
+      params:
+        model_name_or_path: "meta-llama/Llama-3.2-1B"
+
+  tasks:
+    - type: "acva"
+      params:
+        dataset_name: "OALL/ACVA"
+        dataset_config: null
+        train_split_ratio: 0.10
+        max_length: 512
+        seed: 42
+        clean_latin_rows: true
+
+    - type: "alghafa"
+      params:
+        dataset_name: "OALL/AlGhafa-Arabic-LLM-Benchmark-Native"
+        dataset_config: null
+        train_split_ratio: 0.10
+        max_length: 512
+        seed: 42
+        clean_latin_rows: true
+
+    - type: "culture_arabic_mmlu"
+      params:
+        dataset_name: "OALL/Arabic_MMLU"
+        dataset_config: null
+        train_split_ratio: 0.10
+        max_length: 512
+        seed: 42
+        clean_latin_rows: true
+
+    - type: "arabic_exam"
+      params:
+        dataset_name: "MBZUAI/ArabicMMLU"
+        dataset_config: null
+        train_split_ratio: 0.10
+        max_length: 512
+        seed: 42
+        clean_latin_rows: true

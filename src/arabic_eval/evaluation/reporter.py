@@ -84,6 +84,57 @@ def build_comparison_table(
     return tabulate(rows, headers=headers, tablefmt="grid", floatfmt=".4f")
 
 
+def _build_per_subconfig_section(
+    task_name: str,
+    task_data: Dict[str, Dict[str, Any]],
+) -> List[str]:
+    """Render a per-sub-config accuracy breakdown for one downstream task.
+
+    Returns ``[]`` when the task carries no ``per_subconfig_accuracy`` block,
+    or when it does but only has the ``_default`` sentinel (single-config
+    benchmark — would just duplicate the main accuracy column).
+
+    Layout: rows = experiments, columns = sub-configs (sorted alphabetically).
+    Cell = ``accuracy (n=N)``. Missing sub-configs render as ``—``. The total
+    ``num_samples`` per sub-config doesn't vary across tokenizer experiments
+    in a normal sweep (same eval split), but we keep the n on each cell so a
+    reader can spot drift if it ever happens.
+    """
+    # Collect the union of sub-config keys across experiments.
+    all_keys: set = set()
+    for results in task_data.values():
+        psa = results.get("per_subconfig_accuracy") or {}
+        all_keys.update(psa.keys())
+
+    # Skip the section when there's nothing meaningful to show.
+    if not all_keys or all_keys == {"_default"}:
+        return []
+
+    sorted_keys = sorted(all_keys)
+
+    headers = ["Experiment"] + sorted_keys
+    rows: List[List[Any]] = []
+    for name, results in sorted(task_data.items()):
+        psa = results.get("per_subconfig_accuracy") or {}
+        row: List[Any] = [name]
+        for k in sorted_keys:
+            entry = psa.get(k)
+            if entry is None:
+                row.append("—")
+            else:
+                acc = entry.get("accuracy")
+                n = entry.get("num_samples")
+                row.append(f"{acc:.4f} (n={n})" if isinstance(acc, (int, float)) else "—")
+        rows.append(row)
+
+    lines: List[str] = []
+    lines.append(f"### Per-sub-config breakdown — {task_name}")
+    lines.append("")
+    lines.append(tabulate(rows, headers=headers, tablefmt="grid"))
+    lines.append("")
+    return lines
+
+
 def _build_mei_section(experiments: Dict[str, Dict[str, Any]]) -> List[str]:
     """Render the MEI (Morphological Efficiency Index) comparison block.
 
@@ -100,13 +151,22 @@ def _build_mei_section(experiments: Dict[str, Dict[str, Any]]) -> List[str]:
     lines: List[str] = []
     lines.append("## Composite Metric: MEI (Morphological Efficiency Index)")
     lines.append("")
-    lines.append("MEI = (accuracy × RPS × compression) / inference_time_sec")
-    lines.append("Defined only for the LightEval MCQ task family.")
+    lines.append(
+        "MEI = (accuracy × RPS × compression × num_eval_rows) / inference_time_sec"
+    )
+    lines.append(
+        "    = (accuracy × RPS × compression) / (inference_time_sec / num_eval_rows)"
+    )
+    lines.append(
+        "Per-row time normalization makes MEI comparable across LightEval MCQ "
+        "tasks with different eval-set sizes. Defined only for the LightEval "
+        "MCQ task family."
+    )
     lines.append("")
 
     headers = [
         "Experiment", "Tokenizer", "MEI", "Accuracy", "RPS",
-        "Compression", "Time (s)",
+        "Compression", "Time (s)", "Rows",
     ]
     rows: List[List[Any]] = []
     skipped: List[tuple] = []  # (name, status)
@@ -141,6 +201,7 @@ def _build_mei_section(experiments: Dict[str, Dict[str, Any]]) -> List[str]:
             _fmt(inputs.get("rps")),
             _fmt(inputs.get("compression")),
             _fmt(inputs.get("inference_time_sec")),
+            _fmt(inputs.get("num_eval_rows")),
         ])
 
     if rows:
@@ -224,11 +285,22 @@ def generate_report(
             heading_suffix = " †" if task_name in LABEL_NOISY_TASKS else ""
             lines.append(f"## Downstream Task: {task_name}{heading_suffix}")
             lines.append("")
-            lines.append(build_comparison_table(task_data))
+            # Filter the heavy ``per_subconfig_accuracy`` block out of the
+            # main aggregate table — it would flatten into one column per
+            # sub-config and bloat the table to ~20 columns on Alghafa.
+            # Rendered separately below.
+            main_table_data = {
+                name: {k: v for k, v in r.items() if k != "per_subconfig_accuracy"}
+                for name, r in task_data.items()
+            }
+            lines.append(build_comparison_table(main_table_data))
             lines.append("")
             if task_name in LABEL_NOISY_TASKS:
                 lines.append(f"† {LABEL_NOISY_TASKS[task_name]}")
                 lines.append("")
+            # Per-sub-config breakdown — emitted only when the task is
+            # heterogeneous (more than one ``_source_config``).
+            lines.extend(_build_per_subconfig_section(task_name, task_data))
 
     # Composite (MEI) section — only experiments where MEI was actually
     # computed (status == "ok") are shown in the main table; everything else
