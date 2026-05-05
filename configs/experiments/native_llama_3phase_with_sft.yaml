@@ -1,0 +1,59 @@
+# Native Llama tokenizer + full 3-phase training pipeline.
+#
+# Phase 1 — embedding_alignment: freeze the transformer body, train only
+#   embed_tokens + lm_head on Arabic-SQuAD (full causal-LM loss).
+# Phase 2 — warmup: unfreeze everything, continue on Arabic-SQuAD with
+#   answer-only loss.
+# Phase 3 — sft: fine-tune on TyDiQA-Arabic + ARCD with answer-only loss
+#   and stagnation early-stop on TyDiQA-val + ARCD-val.
+# Final eval: ACVA + Alghafa + arabic_exam, full benchmarks (no SFT split).
+#
+# Defaults for every phase parameter come from configs/base.yaml; this
+# file only overrides what's specific to the experiment (name, output
+# directory, tokenizer choice, eval task list).
+
+experiment:
+  name: "native_llama_3phase_with_sft"
+  output_dir: "outputs/experiments/native_llama_3phase_with_sft"
+  seed: 42
+
+tokenizer:
+  type: "native_llama"
+  vocab_size: null     # NativeLlama wrapper ignores this; train() is a no-op
+  load_path: null
+  save_path: "outputs/tokenizers/native_llama"
+
+model:
+  type: "llama"
+  name_or_path: "meta-llama/Llama-3.2-1B"
+  dtype: "bfloat16"
+  device: "auto"
+
+# Phase parameters inherit from configs/base.yaml. To shorten / lengthen
+# any phase, override its block here. Example to halve Phase 3:
+#
+#   training:
+#     phases:
+#       sft:
+#         steps: 1000
+
+sweep:
+  tokenizers:
+    - type: "native_llama"
+      vocab_sizes: [null]
+  tasks:
+    - type: "acva"
+      params: {}
+    - type: "alghafa"
+      params: {}
+    - type: "arabic_exam"
+      params: {}
+
+evaluation:
+  intrinsic_metrics: true
+  morphological_metrics: true
+  morph_sample_size: 500
+  downstream_metrics: true
+  failure_reports: true
+  score_normalization: "char+pmi"
+  num_eval_samples: null   # use full benchmark

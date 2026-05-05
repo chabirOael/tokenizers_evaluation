@@ -138,18 +138,15 @@ def test_word_scored_eval_context_drops_choice_listing():
     t = _alghafa_task()
     ctx = t._format_eval_context(_word_ex())
     assert "أ." not in ctx
-    assert "الإجابة:" in ctx
+    assert "### السؤال:" in ctx
+    assert "### الإجابة:" in ctx
+    # Word-scored prompts must NOT carry the letter-MCQ choices block.
+    assert "### الخيارات:" not in ctx
 
 
 def test_word_scored_continuations_use_choice_text():
     t = _alghafa_task()
     assert t._build_continuations(_word_ex()) == [" ايجابي", " سلبي"]
-
-
-def test_word_scored_sft_text_ends_with_answer_word():
-    t = _alghafa_task()
-    sft = t._format_sft_text(_word_ex())
-    assert sft.endswith(" ايجابي")
 
 
 def test_letter_scored_eval_context_lists_letters():
@@ -162,12 +159,6 @@ def test_letter_scored_eval_context_lists_letters():
 def test_letter_scored_continuations_use_letters():
     t = _alghafa_task()
     assert t._build_continuations(_letter_ex()) == [" أ", " ب", " ج", " د"]
-
-
-def test_letter_scored_sft_text_ends_with_answer_letter():
-    t = _alghafa_task()
-    sft = t._format_sft_text(_letter_ex())
-    assert sft.endswith(" ب")
 
 
 def test_missing_source_config_falls_back_to_letter():

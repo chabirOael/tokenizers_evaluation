@@ -73,8 +73,11 @@ def test_eval_prompt_includes_context_prefix():
     task = _arabic_exam_task()
     ex = task._parse_example(_row(Context="حدد إجابة هذا السؤال بعد قراءة المقطع التالي"))
     rendered = task._format_eval_context(ex)
-    assert rendered.startswith("السياق: ")
+    assert rendered.startswith("### السياق:\n")
     assert "حدد إجابة هذا السؤال" in rendered
+    # Sanity: the question and answer headers still appear after the context.
+    assert "### السؤال:" in rendered
+    assert rendered.rstrip().endswith("### الإجابة:")
 
 
 def test_eval_prompt_byte_identical_when_no_context():
@@ -83,14 +86,6 @@ def test_eval_prompt_byte_identical_when_no_context():
     task = _arabic_exam_task()
     ex = task._parse_example(_row(Context=None))
     assert task._format_eval_context(ex) == format_mcq_context(ex["question"], ex["choices"])
-
-
-def test_sft_text_includes_context_and_ends_with_gold_letter():
-    task = _arabic_exam_task()
-    ex = task._parse_example(_row(Context="نص", **{"Answer Key": "C"}))  # C → answer_idx 2
-    sft = task._format_sft_text(ex)
-    assert "السياق: نص" in sft
-    assert sft.endswith(" ج")  # Arabic letter for index 2
 
 
 # ---------------------------------------------------------------------------

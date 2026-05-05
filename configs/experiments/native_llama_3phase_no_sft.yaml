@@ -1,0 +1,53 @@
+# Native Llama tokenizer — Phase 1 + Phase 2 only (Phase 3 SFT skipped).
+#
+# Companion baseline to native_llama_3phase_with_sft.yaml. Same Phase 1 +
+# Phase 2 training (embedding alignment + warmup on Arabic-SQuAD), but
+# the SFT phase is disabled so the model never sees TyDiQA-Arabic + ARCD
+# during training. Lets us isolate Phase 3's contribution to downstream
+# accuracy: the (with_sft − no_sft) delta on each benchmark.
+#
+# All phase parameters inherit from configs/base.yaml — this file only
+# changes the SFT enable flag and pipes the same eval task list through.
+
+experiment:
+  name: "native_llama_3phase_no_sft"
+  output_dir: "outputs/experiments/native_llama_3phase_no_sft"
+  seed: 42
+
+tokenizer:
+  type: "native_llama"
+  vocab_size: null
+  load_path: null
+  save_path: "outputs/tokenizers/native_llama"
+
+model:
+  type: "llama"
+  name_or_path: "meta-llama/Llama-3.2-1B"
+  dtype: "bfloat16"
+  device: "auto"
+
+training:
+  phases:
+    sft:
+      enabled: false   # ← the only training-config delta vs the with-SFT YAML
+
+sweep:
+  tokenizers:
+    - type: "native_llama"
+      vocab_sizes: [null]
+  tasks:
+    - type: "acva"
+      params: {}
+    - type: "alghafa"
+      params: {}
+    - type: "arabic_exam"
+      params: {}
+
+evaluation:
+  intrinsic_metrics: true
+  morphological_metrics: true
+  morph_sample_size: 500
+  downstream_metrics: true
+  failure_reports: true
+  score_normalization: "char+pmi"
+  num_eval_samples: null

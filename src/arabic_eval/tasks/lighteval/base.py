@@ -9,13 +9,11 @@ This module is deliberately thin and opinion-free. It contains:
   * ``LightEvalModelWrapper`` — wraps a ``BaseModelAdapter`` to expose
     LightEval's ``loglikelihood`` request/response protocol. Truly
     generic; no dataset opinions.
-  * ``MCQTokenizedDataset`` — torch ``Dataset`` adapter over pre-tokenised
-    SFT examples.
   * ``_compute_loglikelihood`` — pure scoring loop. No prompt format, no
     continuation conventions, no aggregation policy.
-  * Stratified 10/90 split + dataloader/eval orchestration. These operate
-    on the *unified* example list returned by ``load_examples`` and have
-    no dataset specifics.
+  * ``evaluate`` — orchestrates the LightEval log-likelihood scoring over
+    the full benchmark (under the 3-phase pipeline, training is
+    task-agnostic so the entire benchmark is the eval set).
 
 Anything that encodes a *choice* about prompt shape, continuation tokens,
 score aggregation, or how rows are loaded from disk lives in ``utils.py``
@@ -25,20 +23,16 @@ requires editing this module.
 from __future__ import annotations
 
 import logging
-import zlib
 from abc import abstractmethod
 from collections import defaultdict
-from math import ceil
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import torch
 import torch.nn.functional as F
-from torch.utils.data import DataLoader, Dataset
 from tqdm import tqdm
 
-from arabic_eval.data.collation import get_collator
 from arabic_eval.models.base import BaseModelAdapter
 from arabic_eval.tasks.base import BaseTask
 from arabic_eval.tasks.lighteval.utils import (
@@ -370,23 +364,6 @@ class LightEvalModelWrapper:
 
 
 # ---------------------------------------------------------------------------
-# Dataset helper for SFT dataloader
-# ---------------------------------------------------------------------------
-
-class MCQTokenizedDataset(Dataset):
-    """Tokenized multiple-choice examples for supervised fine-tuning."""
-
-    def __init__(self, encodings: List[Dict[str, Any]]) -> None:
-        self.encodings = encodings
-
-    def __len__(self) -> int:
-        return len(self.encodings)
-
-    def __getitem__(self, idx: int) -> Dict[str, Any]:
-        return self.encodings[idx]
-
-
-# ---------------------------------------------------------------------------
 # Base benchmark task — abstract contract
 # ---------------------------------------------------------------------------
 
@@ -394,7 +371,7 @@ class LightEvalBenchmarkTask(BaseTask):
     """
     Abstract base class for LightEval-based Arabic MCQ benchmarks.
 
-    Every subclass MUST implement EIGHT things:
+    Every subclass MUST implement SEVEN things:
 
       * ``_default_dataset_name()``    — default HuggingFace dataset path
       * ``name``                       — registry key string
@@ -408,7 +385,6 @@ class LightEvalBenchmarkTask(BaseTask):
       * ``_build_continuations(ex)``   — list of continuations to score, in
                                          answer-index order; each typically begins
                                          with a leading space (LightEval convention)
-      * ``_format_sft_text(ex)``       — full text used for supervised fine-tuning
       * ``_aggregate_scores(ex, conts, lls)`` — combine per-continuation
                                          log-likelihoods into per-choice scores
                                          for argmax (e.g. char-norm)
@@ -420,9 +396,10 @@ class LightEvalBenchmarkTask(BaseTask):
     dataset that loads from somewhere else (local files, S3, …) just
     implements its own ``load_examples``.
 
-    The 10/90 split (concrete on the base) uses a fixed RNG seed and stratifies
-    by ``_source_config`` so every tokenizer variant in a sweep sees the
-    identical split.
+    Under the 3-phase pipeline, training is task-agnostic (Phase 3 SFT uses
+    TyDiQA-Arabic + ARCD), so the benchmark contributes 0 rows to training
+    and 100% of rows to evaluation. ``get_eval_examples`` returns the full
+    list (after the optional Latin-script filter).
     """
 
     def __init__(self, config: Dict[str, Any]) -> None:
@@ -431,10 +408,9 @@ class LightEvalBenchmarkTask(BaseTask):
         self.dataset_config: Optional[str] = config.get("dataset_config", None)
         self.cache_dir: str = config.get("cache_dir", "outputs/data_cache")
         self.max_length: int = config.get("max_length", 512)
-        self.train_split_ratio: float = config.get("train_split_ratio", 0.10)
         self.seed: int = config.get("seed", 42)
         self.clean_latin_rows: bool = bool(config.get("clean_latin_rows", False))
-        self._cached_splits: Optional[Tuple[List[Dict], List[Dict]]] = None
+        self._cached_examples: Optional[List[Dict]] = None
 
     # ------------------------------------------------------------------
     # Abstract hooks (every subclass MUST implement)
@@ -473,12 +449,6 @@ class LightEvalBenchmarkTask(BaseTask):
         ...
 
     @abstractmethod
-    def _format_sft_text(self, ex: Dict[str, Any]) -> str:
-        """Full text used for supervised fine-tuning (context + correct
-        continuation)."""
-        ...
-
-    @abstractmethod
     def _aggregate_scores(
         self,
         ex: Dict[str, Any],
@@ -510,14 +480,14 @@ class LightEvalBenchmarkTask(BaseTask):
         """Return the unconditioned query used to score each continuation under
         PMI normalization (``log P(c | unconditioned) − log P(c | full)``).
 
-        Default: the bare answer prefix ``"الإجابة:"`` — matches the trailing
-        line every existing benchmark prompt ends with, which is what
-        LightEval uses (``"إجابة:"``) in the multilingual reference adapter.
-        Tasks whose prompt uses a different answer-prefix convention can
-        override this; the default is the right answer for all four current
-        tasks (acva / alghafa / culture_arabic_mmlu / arabic_exam).
+        Default: the bare answer prefix ``"### الإجابة:"`` — matches the
+        trailing line every existing benchmark prompt ends with under the
+        ``###``-block formatting. Tasks whose prompt uses a different
+        answer-prefix convention can override this; the default is the right
+        answer for all four current tasks (acva / alghafa /
+        culture_arabic_mmlu / arabic_exam).
         """
-        return "الإجابة:"
+        return "### الإجابة:"
 
     # ------------------------------------------------------------------
     # clean_latin_rows hook: which fields to inspect when filtering Latin-
@@ -551,198 +521,34 @@ class LightEvalBenchmarkTask(BaseTask):
         return any(contains_latin_letters(t) for t in self._text_fields(ex))
 
     # ------------------------------------------------------------------
-    # Splitting (operates on the unified list returned by load_examples)
+    # Eval examples (no SFT split; the 3-phase pipeline trains on
+    # task-agnostic corpora — TyDiQA-Arabic + ARCD — so the benchmark
+    # contributes 0 rows to training and 100% to eval).
     # ------------------------------------------------------------------
-
-    def _get_splits(self) -> Tuple[List[Dict], List[Dict]]:
-        """Return ``(finetune_split, eval_split)`` with stratified sub-config
-        coverage, memoised per instance.
-
-        For multi-config benchmarks, random global sampling can leave entire
-        sub-configs unrepresented in the small SFT split. This method instead
-        splits **within each sub-config** (keyed on ``_source_config``) using
-        a per-group seed derived from ``self.seed`` and a CRC32 hash of the
-        config name, guaranteeing ≥ 1 SFT example per sub-config while
-        staying fully deterministic.
-
-        Single-config datasets degenerate to one ``_default`` group →
-        behaviour matches an unstratified split modulo the floor→ceil
-        rounding for tiny groups.
-        """
-        if self._cached_splits is None:
-            all_examples = self.load_examples()
-
-            if self.clean_latin_rows:
-                n_before = len(all_examples)
-                original_configs = {
-                    ex.get("_source_config", "_default") for ex in all_examples
-                }
-                all_examples = [
-                    ex for ex in all_examples if not self._row_has_latin(ex)
-                ]
-                n_after = len(all_examples)
-                remaining_configs = {
-                    ex.get("_source_config", "_default") for ex in all_examples
-                }
-                wiped = original_configs - remaining_configs
-                pct = 100.0 * (n_before - n_after) / max(n_before, 1)
-                logger.info(
-                    "%s clean_latin_rows: dropped %d/%d rows (%.1f%% removed) before stratification",
-                    self.name, n_before - n_after, n_before, pct,
-                )
-                if wiped:
-                    logger.warning(
-                        "%s clean_latin_rows: %d sub-config(s) wiped to zero rows by Latin filter: %s",
-                        self.name, len(wiped), sorted(wiped),
-                    )
-                if not all_examples:
-                    raise RuntimeError(
-                        f"{self.name}: clean_latin_rows dropped every row "
-                        f"(was {n_before}). Disable the flag or pick a different dataset."
-                    )
-
-            groups: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
-            for ex in all_examples:
-                groups[ex.get("_source_config", "_default")].append(ex)
-
-            train_ex: List[Dict[str, Any]] = []
-            eval_ex: List[Dict[str, Any]] = []
-            per_config_log: List[Tuple[str, int, int]] = []
-
-            for config_name in sorted(groups.keys()):
-                group = groups[config_name]
-                # Per-config seed: deterministic, depends on master seed and
-                # config name (so renaming the user-set seed shifts every
-                # group consistently, while different configs get distinct
-                # permutations within a single run).
-                grp_seed = (self.seed + zlib.crc32(config_name.encode("utf-8"))) & 0x7FFFFFFF
-                rng = np.random.default_rng(grp_seed)
-                perm = rng.permutation(len(group))
-                # ceil + max(1, ...) so even a 1-row group lands in SFT.
-                n_train = max(1, ceil(len(group) * self.train_split_ratio))
-                n_train = min(n_train, len(group))
-                train_ex.extend(group[i] for i in perm[:n_train])
-                eval_ex.extend(group[i] for i in perm[n_train:])
-                per_config_log.append((config_name, n_train, len(group) - n_train))
-
-            # Final shuffle so the SFT and eval streams aren't ordered by config.
-            master_rng = np.random.default_rng(self.seed)
-            master_rng.shuffle(train_ex)
-            master_rng.shuffle(eval_ex)
-
-            self._cached_splits = (train_ex, eval_ex)
-            logger.info(
-                "%s split (stratified across %d sub-config(s)): %d SFT (%.0f%%) | %d eval (%.0f%%)",
-                self.name, len(per_config_log),
-                len(train_ex), self.train_split_ratio * 100,
-                len(eval_ex), (1 - self.train_split_ratio) * 100,
-            )
-            for cfg, ntr, nev in per_config_log:
-                logger.debug("  [%s] SFT=%d eval=%d", cfg, ntr, nev)
-        return self._cached_splits
-
-    def get_fine_tune_examples(self) -> List[Dict[str, Any]]:
-        """Return the 10 % fine-tuning split."""
-        return self._get_splits()[0]
 
     def get_eval_examples(self) -> List[Dict[str, Any]]:
-        """Return the 90 % evaluation split."""
-        return self._get_splits()[1]
-
-    # ------------------------------------------------------------------
-    # BaseTask interface
-    # ------------------------------------------------------------------
-
-    def get_dataloader(
-        self,
-        tokenizer: BaseTokenizer,
-        split: str = "train",
-        batch_size: int = 8,
-        max_samples: Optional[int] = None,
-        shuffle: bool = False,
-        completion_only_loss: bool = False,
-    ) -> DataLoader:
-        """
-        Return a DataLoader over the **10 % fine-tune split**, tokenised as
-        causal-LM text via the dataset's ``_format_sft_text`` hook.
-
-        Both ``split="train"`` and ``split="test"`` use the same fine-tune
-        partition so that the 90 % evaluation set remains unseen during training.
-
-        When ``completion_only_loss=True`` the SFT labels are masked over the
-        prompt span (``-100``) and kept on the answer continuation only. The
-        prompt boundary is detected via longest-common-prefix between
-        ``_format_eval_context`` and ``_format_sft_text`` encodings, which
-        handles tokenisers that auto-append ``</s>`` correctly.
-        """
-        examples = self.get_fine_tune_examples()
-        if max_samples:
-            examples = examples[:max_samples]
-
-        encodings: List[Dict[str, Any]] = []
-        n_completion_tokens_total = 0
-        n_examples_kept = 0
-        n_examples_dropped = 0
-        for ex in tqdm(examples, desc=f"Tokenising {self.name}", unit="ex", leave=False):
-            full_text = self._format_sft_text(ex)
-            enc = tokenizer.encode(full_text, max_length=self.max_length, truncation=True)
-            entry: Dict[str, Any] = {"input_ids": enc.input_ids}
-            if enc.char_ids is not None:
-                entry["char_ids"] = enc.char_ids
-
-            if completion_only_loss:
-                prompt_text = self._format_eval_context(ex)
-                prompt_enc = tokenizer.encode(
-                    prompt_text, max_length=self.max_length, truncation=True
+        """Return all examples for evaluation, after the optional Latin filter."""
+        if self._cached_examples is None:
+            examples = self.load_examples()
+            if self.clean_latin_rows:
+                n_before = len(examples)
+                examples = [ex for ex in examples if not self._row_has_latin(ex)]
+                pct = 100.0 * (n_before - len(examples)) / max(n_before, 1)
+                logger.info(
+                    "%s clean_latin_rows: dropped %d/%d rows (%.1f%% removed)",
+                    self.name, n_before - len(examples), n_before, pct,
                 )
-                # Mask up to the longest common prefix with full_enc rather than
-                # len(prompt_enc). Tokenizers that auto-append </s> end the prompt
-                # encoding with EOS at position len(prompt)-1, while the same
-                # position in full_enc holds the FIRST answer token.
-                prompt_ids = prompt_enc.input_ids
-                full_ids = enc.input_ids
-                lcp = 0
-                for a, b in zip(prompt_ids, full_ids):
-                    if a != b:
-                        break
-                    lcp += 1
-                full_len = len(full_ids)
-                if lcp >= full_len:
-                    # Truncation ate the answer — skip; gives the model 0 grad on this row.
-                    n_examples_dropped += 1
-                    continue
-                labels = list(full_ids)
-                for i in range(lcp):
-                    labels[i] = -100
-                entry["labels"] = labels
-                n_completion_tokens_total += full_len - lcp
-                n_examples_kept += 1
-            encodings.append(entry)
+                if not examples:
+                    raise RuntimeError(
+                        f"{self.name}: clean_latin_rows dropped every row (was {n_before})."
+                    )
+            self._cached_examples = examples
+            logger.info("%s eval set: %d rows (full benchmark)", self.name, len(examples))
+        return self._cached_examples
 
-        if completion_only_loss:
-            avg_comp = (
-                n_completion_tokens_total / n_examples_kept if n_examples_kept else 0.0
-            )
-            logger.info(
-                "%s SFT completion-only-loss: %d examples kept, %d dropped (truncated), "
-                "avg %.2f completion tokens/example",
-                self.name,
-                n_examples_kept,
-                n_examples_dropped,
-                avg_comp,
-            )
-
-        collator = get_collator(
-            tokenizer.embedding_type,
-            pad_token_id=tokenizer.pad_token_id,
-            max_length=self.max_length,
-        )
-        return DataLoader(
-            MCQTokenizedDataset(encodings),
-            batch_size=batch_size,
-            shuffle=(shuffle and split == "train"),
-            collate_fn=collator,
-        )
+    # ------------------------------------------------------------------
+    # Evaluation
+    # ------------------------------------------------------------------
 
     @torch.no_grad()
     def evaluate(

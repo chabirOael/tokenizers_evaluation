@@ -33,7 +33,6 @@ from arabic_eval.tasks.lighteval.base import LightEvalBenchmarkTask
 from arabic_eval.tasks.lighteval.utils import (
     ARABIC_CHOICE_LETTERS,
     format_mcq_context,
-    format_mcq_full,
     load_huggingface_mcq,
     select_aggregator,
 )
@@ -100,7 +99,7 @@ class AlghafaTask(LightEvalBenchmarkTask):
         if self._is_word_scored(ex):
             # No "أ. <choice>" listing — the answer is the choice text itself,
             # not a letter referring to it. Mirrors ACVA's eval prompt shape.
-            return f"السؤال: {ex['question']}\nالإجابة:"
+            return f"### السؤال:\n{ex['question']}\n\n### الإجابة:"
         return format_mcq_context(ex["question"], ex["choices"])
 
     def _build_continuations(self, ex: Dict[str, Any]) -> List[str]:
@@ -114,12 +113,6 @@ class AlghafaTask(LightEvalBenchmarkTask):
             " " + (ARABIC_CHOICE_LETTERS[i] if i < len(ARABIC_CHOICE_LETTERS) else str(i))
             for i in range(n)
         ]
-
-    def _format_sft_text(self, ex: Dict[str, Any]) -> str:
-        if self._is_word_scored(ex):
-            ctx = self._format_eval_context(ex)
-            return f"{ctx} {ex['choices'][ex['answer']]}"
-        return format_mcq_full(ex["question"], ex["choices"], ex["answer"])
 
     def _aggregate_scores(
         self,

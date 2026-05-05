@@ -6,7 +6,12 @@ from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional
 
 import yaml
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator, model_validator
+
+
+# Registry keys understood by data/finetune_corpora.py. Adding a new
+# corpus means editing both this Literal and the loader registry.
+DatasetName = Literal["arabic_squad", "tydiqa_arabic", "arcd"]
 
 
 # ---------------------------------------------------------------------------
@@ -51,37 +56,115 @@ class TaskConfig(BaseModel):
     })
 
 
-class FineTuningConfig(BaseModel):
-    """Master switches for the fine-tuning step.
+class EarlyStoppingConfig(BaseModel):
+    """Early-stopping policy for Phase 3 (SFT).
 
-    Hyperparameters that govern *how* fine-tuning runs (lr, batch_size, etc.)
-    stay at the top level of TrainingConfig; this sub-section holds the
-    on/off-style flags. ``enabled`` defaults to True so every existing config
-    keeps fine-tuning by default; set ``training.ft.enabled: false`` in YAML
-    to skip step 6 and evaluate the pretrained model directly.
+    Eval is run every ``eval_every_n_steps`` against the union of
+    ``eval_splits`` and the answer-only causal-LM loss is tracked. Training
+    stops if the loss fails to improve by at least ``min_delta`` for
+    ``patience`` consecutive evaluations, but only after
+    ``min_steps_before_stop`` is reached (avoids stopping during the LR
+    warmup drift). When training stops (or completes normally) the
+    checkpoint with the best eval_loss is restored if
+    ``restore_best_at_end`` is True.
     """
     enabled: bool = True
+    metric: Literal["eval_loss"] = "eval_loss"
+    eval_every_n_steps: int = 200
+    patience: int = 5
+    min_delta: float = 5e-4
+    min_steps_before_stop: int = 500
+    restore_best_at_end: bool = True
+    eval_splits: Dict[DatasetName, str] = Field(
+        default_factory=lambda: {
+            "tydiqa_arabic": "validation",
+            "arcd": "validation",
+        }
+    )
+
+
+class PhaseConfig(BaseModel):
+    """One training phase.
+
+    Phase 1 (embedding_alignment) freezes the transformer body and trains
+    only the embedding + lm_head. Phases 2 and 3 unfreeze everything. Phase
+    1 typically uses ``loss_target='full_sequence'``; phases 2 and 3 use
+    ``'answer_only'`` (mask the question/context, only the answer span
+    contributes to loss).
+    """
+    enabled: bool = True
+    datasets: List[DatasetName]
+    trainable_parameters: List[str]
+    steps: int
+    learning_rate: float
+    batch_size: int
+    gradient_accumulation_steps: int = 1
+    optimizer: Literal["adamw"] = "adamw"
+    weight_decay: float = 0.0
+    max_length: int = 512
+    loss_target: Literal["full_sequence", "answer_only"] = "answer_only"
+    lr_scheduler: Literal["cosine", "constant", "linear"] = "cosine"
+    warmup_steps: int = 0
+    max_grad_norm: float = 1.0
+    save_checkpoint: bool = True
+    early_stopping: Optional[EarlyStoppingConfig] = None
+
+    @field_validator("datasets", mode="before")
+    @classmethod
+    def _coerce_datasets(cls, v):
+        if isinstance(v, str):
+            return [v]
+        return v
+
+    @field_validator("trainable_parameters")
+    @classmethod
+    def _validate_trainable_parameters(cls, v):
+        if not isinstance(v, list) or not v:
+            raise ValueError("trainable_parameters must be a non-empty list of strings")
+        for entry in v:
+            if not isinstance(entry, str) or not entry:
+                raise ValueError(f"trainable_parameters entries must be non-empty strings, got {entry!r}")
+        if "*" in v and len(v) > 1:
+            raise ValueError("trainable_parameters cannot mix '*' with other entries; use ['*'] alone for 'all parameters'")
+        return v
+
+    @field_validator("steps")
+    @classmethod
+    def _positive_steps(cls, v):
+        if v <= 0:
+            raise ValueError(f"steps must be positive, got {v}")
+        return v
+
+
+class PhasesConfig(BaseModel):
+    """The three training phases. Each is independently toggleable via its own ``enabled`` flag."""
+    embedding_alignment: PhaseConfig
+    warmup: PhaseConfig
+    sft: PhaseConfig
+
+    @model_validator(mode="after")
+    def _check_sft_has_early_stopping_if_enabled(self):
+        if self.sft.enabled and self.sft.early_stopping is None:
+            raise ValueError(
+                "sft.early_stopping must be defined when sft.enabled is True "
+                "(stagnation early-stop is required for Phase 3)"
+            )
+        return self
 
 
 class TrainingConfig(BaseModel):
-    num_epochs: int = 3
-    batch_size: int = 8
-    gradient_accumulation_steps: int = 4
-    learning_rate: float = 2e-5
-    weight_decay: float = 0.01
-    warmup_ratio: float = 0.1
-    lr_scheduler: str = "cosine"
-    max_grad_norm: float = 1.0
-    fp16: bool = False
+    """Three-phase training pipeline configuration.
+
+    Each phase has its own ``enabled`` flag. ``embedding_alignment.enabled=True
+    + warmup.enabled=True + sft.enabled=True`` is the full "with SFT" pipeline.
+    Setting ``sft.enabled=False`` keeps Phase 1 + Phase 2 (the "without SFT"
+    baseline). Setting all three to False skips training and evaluates the
+    pretrained model directly.
+    """
+    phases: PhasesConfig
     bf16: bool = True
-    save_steps: int = 500
-    eval_steps: int = 500
+    fp16: bool = False
     logging_steps: int = 50
-    save_total_limit: int = 2
-    early_stopping_patience: Optional[int] = 3
-    early_stopping_metric: str = "eval_loss"
-    completion_only_loss: bool = False
-    ft: FineTuningConfig = Field(default_factory=FineTuningConfig)
 
 
 class EvaluationConfig(BaseModel):

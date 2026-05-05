@@ -97,7 +97,7 @@ class ArabicExamTask(LightEvalBenchmarkTask):
         ctx = ex.get("context", "")
         base = format_mcq_context(ex["question"], ex["choices"])
         if ctx:
-            return f"السياق: {ctx}\n{base}"
+            return f"### السياق:\n{ctx}\n\n{base}"
         return base
 
     def _build_continuations(self, ex: Dict[str, Any]) -> List[str]:
@@ -106,12 +106,6 @@ class ArabicExamTask(LightEvalBenchmarkTask):
             " " + (ARABIC_CHOICE_LETTERS[i] if i < len(ARABIC_CHOICE_LETTERS) else str(i))
             for i in range(n)
         ]
-
-    def _format_sft_text(self, ex: Dict[str, Any]) -> str:
-        ctx_block = self._format_eval_context(ex)
-        idx = ex["answer"]
-        letter = ARABIC_CHOICE_LETTERS[idx] if idx < len(ARABIC_CHOICE_LETTERS) else str(idx)
-        return f"{ctx_block} {letter}"
 
     def _aggregate_scores(
         self,

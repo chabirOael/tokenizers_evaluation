@@ -2,8 +2,8 @@
 """CLI: Run a full experiment from a YAML config file.
 
 Usage:
-    python scripts/run_experiment.py --config configs/experiments/bpe_32k_generation.yaml
-    python scripts/run_experiment.py --config configs/experiments/full_sweep.yaml --sweep
+    python scripts/run_experiment.py --config configs/experiments/native_llama_3phase_with_sft.yaml
+    python scripts/run_experiment.py --config configs/experiments/<sweep>.yaml --sweep
 """
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from arabic_eval.config import load_config
-from arabic_eval.pipeline.experiment import run_single_experiment, run_sweep
+from arabic_eval.pipeline.experiment import run_experiment, run_sweep
 from arabic_eval.utils.logging import setup_logger
 
 
@@ -50,11 +50,13 @@ def main() -> None:
     error_log_file = log_dir / "errors.log"
     setup_logger("arabic_eval", log_file=log_file, error_log_file=error_log_file)
 
-    # Run
-    if args.sweep or config.sweep is not None:
+    # Run. The 3-phase pipeline trains once per (tokenizer, vocab_size) and
+    # evaluates on every task in ``sweep.tasks``. ``run_experiment`` covers
+    # the single-cell case; ``run_sweep`` covers multiple tokenizer cells.
+    if args.sweep and config.sweep is not None and len(config.sweep.tokenizers) > 1:
         results = run_sweep(config)
     else:
-        results = run_single_experiment(config)
+        results = run_experiment(config)
 
     print(f"\nExperiment complete. Results saved to: {config.output_dir}")
 

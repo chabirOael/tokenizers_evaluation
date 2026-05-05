@@ -14,7 +14,6 @@ from arabic_eval.tasks.lighteval.base import LightEvalBenchmarkTask
 from arabic_eval.tasks.lighteval.utils import (
     ARABIC_CHOICE_LETTERS,
     format_mcq_context,
-    format_mcq_full,
     load_huggingface_mcq,
     parse_mcq_generic,
     select_aggregator,
@@ -54,9 +53,6 @@ class CultureArabicMMLUTask(LightEvalBenchmarkTask):
             " " + (ARABIC_CHOICE_LETTERS[i] if i < len(ARABIC_CHOICE_LETTERS) else str(i))
             for i in range(n)
         ]
-
-    def _format_sft_text(self, ex: Dict[str, Any]) -> str:
-        return format_mcq_full(ex["question"], ex["choices"], ex["answer"])
 
     def _aggregate_scores(
         self,

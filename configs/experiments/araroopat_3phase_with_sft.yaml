@@ -1,0 +1,75 @@
+# AraRooPat (Arabic Roots & Patterns) tokenizer + full 3-phase training pipeline.
+#
+# Phase 1 — embedding_alignment: freeze the transformer body, train only
+#   embed_tokens + lm_head on Arabic-SQuAD (full causal-LM loss).
+# Phase 2 — warmup: unfreeze everything, continue on Arabic-SQuAD with
+#   answer-only loss.
+# Phase 3 — sft: fine-tune on TyDiQA-Arabic + ARCD with answer-only loss
+#   and stagnation early-stop on TyDiQA-val + ARCD-val.
+# Final eval: ACVA + Alghafa + arabic_exam, full benchmarks (no SFT split).
+#
+# Defaults for every phase parameter come from configs/base.yaml; this
+# file only overrides what's specific to the experiment (tokenizer params,
+# eval task list, optimization flags).
+#
+# Prerequisites:
+#   - Main .venv installed via `pip install -e .`
+#   - Isolated CAMeL venv: .venv-camel (one-time setup):
+#       python -m venv .venv-camel
+#       .venv-camel/bin/pip install -e ".[araroopat-camel]"
+#       .venv-camel/bin/camel_data -i light
+
+experiment:
+  name: "araroopat_3phase_with_sft"
+  output_dir: "outputs/experiments/araroopat_3phase_with_sft"
+  seed: 42
+
+tokenizer:
+  type: "araroopat"
+  vocab_size: null    # Derived from max_roots + max_patterns + fixed slots; ignored.
+  load_path: null
+  save_path: "outputs/tokenizers/araroopat_balanced"
+  params:
+    # Balanced vocab tier: ~10.7K total, ~94% coverage on MSA.
+    max_roots: 10000
+    max_patterns: 500
+    min_root_freq: 2
+    min_pattern_freq: 2
+    generator_timeout_ms: 50
+    use_diacritized_surface: false
+    cache_corpus_analysis: true        # cache CAMeL pre-pass to disk
+    add_bos_eos: true                  # wrap encode() with <s>...</s>
+
+model:
+  type: "llama"
+  name_or_path: "meta-llama/Llama-3.2-1B"
+  dtype: "bfloat16"
+  device: "auto"
+
+# Phase parameters inherit from configs/base.yaml. To shorten / lengthen
+# any phase, override its block here.
+
+training:
+  bf16: true                           # mixed precision on (default)
+  fp16: false
+
+sweep:
+  tokenizers:
+    - type: "araroopat"
+      vocab_sizes: [null]
+  tasks:
+    - type: "acva"
+      params: {}
+    - type: "alghafa"
+      params: {}
+    - type: "arabic_exam"
+      params: {}
+
+evaluation:
+  intrinsic_metrics: true
+  morphological_metrics: true
+  morph_sample_size: 500
+  downstream_metrics: true
+  failure_reports: true                # per-task CSV of wrong answers
+  score_normalization: "char+pmi"      # both char-norm and PMI-debiased accuracy
+  num_eval_samples: null               # use full benchmark

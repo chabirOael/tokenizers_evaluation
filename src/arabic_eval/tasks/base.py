@@ -4,29 +4,21 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import Any, Dict, List, Optional
 
-from torch.utils.data import DataLoader
-
 from arabic_eval.models.base import BaseModelAdapter
 from arabic_eval.tokenizers.base import BaseTokenizer
 
 
 class BaseTask(ABC):
-    """Defines a downstream task: its data, training loop, and evaluation."""
+    """Defines a downstream evaluation task: how to load it and how to score it.
+
+    Under the 3-phase training pipeline tasks no longer own a dataloader —
+    training data comes from ``arabic_eval.data.finetune_corpora`` (Arabic-
+    SQuAD for Phase 1+2; TyDiQA-Arabic + ARCD for Phase 3). Tasks are eval-
+    only.
+    """
 
     @abstractmethod
     def __init__(self, config: Dict[str, Any]) -> None:
-        ...
-
-    @abstractmethod
-    def get_dataloader(
-        self,
-        tokenizer: BaseTokenizer,
-        split: str = "train",
-        batch_size: int = 8,
-        max_samples: Optional[int] = None,
-        shuffle: bool = False,
-    ) -> DataLoader:
-        """Load and tokenize the task's dataset. Returns a DataLoader."""
         ...
 
     @abstractmethod

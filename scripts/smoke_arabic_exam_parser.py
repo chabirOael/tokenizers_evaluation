@@ -11,8 +11,8 @@ Hits the real ``MBZUAI/ArabicMMLU`` dataset (cached under
   2. Total examples = sum of the 40 subject configs minus 120 ``is_few_shot``
      rows ⇒ 14455 rows on the current dataset snapshot.
   3. ~706 rows carry a non-empty ``Context`` and the eval prompt prepends
-     ``السياق:`` for those, byte-identical to the inherited base helper for
-     the rest.
+     a ``### السياق:`` block for those, byte-identical to the inherited
+     base helper for the rest.
   4. 340 rows have 5 choices and 139 of those are ``Answer Key=E`` (recovered
      from the pre-fix silent-drop branch). Note: the raw dataset has 344 /
      141 of these respectively; subtracting the few_shot rows that hit those
@@ -86,8 +86,8 @@ def main() -> int:
         sample = with_ctx[0]
         rendered = task._format_eval_context(sample)
         all_ok &= _check(
-            "context-bearing prompt prepends 'السياق:'",
-            rendered.startswith("السياق: "),
+            "context-bearing prompt prepends '### السياق:'",
+            rendered.startswith("### السياق:\n"),
         )
 
     # Byte-identical fallback for context-free rows

@@ -6,7 +6,7 @@ Covers:
     return the unchanged char-norm result (backward compat).
   * Under ``normalization="pmi"`` they return ``ll - unconditioned_ll``.
   * ``_unconditioned_query`` defaults to the bare answer prefix
-    ``"الإجابة:"`` for every current task.
+    ``"### الإجابة:"`` for every current task.
   * ``LightEvalModelWrapper.evaluate_mcq`` under ``"char+pmi"``:
       - emits both ``accuracy_char_norm`` and ``accuracy_pmi``;
       - ``accuracy`` aliases ``accuracy_char_norm``;
@@ -100,16 +100,16 @@ def test_aggregate_scores_pmi_without_unconditioned_raises():
 
 
 # ---------------------------------------------------------------------------
-# 2. _unconditioned_query: default is "الإجابة:" for every task
+# 2. _unconditioned_query: default is "### الإجابة:" for every task
 # ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize("task_cls", [ACVATask, AlghafaTask, CultureArabicMMLUTask, ArabicExamTask])
 def test_unconditioned_query_default(task_cls):
     """All four current tasks share the same answer-prefix convention; the
-    default ``_unconditioned_query`` must return ``"الإجابة:"`` for each."""
+    default ``_unconditioned_query`` must return ``"### الإجابة:"`` for each."""
     task = _make_task(task_cls)
     ex = {"question": "س", "choices": ["a", "b"], "answer": 0}
-    assert task._unconditioned_query(ex) == "الإجابة:"
+    assert task._unconditioned_query(ex) == "### الإجابة:"
 
 
 # ---------------------------------------------------------------------------
@@ -119,7 +119,7 @@ def test_unconditioned_query_default(task_cls):
 def _fake_loglikelihood_factory(letter_priors: Dict[str, float], boost_letter: str = " ج"):
     """Build a fake ``loglikelihood`` that:
        - returns ``letter_priors[cont]`` when the context is the unconditioned
-         answer-prefix only (``"الإجابة:"``);
+         answer-prefix only (``"### الإجابة:"``);
        - returns ``letter_priors[cont] + 0.5`` for the gold letter when the
          context contains the question (so char-norm picks the boosted one).
 
@@ -129,7 +129,7 @@ def _fake_loglikelihood_factory(letter_priors: Dict[str, float], boost_letter: s
 
     def _ll(model, tokenizer, ctx, cont, max_length=512):
         calls.append((ctx, cont))
-        if ctx == "الإجابة:":
+        if ctx == "### الإجابة:":
             return letter_priors[cont]
         # Conditioned: tweak the gold letter's score upward by a fixed delta
         # so PMI vs char-norm produce different argmax in some rows.
@@ -188,8 +188,8 @@ def test_evaluate_mcq_unconditioned_cache_hits_for_letter_mcq(mock_ll):
 
     # Per example we make 4 conditioned calls → 5 × 4 = 20 conditioned calls.
     # Unconditioned: 4 calls TOTAL (all rows hit the cache after the first).
-    uncond_calls = [c for c in calls if c[0] == "الإجابة:"]
-    cond_calls = [c for c in calls if c[0] != "الإجابة:"]
+    uncond_calls = [c for c in calls if c[0] == "### الإجابة:"]
+    cond_calls = [c for c in calls if c[0] != "### الإجابة:"]
     assert len(uncond_calls) == 4, (
         f"Expected 4 unconditioned calls (cached after first row); got {len(uncond_calls)}"
     )
@@ -249,7 +249,7 @@ def test_evaluate_mcq_failure_csv_score_pmi_columns(mock_ll, tmp_path):
     priors = {" أ": -1.0, " ب": -3.0, " ج": -2.0, " د": -4.0}
 
     def _ll(model, tokenizer, ctx, cont, max_length=512):
-        if ctx == "الإجابة:":
+        if ctx == "### الإجابة:":
             return priors[cont]
         # Conditioned: " أ" (gold) gets a small boost but PMI removes it.
         return priors[cont] + (0.1 if cont == " أ" else 0.0)

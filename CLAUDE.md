@@ -2,12 +2,14 @@
 
 ## Project Overview
 
-A universal platform for evaluating Arabic tokenizers by measuring LLM downstream performance. All external parameters (dataset, model architecture, training hyperparameters) are held fixed; only the tokenizer changes between experiments. Tokenizers are trained from scratch on the same Arabic dataset, integrated into the same LLM (with embedding layer replacement), fine-tuned, and evaluated on the same downstream tasks.
+A universal platform for evaluating Arabic tokenizers by measuring LLM downstream performance. All external parameters (training pipeline, datasets, model architecture, hyperparameters) are held fixed; only the tokenizer changes between experiments. Every condition (native Llama tokenizer + every from-scratch tokenizer variant) runs the same fixed 3-phase training pipeline, then is evaluated on the same downstream benchmarks.
 
-- **Primary dataset**: `Jr23xd23/ArabicText-Large` (HuggingFace)
+- **Tokenizer-training corpus**: `Jr23xd23/ArabicText-Large` (HuggingFace) — used for tokenizer training + intrinsic eval
+- **Phase 1 + 2 corpus**: `Mostafa3zazi/Arabic_SQuAD` (machine-translated SQuAD-v1, 48,344 train rows)
+- **Phase 3 corpus**: TyDiQA-Arabic (`google-research-datasets/tydiqa` `secondary_task` filtered to Arabic — 14,805 train / 921 val rows) + ARCD (`hsseinmz/arcd` `plain_text` — 693 train / 702 val rows)
 - **Primary LLM**: LLaMA 3.2-1B (`meta-llama/Llama-3.2-1B`)
-- **Downstream tasks**: Text Generation (perplexity), Question Answering (F1/EM on ARCD), and four LightEval benchmarks (ACVA, Alghafa, Culture-Arabic-MMLU, Arabic-Exam — accuracy via log-likelihood scoring)
-- **Vocab sizes tested**: 16K, 32K, 50K for subword tokenizers; fixed char vocab for character-level; fixed 260-id byte vocab for Charformer
+- **Eval benchmarks**: four LightEval log-likelihood MCQ benchmarks — ACVA, Alghafa, Culture-Arabic-MMLU, Arabic-Exam. Eval is **full benchmark** (no SFT split — training is task-agnostic).
+- **Vocab sizes tested**: 16K, 32K, 50K for subword tokenizers; fixed char vocab for character-level; fixed 260-id byte vocab for Charformer; 128256 for native_llama (matches model embedding matrix)
 
 ## Setup
 
@@ -26,18 +28,19 @@ src/arabic_eval/          # Main package
   registry.py             # Generic Registry class — all extensibility uses this
   config.py               # Pydantic config models + YAML loading/merging
   utils/                  # reproducibility.py, logging.py, io.py
-  data/                   # loader.py, preprocessing.py, collation.py
-  tokenizers/             # base.py + 5 implementations + intrinsic_metrics.py
-  models/                 # base.py, llama_adapter.py, embeddings/{standard,character_cnn,char_jaber_embed}.py
-  tasks/                  # base.py, text_generation.py, question_answering.py
-                          #   lighteval/    — abstract base + 4 dataset files (acva, alghafa,
-                          #     culture_arabic_mmlu, arabic_exam) + utils.py (opt-in helpers)
-  training/               # trainer.py, callbacks.py
-  evaluation/             # metrics.py, evaluator.py, reporter.py
+  data/                   # loader.py (main corpus), preprocessing.py, collation.py,
+                          #   answer_only_masking.py (LCP helper),
+                          #   finetune_corpora.py (Arabic-SQuAD + TyDiQA + ARCD)
+  tokenizers/             # base.py + 8 implementations + native_llama wrapper
+  models/                 # base.py, llama_adapter.py, embeddings/{standard,character_cnn,char_jaber_embed,charformer_embed}.py
+  tasks/                  # base.py + lighteval/ (abstract base + 4 dataset files +
+                          #   utils.py opt-in helpers). LightEval is eval-only.
+  training/               # freezing.py, phases.py (3-phase runner)
+  evaluation/             # metrics.py, evaluator.py, reporter.py, intrinsic_metrics.py
   pipeline/               # experiment.py (end-to-end orchestrator)
 configs/                  # YAML configs: base, tokenizers/, models/, tasks/, experiments/
 scripts/                  # CLI entry points: train_tokenizer.py, run_experiment.py, evaluate_intrinsic.py, compare_results.py
-outputs/                  # Gitignored: tokenizers/, checkpoints/, logs/, results/
+outputs/                  # Gitignored: tokenizers/, experiments/, logs/, data_cache/
 ```
 
 ## Architecture & Key Design Patterns
@@ -88,7 +91,7 @@ Layered YAML with Pydantic validation:
 
 Key: experiment YAML files can nest top-level fields under `experiment:` key — the loader flattens this automatically.
 
-## The 8 Tokenizers (+ 1 baseline-only wrapper)
+## The 8 Tokenizers (+ NativeLlama wrapper)
 
 | # | Name | Registry Key | File | Embedding | Notes |
 |---|---|---|---|---|---|
@@ -100,7 +103,7 @@ Key: experiment YAML files can nest top-level fields under `experiment:` key —
 | 6 | Farasa-CharacterBERT | `farasa_character_bert` | `tokenizers/farasa_character_bert.py` | character_cnn | Farasa segmentation first (same as MorphoBPE), then each *morpheme* (instead of each word) -> fixed-length char ID vector via CharCNN. Subclasses `CharacterBERTTokenizer`. Output head indexes a morpheme vocab. Requires Java. Default `max_char_len=25` (morphemes are shorter than words). |
 | 7 | Charformer | `charformer` | `tokenizers/charformer.py` | charformer | Byte-level UTF-8 tokenization (256 bytes + 4 specials = 260 ids). `train()` is a no-op — the actual "subword learning" happens inside the GBST module of the model (`models/embeddings/charformer_embed.py`). GBST enumerates candidate blocks of size 1..M, scores them with a learned linear head, softmax-mixes per position, then mean-pool downsamples by `d_s`. Generation is unsupported (GBST is non-causal within the block window). Sequences are ~2x longer than char-JABER on Arabic (each Arabic char = 2 bytes). |
 | 8 | AraRooPat | `araroopat` | `tokenizers/araroopat.py` (+ `araroopat_backend.py`) | standard | Arabic Roots & Patterns. Each content word → `[ROOT_x] [PAT_y]` where root is the consonant skeleton and pattern is CAMeL Tools' positional template (e.g. `"1ُ2ُ3"`). Clitics emitted as separate `[CLITICP_*]` (proclitic) and `[CLITICE_*]` (enclitic) tokens — distinct prefix ranges remove the prc-vs-enc ambiguity at decode. Reconstruction is a three-tier resolver: lookup table built from corpus → CAMeL `Generator` for unseen pairs → naive slot substitution. Requires `camel-tools` and the `morphology-db-msa-r13` database (one-time `camel_data -i light` download). Generation is supported (unlike CharBERT/Charformer). |
-| — | NativeLlama | `native_llama` | `tokenizers/native_llama.py` | standard | **Baseline-only wrapper, not part of the 8-tokenizer comparison.** Wraps `meta-llama/Llama-3.2-1B`'s pretrained tokenizer; `train()` is a no-op. `vocab_size = len(hf_tokenizer) = 128256` matches the model's embedding matrix → `resize_token_embeddings` is a no-op and pretrained embeddings stay byte-identical. Special tokens follow Llama: `bos=128000`, `eos=128001`, `pad=128001` (= eos, HF standard for causal LMs without dedicated pad — collator masks via attention_mask, not pad_id, so the collision is harmless), `unk=128002` (`<\|reserved_special_token_0\|>`, never emitted → UNK rate stays 0). Used by the `native_llama_{no,with}_sft_benchmark_sweep` baselines to anchor the from-scratch sweeps against the pretrained-tokenizer ceiling. |
+| — | NativeLlama | `native_llama` | `tokenizers/native_llama.py` | standard | Wraps `meta-llama/Llama-3.2-1B`'s pretrained tokenizer; `train()` is a no-op. `vocab_size = 128256` matches the model's embedding matrix → `resize_token_embeddings` is a no-op and pretrained embeddings stay byte-identical. Llama uses **tied embeddings** — `lm_head.weight is model.embed_tokens.weight` — so `lm_head` is absent from `named_parameters()`; the freezing helper warns and continues (training `embed_tokens` IS training `lm_head` under tied weights). Special tokens follow Llama: `bos=128000`, `eos=128001`, `pad=128001` (= eos, HF standard; collator masks via `attention_mask`, not `pad_id`), `unk=128002` (`<\|reserved_special_token_0\|>`). Runs the same 3-phase pipeline as every other tokenizer. Used as the canonical reference experiment (`native_llama_3phase_with_sft.yaml` + `native_llama_3phase_no_sft.yaml`). |
 
 All implement `BaseTokenizer` (`tokenizers/base.py`): `train()`, `encode()`, `decode()`, `save()`, `load()`, `vocab_size`, `embedding_type`, `special_tokens`, `get_embedding_config()`.
 
@@ -110,42 +113,62 @@ Special tokens for the 8 from-scratch tokenizers: `<pad>` (0), `<s>` (1), `</s>`
 
 ## Experiment Pipeline Flow (`src/arabic_eval/pipeline/experiment.py`)
 
-`run_single_experiment(config)` executes these steps:
+`run_experiment(config)` executes these steps once per (tokenizer, vocab_size) cell:
+
 1. **Set seed** and create output directory
-2. **Load dataset** via HF `datasets`, apply Arabic preprocessing (normalization, optional diacritics removal), split train/eval
+2. **Load main Arabic corpus** via HF `datasets`, apply Arabic preprocessing (normalization, optional diacritics removal), split train/eval. Used only for tokenizer training + intrinsic eval.
 3. **Train tokenizer** from scratch on training texts (or load from `load_path` if set)
-4. **Intrinsic evaluation** — compute fertility, compression ratio, UNK rate, vocab coverage
+4. **Intrinsic evaluation** — compute fertility, compression ratio, UNK rate, vocab coverage, plus Arabic morphological metrics (root_conservation_rate, etc.) when `evaluation.morphological_metrics: true`.
 5. **Load LLM** and call `adapt_to_tokenizer()` — resizes/replaces embedding layers
-6. **Fine-tune** — training loop with gradient accumulation, mixed precision (bf16), cosine LR schedule, early stopping
-7. **Downstream evaluation** — perplexity for text generation, F1/EM for QA, accuracy for LightEval MCQ. Wall-clock wrapped via `time.perf_counter()` after a tokenizer warmup encode (so lazy backends — AraRooPat's CAMeL bridge, Farasa Java subprocess — don't get billed to the timed region). Result stored as `inference_time_sec` in the downstream block.
-8. **Composite metric** — for LightEval MCQ tasks only, `compute_mei()` produces the Morphological Efficiency Index from the four inputs above. Stored at top-level `results["mei"]`. See *MEI* section below.
-9. **Save results** as JSON to output directory
+6. **Run training phases** — three independently-toggleable phases run in fixed order. See *3-Phase Training Pipeline* below for the per-phase contract.
+7. **Downstream evaluation** — for each task in `sweep.tasks`, run LightEval log-likelihood scoring on the **full benchmark** (no SFT split — training was task-agnostic). Wall-clock wrapped via `time.perf_counter()` after a tokenizer warmup encode. Per-task `inference_time_sec` recorded.
+8. **Composite metric** — `compute_mei()` per task produces the Morphological Efficiency Index. Stored at top-level `results["mei"][<task>]`.
+9. **Save results** as `all_metrics.json`
 
-`run_sweep(config)` iterates over the Cartesian product of (tokenizer types x vocab sizes x tasks) and generates a comparison report.
+`run_sweep(config)` iterates `run_experiment` over multiple (tokenizer, vocab_size) cells. The eval task list (`sweep.tasks`) is shared across all cells — training happens once per cell, eval iterates over tasks.
 
-For **LightEval benchmark tasks** the pipeline flow adapts automatically:
-- Steps 1–4 are unchanged (main Arabic dataset used for tokenizer training and intrinsic metrics).
-- Step 6 fine-tunes on the **10 % benchmark split** (the task's `get_dataloader()` returns this).
-- Step 7 evaluates on the **90 % benchmark split** via LightEval log-likelihood scoring.
-- Step 8 computes MEI; `compute_mei` short-circuits with `status="task_not_mcq"` for non-LightEval tasks.
+## 3-Phase Training Pipeline (`src/arabic_eval/training/phases.py`)
+
+Every training run executes the same three phases regardless of tokenizer / model / eval task:
+
+| Phase | YAML key | Trains | Body | Dataset | Loss | Default budget |
+|---|---|---|---|---|---|---|
+| 1 — Embedding alignment | `embedding_alignment` | `embed_tokens` + `lm_head` only | frozen | `arabic_squad` | full-sequence causal LM | 1000 steps, LR=1e-3, BS=8, constant LR |
+| 2 — Warmup | `warmup` | all params | unfrozen | `arabic_squad` | answer-only | 2000 steps, LR=2e-4, BS=4×4, cosine + 100 warmup |
+| 3 — SFT | `sft` | all params | unfrozen | `tydiqa_arabic + arcd` | answer-only | 2000 steps, LR=2e-4, BS=4×4, cosine + 100 warmup, early-stop |
+
+Each phase is independently toggleable via its own `enabled` flag. Phase 3 additionally runs periodic eval on TyDiQA-val + ARCD-val for stagnation early-stop (patience=5, min_delta=5e-4, min_steps_before_stop=500, restore-best-at-end=true).
+
+**Per-phase params (all adjustable):** `enabled`, `datasets` (registry keys: `arabic_squad`, `tydiqa_arabic`, `arcd`), `trainable_parameters` (substring list; `["*"]` = all), `steps`, `learning_rate`, `batch_size`, `gradient_accumulation_steps`, `optimizer`, `weight_decay`, `max_length`, `loss_target` (`"full_sequence"` | `"answer_only"`), `lr_scheduler` (`"cosine"` | `"constant"` | `"linear"`), `warmup_steps`, `max_grad_norm`, `save_checkpoint`. Phase 3 also has `early_stopping`. Defaults in `configs/base.yaml`.
+
+**Why this design.** The previous "10% SFT on benchmark + 90% eval" was empirically destructive: each from-scratch tokenizer's vocab indices were silently mapped onto Llama's first N pretrained rows by `resize_token_embeddings`, and 10% benchmark-specific SFT couldn't drift those mappings far enough to find real signal. The 3-phase pipeline (a) deliberately aligns embeddings before any other training (Phase 1), (b) teaches QA format on a regular translated dataset before exposure to native Arabic complexity (Phase 2), and (c) does the decisive SFT on native Arabic QA in Phase 3. The whole pipeline runs identically across all conditions so the only experimental variable is the tokenizer + its embedding/lm_head weights.
+
+**Phase 3 prompt format** (`### السياق:` / `### السؤال:` / `### الإجابة:` block) lives in [src/arabic_eval/data/finetune_corpora.py](src/arabic_eval/data/finetune_corpora.py). LightEval per-task prompts are unchanged.
+
+**Answer-only loss masking** uses an LCP (longest common prefix) helper at [src/arabic_eval/data/answer_only_masking.py](src/arabic_eval/data/answer_only_masking.py) — necessary because Llama auto-appends `</s>` to standalone encodings, so naive `labels[:len(prompt)] = -100` would eat the first answer token.
+
+**Tied embeddings on Llama-3.2-1B** — `lm_head.weight is model.embed_tokens.weight`, so `lm_head` is absent from `named_parameters()`. The freezing helper ([src/arabic_eval/training/freezing.py](src/arabic_eval/training/freezing.py)) warns when a substring matches no parameter while others do (the tied-weight case) and continues — training `embed_tokens` IS training `lm_head`.
 
 ## CLI Commands
 
 ```bash
 # Train a single tokenizer
-python scripts/train_tokenizer.py --type bpe --vocab-size 32000
+.venv/bin/python scripts/train_tokenizer.py --type bpe --vocab-size 32000
 
-# Run a single experiment
-python scripts/run_experiment.py --config configs/experiments/bpe_32k_generation.yaml
+# Run a single experiment (3-phase training + eval on every task in sweep.tasks)
+.venv/bin/python scripts/run_experiment.py \
+  --config configs/experiments/native_llama_3phase_with_sft.yaml
 
-# Run full sweep (all tokenizers x vocab sizes x tasks)
-python scripts/run_experiment.py --config configs/experiments/full_sweep.yaml --sweep
+# Same but Phase 3 disabled (Phase 1 + Phase 2 only)
+.venv/bin/python scripts/run_experiment.py \
+  --config configs/experiments/native_llama_3phase_no_sft.yaml
 
-# Run benchmark sweep (all tokenizers x ACVA/Alghafa/Culture-Arabic-MMLU/Arabic-Exam)
-python scripts/run_experiment.py --config configs/experiments/benchmark_sweep.yaml --sweep
+# Sweep over multiple tokenizer cells (training happens per cell; eval task list shared)
+.venv/bin/python scripts/run_experiment.py \
+  --config configs/experiments/<sweep_yaml>.yaml --sweep
 
 # Intrinsic-only evaluation of a saved tokenizer
-python scripts/evaluate_intrinsic.py --tokenizer-path outputs/tokenizers/bpe_32k --type bpe
+.venv/bin/python scripts/evaluate_intrinsic.py --tokenizer-path outputs/tokenizers/bpe_32k --type bpe
 
 # Compare results across experiments
 python scripts/compare_results.py outputs/experiments/*/
@@ -173,23 +196,27 @@ All scripts add `src/` to `sys.path`, so no install is needed for development. T
 5. Must handle all `EmbeddingType` values in `adapt_to_tokenizer()`
 6. Create `configs/models/my_model.yaml`
 
-### Adding a new downstream task
+### Adding a new eval task (non-LightEval)
+
+Tasks are eval-only under the 3-phase pipeline. There's no per-task SFT contract.
 
 1. Create `src/arabic_eval/tasks/my_task.py`
-2. Implement `BaseTask` (get_dataloader, evaluate, name, metric_names)
+2. Implement `BaseTask` (just `evaluate`, `name`, `metric_names` — `get_dataloader` is gone)
 3. Decorate with `@task_registry.register("my_task")`
 4. Add import in `src/arabic_eval/tasks/__init__.py`
 5. Create `configs/tasks/my_task.yaml`
 
+If you need a task-specific evaluation flag, plumb it via the signature-gating pattern (see *Optional eval features: opt-in via signature* in the skill — `inspect.signature(task.evaluate).parameters`) rather than widening the abstract base.
+
 ### Adding a new LightEval benchmark task
 
 1. Create `src/arabic_eval/tasks/lighteval/<my_benchmark>.py` and subclass `LightEvalBenchmarkTask`
-2. Implement all 8 abstract hooks: `_default_dataset_name`, `name`, `_parse_example`, `load_examples`, `_format_eval_context`, `_build_continuations`, `_format_sft_text`, `_aggregate_scores`. The base class is intentionally opinion-free — every dataset declares its own prompt shape, continuations, SFT format, and aggregation policy. Most letter-MCQ datasets reuse `utils.format_mcq_context` / `utils.format_mcq_full` / `utils.char_norm_aggregator`; HF-loaded datasets call `utils.load_huggingface_mcq` from `load_examples`.
+2. Implement the 7 abstract hooks: `_default_dataset_name`, `name`, `_parse_example`, `load_examples`, `_format_eval_context`, `_build_continuations`, `_aggregate_scores`. The base class is intentionally opinion-free — every dataset declares its own prompt shape, continuations, and aggregation policy. Most letter-MCQ datasets reuse `utils.format_mcq_context` / `utils.char_norm_aggregator`; HF-loaded datasets call `utils.load_huggingface_mcq` from `load_examples`.
 3. Decorate with `@task_registry.register("my_benchmark")`
 4. Add the new module to the auto-import list in `src/arabic_eval/tasks/lighteval/__init__.py`
-5. Create `configs/tasks/my_benchmark.yaml` with `dataset_name`, `train_split_ratio: 0.10`, etc.
+5. Create `configs/tasks/my_benchmark.yaml` with `dataset_name` and any task-specific overrides.
 
-The 10/90 stratified split, SFT dataloader, and LightEval log-likelihood evaluation are inherited from the base class — those operate on the unified example list returned by `load_examples` and are dataset-agnostic. A future benchmark loaded from a non-HF source (local files, S3, …) just implements its own `load_examples` without touching the base.
+`get_eval_examples()` (returning the full list after the optional `clean_latin_rows` filter) and the LightEval log-likelihood evaluation are inherited from the base class. A future benchmark loaded from a non-HF source (local files, S3, …) just implements its own `load_examples` without touching the base.
 
 ## Key Technical Details
 
@@ -247,16 +274,16 @@ Character-level tokenization produces sequences ~4-6x longer. Default `max_lengt
 - Tatweel (kashida) removal
 - Whitespace collapsing
 
-### Training Loop (`src/arabic_eval/training/trainer.py`)
-- AdamW optimizer with cosine LR schedule + linear warmup
-- Gradient accumulation (default: 4 steps)
-- Mixed precision via `torch.cuda.amp` (bf16 by default)
-- Gradient clipping at `max_grad_norm=1.0`
-- Early stopping on `eval_loss` with patience=3
-- Checkpoint management with `save_total_limit=2`
-- **Full-model fine-tuning, no LoRA / PEFT.** `LlamaAdapter.get_trainable_parameters()` returns `list(self._model.parameters())` and AdamW updates every weight (transformer + replaced embedding + replaced lm_head). If you want LoRA, that's a new model adapter, not a flag.
-- **`training.completion_only_loss`** (default `False`, opt-in). When true, prompt tokens are masked to `-100` in the SFT labels and only the answer span contributes to loss. Implemented in `LightEvalBenchmarkTask._build_sft_dataloader` via the longest-common-prefix between the prompt encoding and the full encoding (NOT `len(prompt_enc)` — many tokenizers auto-append `</s>`, so the naive length-based mask cuts the first answer token). Plumbed through `pipeline/experiment.py` via signature-gated kwarg — only LightEval MCQ tasks accept it; QA / text_generation log a warning and ignore. Per the ACVA ablation series (see "Known limitations: ACVA label quality"), this is *not* a fix for noisy short-answer 2-class collapse; treat it as opt-in for clean tasks where the answer-token signal is the binding constraint.
-- **`training.ft.enabled`** (default `True`). Master switch for the fine-tuning step. When `false`, the pipeline skips dataloader construction (step 5) and the entire trainer call (step 6) and evaluates the pretrained model directly. Used by `native_llama_no_sft_benchmark_sweep.yaml` to measure the pretrained ceiling. The nested namespace (`training.ft.enabled` rather than `training.enabled`) leaves room for future fine-tuning sub-flags (`training.ft.freeze_layers`, etc.) without bloating `TrainingConfig`. The companion `training.lora.*` namespace is reserved for the same reason — adding LoRA is a new model adapter, not a flag, but if it ever lands the config space is ready.
+### Training Loop (`src/arabic_eval/training/phases.py`)
+- Step-driven loop (not epoch-driven) — each phase has its own `steps` budget
+- AdamW optimizer with cosine / constant / linear LR schedule + optional linear warmup (per-phase)
+- Gradient accumulation (per-phase; defaults: Phase 1 = 1, Phase 2/3 = 4)
+- Mixed precision via `torch.amp.autocast` (bf16 by default; controlled by `training.bf16` / `training.fp16`)
+- Gradient clipping at `max_grad_norm` (per-phase, default 1.0)
+- Phase 3 only: stagnation early-stop with patience + min_delta + min_steps_before_stop + restore-best-at-end
+- Checkpoint per phase: `{output_dir}/training/{phase_name}/`
+- **Full-model fine-tuning, no LoRA / PEFT.** AdamW updates every parameter whose `requires_grad=True` after the freezing helper applies the substring filter from `phase_cfg.trainable_parameters`. If you want LoRA, that's a new model adapter (which would expose only the adapter weights via `requires_grad=True`).
+- **Per-phase `enabled`** is the only on/off switch. There is no longer a `training.ft.enabled` master switch — set all three phase `enabled` flags to false to skip training entirely.
 
 ### Intrinsic Metrics (`src/arabic_eval/evaluation/intrinsic_metrics.py`)
 
@@ -296,9 +323,7 @@ Character-level tokenization produces sequences ~4-6x longer. Default `max_lengt
 **Sampling** is controlled by `evaluation.morph_sample_size` (default 500). The sample is deterministic (fixed seed), distinct words only, length ≥ 3 chars.
 
 ### Downstream Metrics
-- **Text generation** (`tasks/text_generation.py`): perplexity via sliding-window (stride=256) on held-out text
-- **Question answering** (`tasks/question_answering.py`): F1 and Exact Match on ARCD dataset. QA is framed as generation (Arabic prompt: `السياق: ... \nالسؤال: ... \nالإجابة:`)
-- **LightEval benchmarks** (`tasks/lighteval/`): accuracy via log-likelihood multiple-choice scoring on ACVA, Alghafa, Culture-Arabic-MMLU, and Arabic-Exam. See [LightEval Benchmarks](#lighteval-benchmarks-acva-alghafa-culture-arabic-mmlu-arabic-exam) below.
+- **LightEval benchmarks** (`tasks/lighteval/`): accuracy via log-likelihood multiple-choice scoring on ACVA, Alghafa, Culture-Arabic-MMLU, and Arabic-Exam. See [LightEval Benchmarks](#lighteval-benchmarks-acva-alghafa-culture-arabic-mmlu-arabic-exam) below. Eval is full-benchmark — no rows reserved for SFT, since training is task-agnostic under the 3-phase pipeline.
 
 ### MEI — Morphological Efficiency Index (`compute_mei` in `evaluation/metrics.py`)
 
@@ -328,14 +353,9 @@ These four multiple-choice benchmarks are used to evaluate the impact of tokeniz
 
 ### Data Split Strategy
 
-All examples across all predefined splits of each benchmark are pooled, then split with a fixed RNG seed:
+**No SFT split — every benchmark row goes to evaluation.** Under the 3-phase pipeline, training is task-agnostic (Phase 3 SFT uses TyDiQA-Arabic + ARCD, not the benchmark itself), so every row of every benchmark is available for the final eval pass.
 
-- **10 %** → supervised fine-tuning (SFT) on formatted MCQ prompts
-- **90 %** → reserved for LightEval evaluation (never seen during training)
-
-The same seed is used across all tokenizer variants in a sweep so every experiment evaluates on the identical 90 % partition.
-
-**Stratified per-sub-config split** (multi-config benchmarks). For ACVA (58 cultural topics), Alghafa (sub-tasks), and Arabic_Exam (school subjects), the 10/90 split is applied **within each sub-config** rather than globally. This guarantees ≥ 1 SFT example per sub-config — random global sampling at 10 % could otherwise leave small configs entirely unrepresented in fine-tuning. Per-config seeds are derived as `seed + crc32(config_name)` so the split is fully deterministic. Single-config benchmarks (Culture_Arabic_MMLU) degenerate to one `_default` group → behaviour matches a global split. Note: the floor→ceil rounding required to guarantee coverage shifts the SFT total up by ~one example per sub-config compared to the pre-stratification implementation, so historic run totals will not match exactly. Lives in `LightEvalBenchmarkTask._get_splits` ([tasks/lighteval/base.py](src/arabic_eval/tasks/lighteval/base.py)).
+`get_eval_examples()` ([tasks/lighteval/base.py](src/arabic_eval/tasks/lighteval/base.py)) returns the full parsed list, after the optional `clean_latin_rows` filter. The previous 10/90 stratified split is gone — `_get_splits` / `train_split_ratio` / `eval_full` were removed in the 3-phase migration.
 
 ### Evaluation Methodology (LightEval)
 
@@ -349,7 +369,7 @@ using the fine-tuned model's forward pass (`_compute_loglikelihood`), then predi
 
 **CharacterBERT log-likelihood note**: `character_cnn` is scored using the *word-level* logits (the model's `lm_head` indexes the word vocabulary; the `char_ids` 3-D batch flows into the CharCNN, the transformer output is projected to the word vocab, and the continuation scoring sums log P(word) over the continuation's word-vocab IDs). This is implemented in the `character_cnn` branch of `_compute_loglikelihood`. The result is a real accuracy in `[0, 1]` — *not* a 0.0 fallback. **`farasa_character_bert` shares the same `embedding_type` and the same scoring path**; the only difference is that its `lm_head` indexes a *morpheme* vocabulary, so continuation scoring is over morpheme-vocab IDs rather than word-vocab IDs. Both produce real, comparable accuracies on `acva` / `alghafa` / `culture_arabic_mmlu` / `arabic_exam`.
 
-**ACVA word-based scoring note**: ACVA is True/False, not 4-way MCQ, and its continuation pool is just `صح` / `خطأ` (rendered as letter `أ` / `ب` in vanilla LightEval). When scored with single-letter continuations, 99 % of model decisions ended up as near-tie log-likelihoods (differences < 1e-3) dominated by the per-letter unigram prior — accuracy clustered around the majority-class baseline regardless of tokenizer. ACVATask therefore overrides the default scoring hooks to score the words `" صح"` / `" خطأ"` directly: the prompt drops the `أ./ب.` choice listing, SFT supervision ends with the answer word, and `_build_continuations` returns `[" صح", " خطأ"]`. Letter scoring is preserved for the other three benchmarks (which are genuinely 4-way MCQ). The override is implemented via three hooks on `LightEvalBenchmarkTask` (`_format_eval_context`, `_build_continuations`, `_format_sft_text`) — same pattern any future task can use to swap continuations without touching the wrapper. The label strings are centralised on `ACVATask.LABELS` (a tuple, single source of truth) so switching to e.g. `صحيح` / `خاطئ` is a one-line change.
+**ACVA word-based scoring note**: ACVA is True/False, not 4-way MCQ, and its continuation pool is just `صح` / `خطأ` (rendered as letter `أ` / `ب` in vanilla LightEval). When scored with single-letter continuations, 99 % of model decisions ended up as near-tie log-likelihoods (differences < 1e-3) dominated by the per-letter unigram prior — accuracy clustered around the majority-class baseline regardless of tokenizer. ACVATask therefore overrides the default scoring hooks to score the words `" صح"` / `" خطأ"` directly: the prompt drops the `أ./ب.` choice listing and `_build_continuations` returns `[" صح", " خطأ"]`. Letter scoring is preserved for the other three benchmarks (which are genuinely 4-way MCQ). The override is implemented via two hooks on `LightEvalBenchmarkTask` (`_format_eval_context`, `_build_continuations`) — same pattern any future task can use to swap continuations without touching the wrapper. The label strings are centralised on `ACVATask.LABELS` (a tuple, single source of truth) so switching to e.g. `صحيح` / `خاطئ` is a one-line change.
 
 **PMI normalization (`evaluation.score_normalization`)**. The wrapper supports three score-normalization modes, mirroring LightEval's `LogProbNormalization`:
 
@@ -360,32 +380,6 @@ using the fine-tuned model's forward pass (`_compute_loglikelihood`), then predi
 The flag is plumbed via the existing signature-gating pattern (`inspect.signature(task.evaluate).parameters`) — non-LightEval tasks log a warning and ignore. Unconditioned ll values are cached per `(unconditioned_query, tuple(continuations))`: for letter-MCQ this is one extra forward call total (cache hits every row); for word-scored sub-configs that vary continuations per row the cache misses and we pay one extra forward per example (~2× cost on those rows; acceptable). Default stays `"char"` so existing run JSONs remain reproducible — opt in per-experiment YAML (`evaluation.score_normalization: "char+pmi"`).
 
 **MEI under PMI**. `compute_mei` prefers `accuracy_pmi` when present and records the source as `inputs.accuracy_source = "accuracy_pmi"`; under default char-only mode the field is omitted (preserves byte-identity).
-
-> **Note: re-running the four-quadrant readout.** The existing `outputs/experiments/native_llama_with_sft_benchmark_sweep/four_quadrant_readout.md` was produced under `"char"` scoring. Once a sweep with `"char+pmi"` lands, the table — and the "ACVA cap is tokenizer-induced" finding it anchors — should be re-validated against PMI accuracies before any tokenizer-comparison conclusions are drawn from it. The `culture_arabic_mmlu` row (every cell at ~random) is the most likely to shift: that's the cell most contaminated by the letter-prior bias PMI corrects.
-
-### Fine-tuning Data Format
-
-For letter-scored MCQ benchmarks (`culture_arabic_mmlu` / `arabic_exam`, plus the 4-way and 5-way Alghafa sub-configs) each example is formatted as a plain-text causal-LM sequence:
-
-```
-السؤال: {question}
-
-A. {choice_A}
-B. {choice_B}
-C. {choice_C}
-D. {choice_D}
-الإجابة: {correct_letter}
-```
-
-For **ACVA** (True/False) and the **word-scored Alghafa sub-configs** (T/F facts + 2/3-way sentiment — see *Alghafa heterogeneity* below), the choice listing is dropped and the answer is the word itself:
-
-```
-السؤال: {question}
-الإجابة: {صح|خطأ}                    # ACVA labels (fixed pair)
-الإجابة: {sol_i for i = answer_idx}  # Alghafa word-scored: actual answer text
-```
-
-This is tokenised and passed through the existing `Trainer` using the standard collator for the active embedding type.
 
 ### Alghafa heterogeneity (per-topic scoring dispatch)
 
@@ -399,7 +393,7 @@ Alghafa is the only benchmark in the suite where one task class spans multiple M
 | 4-way MCQ | `mcq_exams_test_ar`, `meta_ar_dialects`, `meta_ar_msa` | sol1-4 | 562+5400+900 | letter |
 | 5-way grounded statement | `multiple_choice_grounded_statement_soqal_task`, `multiple_choice_grounded_statement_xglue_mlqa_task` | sol1-5 | 155+155 | letter |
 
-The 4 binary/sentiment sub-configs use **word-scored prompts** (mirroring ACVA's fix for the letter-prior pathology — letter-based `أ`/`ب` decisions on a 2-way task collapse to the unigram letter prior). The 4-way and 5-way MCQ sub-configs keep the inherited letter-based default. Per-row dispatch keys on `ex["_source_config"]` populated by `_parse_combined`. The hooks are `_format_eval_context` / `_build_continuations` / `_format_sft_text` overridden in `AlghafaTask`; the dispatch list is `AlghafaTask.WORD_SCORED_CONFIGS` (single source of truth — to add a new sub-config to the word-scored set, edit that frozenset and nothing else).
+The 4 binary/sentiment sub-configs use **word-scored prompts** (mirroring ACVA's fix for the letter-prior pathology — letter-based `أ`/`ب` decisions on a 2-way task collapse to the unigram letter prior). The 4-way and 5-way MCQ sub-configs keep the inherited letter-based default. Per-row dispatch keys on `ex["_source_config"]` populated by `_parse_combined`. The hooks are `_format_eval_context` / `_build_continuations` overridden in `AlghafaTask`; the dispatch list is `AlghafaTask.WORD_SCORED_CONFIGS` (single source of truth — to add a new sub-config to the word-scored set, edit that frozenset and nothing else).
 
 **Char-normalization on the score aggregator is required for fairness.** When continuations vary in character length (e.g. sol1=`"هو رأي ايجابي"` 12 chars vs sol2=`"هو رأي سلبي"` 11 chars), summed log-probs systematically prefer the shorter answer. The base task class exposes `_aggregate_scores(ex, continuations, log_likelihoods)` (default: char-norm — divide each ll by `len(continuation.lstrip())`, the LightEval `LogProbCharNorm` equivalent). Letter-scored sub-configs all have 1-char continuations, so char-norm is mathematically a no-op for them; ACVA (`صح` 2 chars vs `خطأ` 3 chars) shifts slightly. The aggregator is the override point if a future task wants token-norm or sum-of-log-probs explicitly — same signature-hook pattern as the prompt/continuation overrides.
 
@@ -418,62 +412,35 @@ ACVA's gold labels were synthetically generated and ship with non-trivial noise.
 
 The word-scoring override mitigates the pseudo-random behaviour but does **not** fix the upstream gold-label problem. Treat ACVA accuracy as label-noisy: cross-validate against the other three benchmarks before drawing tokenizer conclusions. The sweep `comparison_report.txt` flags ACVA with a dagger `†` and a footnote — keep the footnote (it's the equivalent of `RPS_MECHANICAL_FLAGS` for label-noisy tasks; the single source of truth is `LABEL_NOISY_TASKS` in [evaluation/reporter.py](src/arabic_eval/evaluation/reporter.py)).
 
-**SFT-setup ablations don't break the discriminative ceiling.** A 2x2 ablation on `bpe_50k` over `train_split_ratio ∈ {0.10, 0.50}` × `completion_only_loss ∈ {F, T}` (artifacts: `outputs/experiments/ACVA_{top_tokenizers_benchmark_sweep, completion_loss_ablation, split_ratio_ablation, split_and_completion_ablation}/`):
+### Arabic_Exam dataset gotchas (`MBZUAI/ArabicMMLU`)
 
-| | mask=F | mask=T |
-|---|---|---|
-| split=0.10 | acc 0.5958 — 99.9% wrong-as-صح (PRIOR / majority-class baseline) | acc 0.5892 — 97.7% wrong-as-صح, margins compressed (98.1% < 1e-3) |
-| split=0.50 | acc 0.5481 — **64.2%** wrong-as-صح (only cell to break the trap, but below baseline) | acc 0.5966 — 99.8% wrong-as-صح (reverted to always-class) |
+Multi-config: 41 configs ship, but the `All` config is a strict union of the other 40 (verified `|All| = sum(|other 40|) = 14575`). Excluded via `EXCLUDED_CONFIGS = frozenset({"All"})` on `ArabicExamTask` to avoid 2× row duplication. Other parser nuances:
 
-Read together within the from-scratch tokenizer family: completion-only loss alone compresses margins toward the prior without breaking the trap; more SFT data alone breaks the trap but accuracy lands below baseline; combining them snaps back to majority-class (concentrated capacity + noisy 1–3 token answer = the model memorizes P(class) faster). **For from-scratch tokenizers in our pipeline, ACVA caps near 0.595–0.610.** Don't propose `completion_only_loss=true` as a fix for this ceiling — it's not the SFT setup, but the *tokenizer*. The native_llama baselines (see "Pretrained-tokenizer baselines (native_llama)" below) reveal that native tokenizer + same SFT pipeline reaches 0.7133 on ACVA, so the ceiling is from-scratch-tokenizer-induced, not label-noise-induced. The label-noise concerns (synthetic generation, ~30 % duplicates, 51 within-eval label conflicts) are still real and still warrant the dagger flag, but they are not the binding constraint on accuracy. For tokenizer comparisons on ACVA among from-scratch tokenizers, accept the ~0.6 cap.
+- **`Context` field** (~5 % of rows) supplies a passage the question refers to — must be prepended to the prompt.
+- **`Option 5`** ships in ~344 rows (5-option MCQ); enumerate Options 1–5, not 1–4.
+- **`Answer Key`** is a Latin letter A–E. Map back to 0-indexed integer.
+- **`is_few_shot=1` rows** (~120) are dev-split demonstrations — filter them out.
 
-### Pretrained-tokenizer baselines (native_llama)
+After exclusion + filter, the eval pool is ~13,000 rows. ~235 question strings still appear in 2+ subject configs — these are inter-subject overlaps inherent to the dataset's taxonomy, not a merge artifact. Tests: [tests/test_arabic_exam_parser.py](tests/test_arabic_exam_parser.py).
 
-Two reference baselines anchor the from-scratch sweeps against the pretrained-tokenizer ceiling. Both use the `native_llama` wrapper (which wraps `meta-llama/Llama-3.2-1B`'s pretrained tokenizer). With `vocab_size=128256` matching the model's embedding matrix, `resize_token_embeddings` is a no-op and the pretrained embeddings stay byte-identical — the only thing differing across (a)/(b)/existing-sweep is the tokenizer choice (and whether SFT runs).
+### Reference experiments
 
-| | no SFT | with SFT |
-|---|---|---|
-| **native_llama** (this section) | (a) — pretrained ceiling | (b) — pretrained + our SFT pipeline |
-| **bpe_50k from-scratch** | not run (random reinit if forced — uninformative) | existing 50K sweep |
+The two canonical experiments under the 3-phase pipeline:
 
-- **(a) vs majority-class on ACVA** confirms / refutes the "label noise is the ceiling" claim independent of any of our pipeline code paths
-- **(a) vs (b)** shows whether our 10%-split SFT helps, washes, or hurts on these benchmarks
-- **(b) vs the existing 50K sweep** shows the cost of using a 50K from-scratch tokenizer instead of the native 128K one, controlling for the SFT pipeline
+- **`configs/experiments/native_llama_3phase_with_sft.yaml`** — full pipeline (Phase 1 + Phase 2 + Phase 3). Reference for "what is the trained-model accuracy on ACVA / Alghafa / arabic_exam / culture_arabic_mmlu under task-agnostic SFT."
+- **`configs/experiments/native_llama_3phase_no_sft.yaml`** — Phase 1 + Phase 2 only (`sft.enabled: false`). Isolates Phase 3's contribution: the (with_sft − no_sft) delta per benchmark.
 
-Configs: [native_llama_no_sft_benchmark_sweep.yaml](configs/experiments/native_llama_no_sft_benchmark_sweep.yaml) (a) and [native_llama_with_sft_benchmark_sweep.yaml](configs/experiments/native_llama_with_sft_benchmark_sweep.yaml) (b). Wrapper at [tokenizers/native_llama.py](src/arabic_eval/tokenizers/native_llama.py); flag at `training.ft.enabled` (default `True`; baseline (a) sets it `false`).
-
-**Results (run 2026-05-03)** — full readout at [outputs/experiments/native_llama_with_sft_benchmark_sweep/four_quadrant_readout.md](outputs/experiments/native_llama_with_sft_benchmark_sweep/four_quadrant_readout.md).
-
-| Task | Random | bpe_50k+SFT (existing) | (a) native, no SFT | (b) native, +SFT | Δ (b) − existing |
-|---|---|---|---|---|---|
-| acva | 0.50 | 0.5958 (majority-class) | 0.6078 | **0.7133** | **+11.75 pp** |
-| alghafa † | 0.25 | 0.2811 | 0.3275 | 0.5930 | (invalid; see footnote) |
-| arabic_exam ‡ | 0.25 | **0.2679** (post-fix) | **0.3053** (post-fix) | **0.4067** (post-fix) | **+13.88 pp** |
-| culture_arabic_mmlu | 0.25 | 0.2625 | 0.2447 | **0.2768** | +1.43 pp |
-
-† **Alghafa pre-fix numbers are invalid.** The 2026-05-03 parser fix found two bugs (label off-by-one + `sol5` truncation) that silently dropped ~36 % of rows and shifted gold answers by −1 across the rest. The "+31.19 pp" delta was an artifact of the bug. A post-fix re-run of native, no-SFT (`configs/experiments/native_llama_no_sft_alghafa_postfix.yaml`) gives **0.4031** on **20,677 examples** (was 13,199 pre-fix). The per-sub-config breakdown shows real signal where the model has a chance: word-scored `multiple_choice_rating_sentiment_no_neutral_task` (7,200 rows) lands at **0.5726**, above the majority-class baseline ≈0.51; letter-scored 4/5-way MCQ sub-configs sit near random as expected for an un-fine-tuned pretrained Llama on Arabic letter-MCQ. The bpe_50k+SFT and native+SFT alghafa rows of the table need re-running before any cross-tokenizer claim can be made; do **not** cite the +31.19 pp number. See *Alghafa heterogeneity* above for the per-topic dispatch and *Known limitations: ACVA label quality* for the unrelated ACVA noise discussion (which is unaffected by the alghafa fix).
-
-‡ **Arabic_Exam pre-fix numbers were on a contaminated eval set.** The 2026-05-04 parser fix found four bugs in [tasks/lighteval/arabic_exam.py](src/arabic_eval/tasks/lighteval/arabic_exam.py): (1) the `MBZUAI/ArabicMMLU` `All` config is a strict union of the other 40 subject configs, so the merger loaded every row twice and the stratified 10/90 split leaked SFT pairs into the eval split (both copies got independent permutations under different `_source_config` keys); (2) the parser dropped the `Context` field that ~5 % of rows depend on for a literal "based on the passage" answer; (3) iterating only Options 1–4 silently dropped 141 `Answer Key=E` rows and truncated the choice list of 344 5-option rows; (4) `is_few_shot=1` rows (the dataset's own dev-split demos) were not filtered. Post-fix eval pool drops from ~26 000 to ~13 000 (one copy each, no few-shot, with context). All three cells fell modestly: bpe_50k+SFT 0.2994→**0.2679**, native no-SFT 0.3125→**0.3053**, native+SFT 0.4217→**0.4067**. The directional findings hold (native+SFT >> native no-SFT >> bpe_50k+SFT ≈ random) but the absolute deltas shrank because the contaminated split was inflating bpe_50k disproportionately via SFT/eval leakage in the `All`-group cross-permutation. Mechanism is `ARABIC_EXAM_EXCLUDED_CONFIGS = frozenset({"All"})` defined in `arabic_exam.py` and passed inline to `utils.load_huggingface_mcq` from `ArabicExamTask.load_examples`. Configs: [arabic_exam_postfix_native_no_sft.yaml](configs/experiments/arabic_exam_postfix_native_no_sft.yaml) (a), [arabic_exam_postfix_native_with_sft.yaml](configs/experiments/arabic_exam_postfix_native_with_sft.yaml) (b), [arabic_exam_postfix_bpe_50k.yaml](configs/experiments/arabic_exam_postfix_bpe_50k.yaml) (existing). Tests: [tests/test_arabic_exam_parser.py](tests/test_arabic_exam_parser.py); end-to-end smoke: [scripts/smoke_arabic_exam_parser.py](scripts/smoke_arabic_exam_parser.py).
-
-> **Side observation (not a bug).** After de-duplication, ~235 question strings still appear in 2+ subject configs (e.g. tagged in both `Islamic Studies` and `Islamic Studies (Middle School)`). These are inter-subject overlaps inherent to the dataset's taxonomy, not a merge artifact, and are kept as-is. ~1.6 % of the eval pool.
-
-**Major finding — the previous ACVA-label-noise-ceiling claim was wrong.** The 2x2 ablation series (split_ratio × completion_only_loss on `bpe_50k`) plateaued at ~0.595 on ACVA, which we attributed to label noise. Native tokenizer + the same SFT pipeline reaches 0.7133 — there's a 12-point ceiling-headroom that the from-scratch tokenizer was hiding. **The binding constraint on the existing 50K sweep was the from-scratch tokenizer's randomly-aligned pretrained rows**, not data quality. The 2x2 ablation results remain internally consistent as a description of from-scratch-tokenizer SFT behavior; the misattribution was treating that ceiling as data-imposed rather than tokenizer-imposed.
-
-**Native (a) > existing 50K+SFT on the 3 valid tasks.** A pretrained model with NO SFT outperforms the from-scratch BPE-50K + SFT on ACVA (0.6078 vs 0.5958), arabic_exam (post-fix: 0.3053 vs 0.2679), and culture_arabic_mmlu (0.2447 vs 0.2625 — the lone exception, native no-SFT *underperforms* on this one). The 10% SFT split isn't enough to overcome the random row-mapping (BPE-50K's token ID 5 → Llama's pretrained ID 5 row, etc.). The alghafa comparison was originally listed here too, but both numbers were on buggy data; that comparison is pending re-eval.
-
-**Implications for the from-scratch sweep methodology.** Comparing 8 from-scratch tokenizers on these benchmarks doesn't cleanly measure tokenizer quality — it measures how each tokenizer's vocab indices happen to align with Llama's first N pretrained rows, modulated by what 10% SFT can drift. The native (b) result is the useful upper-bound reference for the same SFT pipeline; the (b) − existing gap is the cost of from-scratch-tokenizer + silent-row-preservation.
-
-**Don't add native_llama to the 8-tokenizer comparison tables.** It's a baseline, not a competitor: different vocab regime (128K vs 16K/32K/50K), different special-token convention, `train()` short-circuited; intrinsic/MEI scores compute mechanically but aren't peer-comparable to the from-scratch tokenizers' numbers.
+Results land in `outputs/experiments/native_llama_3phase_{with,no}_sft/all_metrics.json`. When new tokenizers are added to the suite, run them through the same two configs (overriding `tokenizer.type`) for an apples-to-apples comparison against native_llama.
 
 ### Key Classes (`src/arabic_eval/tasks/lighteval/`)
 
 | Symbol | Module | Role |
 |---|---|---|
-| `LightEvalBenchmarkTask` | `lighteval/base.py` | Abstract base — 8 abstract hooks; concrete 10/90 split + SFT dataloader + `evaluate()` |
+| `LightEvalBenchmarkTask` | `lighteval/base.py` | Abstract base — 7 abstract hooks; concrete `get_eval_examples()` + `evaluate()` |
 | `LightEvalModelWrapper`  | `lighteval/base.py` | Wraps `BaseModelAdapter` for LightEval's `loglikelihood` interface |
 | `_compute_loglikelihood` | `lighteval/base.py` | Core per-token log-likelihood sum (LightEval methodology) |
 | `format_mcq_context`     | `lighteval/utils.py` | Formats question + choices as LightEval context string (opt-in) |
-| `format_mcq_full`        | `lighteval/utils.py` | Formats complete MCQ + answer for SFT (opt-in) |
+| `format_mcq_full`        | `lighteval/utils.py` | Formats complete MCQ + answer (opt-in helper) |
 | `char_norm_aggregator`   | `lighteval/utils.py` | LightEval `LogProbCharNorm` equivalent (opt-in) |
 | `parse_mcq_generic`      | `lighteval/utils.py` | A/B/C/D-style row parser (opt-in) |
 | `load_huggingface_mcq`   | `lighteval/utils.py` | HF loader with multi-config auto-detection + exclusions (opt-in) |
@@ -491,82 +458,113 @@ Configs: [native_llama_no_sft_benchmark_sweep.yaml](configs/experiments/native_l
 
 Subclasses can override `_parse_example()` for non-standard schemas.
 
-**Arabic_Exam schema (`MBZUAI/ArabicMMLU`)** is non-standard and overrides `_parse_example()`. Fields: `Question`, `Context` (optional supporting passage, ~5 % of rows; **must be prepended to the prompt** — the question often refers to it explicitly), `Option 1` … `Option 5` (5 distractors max; ~344 rows ship with `Option 5`), `Answer Key` (Latin letter A–E), `is_few_shot` (dev-split demonstration flag — **filtered out**, ~120 rows), plus metadata (`Subject`, `Group`, `Level`, `Country`, `Source`). Multi-config: 41 configs ship, but the `All` config is a strict union of the other 40 (verified `|All| = sum(|other 40|) = 14575`); excluded via `EXCLUDED_CONFIGS = frozenset({"All"})` on `ArabicExamTask` to avoid 2× row duplication and SFT/eval leakage. After the 4 fixes documented at the ‡ footnote in the four-quadrant table below, the eval pool is ~13 000 (was ~26 000 contaminated).
+**Arabic_Exam schema (`MBZUAI/ArabicMMLU`)** is non-standard — see *Arabic_Exam dataset gotchas* above for the full rundown.
 
 ### Config Overrides
 
 Dataset paths are configurable per-task via the `params` dict:
 
 ```yaml
-task:
-  type: "acva"          # or alghafa | culture_arabic_mmlu | arabic_exam
-  params:
-    dataset_name: "OALL/ACVA"
-    dataset_config: null   # set to a specific subtask/config if needed
-    train_split_ratio: 0.10
-    max_length: 512
-    seed: 42
+sweep:
+  tasks:
+    - type: "acva"          # or alghafa | culture_arabic_mmlu | arabic_exam
+      params:
+        dataset_name: "OALL/ACVA"
+        dataset_config: null   # set to a specific subtask/config if needed
+        max_length: 512
+        seed: 42
+        clean_latin_rows: false   # filter Latin-script rows before eval
 ```
 
 > **Note:** Confirmed Hub defaults are: `acva` → `OALL/ACVA`; `alghafa` → `OALL/AlGhafa-Arabic-LLM-Benchmark-Native`; `culture_arabic_mmlu` → `OALL/Arabic_MMLU`; `arabic_exam` → `MBZUAI/ArabicMMLU`. Override via `params.dataset_name` if a benchmark moves on the Hub.
 
 ## Config Reference
 
-### Experiment YAML structure
+The full menu of every parameter (with defaults and comments) lives in [configs/experiments/sample_full.yaml](configs/experiments/sample_full.yaml). Real experiment YAMLs only need to override deltas — `configs/base.yaml` provides defaults for every field, including the 3-phase training block.
+
+### Minimal experiment YAML (the with-SFT reference)
 
 ```yaml
 experiment:
-  name: "my_experiment"
-  output_dir: "outputs/experiments/my_experiment"
+  name: "native_llama_3phase_with_sft"
+  output_dir: "outputs/experiments/native_llama_3phase_with_sft"
   seed: 42
 
-data:
-  dataset_name: "Jr23xd23/ArabicText-Large"
-  max_train_samples: null    # null = use all
-  max_eval_samples: 10000
-  preprocessing:
-    normalize_unicode: true
-    remove_diacritics: false
-    min_text_length: 10
-
 tokenizer:
-  type: "bpe"               # Registry key: bpe|wordpiece|morpho_bpe|character_bert|char_jaber
-  vocab_size: 32000          # null for character-level tokenizers
-  params: {}                 # Passed as **kwargs to constructor and train()
-  save_path: "outputs/tokenizers/bpe_32k"
-  load_path: null            # Set to skip training and load existing
+  type: "native_llama"
+  vocab_size: null
+  load_path: null
+  save_path: "outputs/tokenizers/native_llama"
 
 model:
-  type: "llama"              # Registry key
+  type: "llama"
   name_or_path: "meta-llama/Llama-3.2-1B"
   dtype: "bfloat16"
   device: "auto"
 
-task:
-  # Registry key: text_generation | question_answering
-  #               acva | alghafa | culture_arabic_mmlu | arabic_exam
-  type: "text_generation"
-  params:
-    max_length: 512
+# All training.phases.* defaults come from configs/base.yaml.
 
-training:
-  num_epochs: 3
-  batch_size: 8
-  gradient_accumulation_steps: 4
-  learning_rate: 2.0e-5
-  bf16: true
-  early_stopping_patience: 3
+sweep:
+  tokenizers:
+    - type: "native_llama"
+      vocab_sizes: [null]
+  tasks:
+    - type: "acva"
+      params: {}
+    - type: "alghafa"
+      params: {}
+    - type: "arabic_exam"
+      params: {}
 
 evaluation:
   intrinsic_metrics: true
-  morphological_metrics: true   # Arabic root/pattern/morpheme metrics
-  morph_sample_size: 500        # # of distinct words to sample for them
+  morphological_metrics: true
+  morph_sample_size: 500
   downstream_metrics: true
-  num_eval_samples: 5000
-  failure_reports: false        # Per-task CSV of failing eval cases (LightEval MCQ only)
+  failure_reports: true
+  score_normalization: "char+pmi"
+  num_eval_samples: null
 ```
 
-### Sweep YAML structure (for full_sweep.yaml)
+The "without SFT" variant adds one override:
+
+```yaml
+training:
+  phases:
+    sft:
+      enabled: false       # Phase 3 skipped; Phase 1 + Phase 2 still run
+```
+
+### Phase block schema (in `training.phases.<phase>`)
+
+Every phase shares the same fields; SFT additionally has `early_stopping`. See `PhaseConfig` / `EarlyStoppingConfig` in [src/arabic_eval/config.py](src/arabic_eval/config.py).
+
+| Field | Type | Notes |
+|---|---|---|
+| `enabled` | bool | per-phase toggle |
+| `datasets` | list of `DatasetName` | registry keys: `arabic_squad` \| `tydiqa_arabic` \| `arcd`. Single string is auto-coerced to a one-element list. |
+| `trainable_parameters` | list of substrings | matched against `named_parameters()`. `["*"]` = all. Mixing `"*"` with other entries is rejected. |
+| `steps`, `learning_rate`, `batch_size`, `gradient_accumulation_steps`, `weight_decay`, `max_length`, `warmup_steps`, `max_grad_norm` | scalars | per-phase numeric params |
+| `optimizer` | `"adamw"` | only AdamW supported |
+| `lr_scheduler` | `"cosine"` \| `"constant"` \| `"linear"` | `constant` ignores `warmup_steps` (still has linear warmup but no decay after) |
+| `loss_target` | `"full_sequence"` \| `"answer_only"` | full-seq for Phase 1; answer-only for Phase 2/3 |
+| `save_checkpoint` | bool | writes to `{output_dir}/training/{phase}/` |
+| `early_stopping` | nested config (SFT only) | required when `sft.enabled=true`; see below |
+
+### Early-stopping schema (`training.phases.sft.early_stopping`)
+
+| Field | Default | Notes |
+|---|---|---|
+| `enabled` | `true` | turn off to disable mid-Phase-3 eval entirely |
+| `metric` | `"eval_loss"` | only `eval_loss` supported (answer-only causal LM loss on TyDiQA-val + ARCD-val) |
+| `eval_every_n_steps` | `200` | how often to run the eval pass |
+| `patience` | `5` | stop after this many consecutive non-improving evals |
+| `min_delta` | `5e-4` | absolute improvement threshold |
+| `min_steps_before_stop` | `500` | don't allow stop in the early LR-warmup region |
+| `restore_best_at_end` | `true` | snapshot best, restore at end |
+| `eval_splits` | `{tydiqa_arabic: validation, arcd: validation}` | which split per corpus |
+
+### Sweep YAML structure (multiple tokenizer cells, shared eval task list)
 
 ```yaml
 sweep:
@@ -575,39 +573,20 @@ sweep:
       vocab_sizes: [16000, 32000, 50000]
     - type: "character_bert"
       vocab_sizes: [null]        # N/A for char-level
-  tasks:
-    - type: "text_generation"
-    - type: "question_answering"
-```
-
-### Benchmark sweep YAML structure (for benchmark_sweep.yaml)
-
-```yaml
-sweep:
-  tokenizers:
-    - type: "bpe"
-      vocab_sizes: [16000, 32000, 50000]
-    # ... other tokenizers ...
+    - type: "native_llama"
+      vocab_sizes: [null]
   tasks:
     - type: "acva"
-      params:
-        dataset_name: "OALL/ACVA"
-        train_split_ratio: 0.10   # 10% SFT, 90% LightEval eval
-        max_length: 512
-        seed: 42
+      params: {}
     - type: "alghafa"
-      params:
-        dataset_name: "OALL/AlGhafa-Arabic-LLM-Benchmark-Native"
-        train_split_ratio: 0.10
-    - type: "culture_arabic_mmlu"
-      params:
-        dataset_name: "OALL/Arabic_MMLU"
-        train_split_ratio: 0.10
+      params: {}
     - type: "arabic_exam"
-      params:
-        dataset_name: "MBZUAI/ArabicMMLU"
-        train_split_ratio: 0.10
+      params: {}
+    - type: "culture_arabic_mmlu"
+      params: {}
 ```
+
+Training happens once per (tokenizer_type, vocab_size) cell. Eval iterates over `sweep.tasks` per cell — each cell produces one subdirectory under `output_dir/`, each with its own `all_metrics.json` containing per-task downstream + per-task MEI.
 
 ## Output Structure
 
@@ -615,25 +594,28 @@ Each experiment produces:
 ```
 outputs/experiments/<name>/
   config.json               # Full resolved config
-  intrinsic_metrics.json    # Fertility, compression, UNK rate, coverage
-  all_metrics.json          # Combined intrinsic + downstream + mei (top-level "mei" key for LightEval MCQ tasks)
+  intrinsic_metrics.json    # Fertility, compression, UNK rate, coverage, morphological metrics
+  all_metrics.json          # Combined: config + intrinsic + training (per-phase) + downstream (per-task) + mei (per-task)
   training/
-    train_results.json      # Loss, steps, time
-    best/                   # Best checkpoint (early stopping)
-    final/                  # Final checkpoint
-    checkpoint-*/           # Periodic checkpoints
+    embedding_alignment/    # Phase 1 checkpoint
+      model.pt
+    warmup/                 # Phase 2 checkpoint
+      model.pt
+    sft/                    # Phase 3 checkpoint (best-by-eval-loss, restored)
+      model.pt
   failure_reports/          # Only when evaluation.failure_reports=true
-    <task_name>_accuracy_failures.csv   # LightEval MCQ tasks only
-  experiment.log            # Full log file
+    <task_name>_accuracy_failures.csv   # one CSV per LightEval MCQ task
 ```
 
-Sweep mode additionally generates: `comparison_report.txt` and `comparison_report.json` in the sweep output directory. The text report includes a "Composite Metric: MEI" section with per-experiment rows + an asterisk-and-footnote on tokenizers with mechanical RPS extremes (`RPS_MECHANICAL_FLAGS` in `evaluation/reporter.py`). For multi-sub-config benchmarks (Alghafa today; any future heterogeneous benchmark), a "Per-sub-config breakdown" sub-section per task is emitted under the main downstream-task table — rows = experiments, columns = sub-configs, cells = `accuracy (n=N)`. Single-config benchmarks (`_default` bucket only) suppress this section; the main table strips `per_subconfig_accuracy.*` so its column count stays manageable.
+Per-phase histories (final loss, train-loss tail, eval losses, wall time, early-stop status, checkpoint path) live under `all_metrics.json["training"][<phase>]`. Per-task downstream metrics + MEI live under `all_metrics.json["downstream"][<task>]` and `all_metrics.json["mei"][<task>]`.
+
+Sweep mode additionally generates: `comparison_report.txt` and `comparison_report.json` in the sweep output directory. The text report includes a "Composite Metric: MEI" section with per-experiment rows + an asterisk-and-footnote on tokenizers with mechanical RPS extremes (`RPS_MECHANICAL_FLAGS` in `evaluation/reporter.py`). For multi-sub-config benchmarks (Alghafa), a "Per-sub-config breakdown" sub-section per task is emitted under the main downstream-task table — rows = experiments, columns = sub-configs, cells = `accuracy (n=N)`. Single-config benchmarks suppress this section; the main table strips `per_subconfig_accuracy.*` so its column count stays manageable.
 
 ### Failure-case CSV reports (opt-in)
 
 When `evaluation.failure_reports: true`, LightEval MCQ tasks (`acva`, `alghafa`, `culture_arabic_mmlu`, `arabic_exam`) write one CSV per task with one row per wrong-answer example. Columns: `index, question, choice_0..N, gold_idx/letter, pred_idx/letter, ll_0..N, ll_margin, score_0..N, score_margin`. Both raw and aggregated views are persisted: `ll_*` is the raw model log-likelihood (sum over continuation tokens) and `ll_margin = ll_pred − ll_gold`; `score_*` is the value passed to `argmax` after `_aggregate_scores` (default char-norm, LightEval `LogProbCharNorm` equivalent), with `score_margin` defined the same way. They differ only when continuation lengths differ — letter-scored MCQ rows have `ll_* == score_*` (1-char continuations); ACVA and word-scored Alghafa rows have `score_*` divided by the character count of the answer text. The margins distinguish confident-wrong (large positive) from near-tie failures (~0); use `score_margin` to interpret the model's actual decision and `ll_margin` to debug the unnormalized signal. UTF-8-BOM encoding so Excel renders Arabic correctly.
 
-QA and text_generation **do not** support failure reporting; the pipeline detects this via `inspect.signature(task.evaluate)` and silently skips. To opt a new task in, just add `failure_report_dir: Optional[Path] = None` to its `evaluate()` signature and handle it — no base-class change needed.
+To opt a new task family into failure reporting, just add `failure_report_dir: Optional[Path] = None` to its `evaluate()` signature and handle it — no base-class change needed (signature gating in the pipeline picks it up automatically).
 
 ## Dependencies
 
@@ -646,10 +628,13 @@ Optional `[morphological]` extras for full Arabic morphological metrics: `qalsad
 ## Known Considerations
 
 - LLaMA 3.2-1B requires HuggingFace access token (gated model). Set `HF_TOKEN` env var or `huggingface-cli login`.
-- MorphoBPE (`morpho_bpe`) requires Java runtime for Farasa. The segmenter runs in interactive mode for efficiency.
-- Character-level tokenizers (char-JABER) produce very long sequences; reduce `max_length` or `batch_size` if hitting OOM.
+- LLaMA 3.2-1B uses **tied embeddings** — `lm_head.weight is model.embed_tokens.weight`. Phase 1's `trainable_parameters: ["embed_tokens", "lm_head"]` is correct; the freezing helper warns when `lm_head` matches no parameter (tied case) and continues. Training `embed_tokens` IS training `lm_head`.
+- MorphoBPE (`morpho_bpe`) and FarasaCharacterBERT (`farasa_character_bert`) require Java runtime for Farasa. The segmenter runs in interactive mode for efficiency.
+- AraRooPat (`araroopat`) requires `camel-tools` in its own `.venv-camel` (subprocess bridge to avoid `numpy<2` / `transformers<4.54` conflict). One-time setup: `python -m venv .venv-camel && .venv-camel/bin/pip install -e ".[araroopat-camel]" && .venv-camel/bin/camel_data -i light`.
+- Character-level tokenizers (char-JABER) produce very long sequences; reduce `max_length` or `batch_size` per phase if hitting OOM.
 - The `models/__init__.py` and `tasks/__init__.py` use try/except on imports, so model and task registries will be empty if torch/transformers are not installed. The pipeline script (`pipeline/experiment.py`) force-imports them, so missing deps will surface at experiment runtime.
-- `torch.cuda.amp.autocast` in the trainer uses `device_type="cuda"` — will need adjustment for non-CUDA accelerators (e.g., MPS).
-- LightEval benchmark tasks (`acva`, `alghafa`, `culture_arabic_mmlu`, `arabic_exam`) fine-tune on the **10 % split only**; the 90 % eval split is never used during training. The `get_dataloader(split="test")` call from the Trainer also returns the 10 % split to avoid contamination.
-- CharacterBERT (`character_cnn`) **does** support LightEval log-likelihood scoring — the `character_cnn` branch in `_compute_loglikelihood` runs the CharCNN on `char_ids` and scores continuations against the word-vocabulary `lm_head`. Returns a real accuracy in `[0, 1]`. **`farasa_character_bert` shares the same path** (same `embedding_type=character_cnn`); its `lm_head` indexes a *morpheme* vocab instead of a word vocab, so scoring is over morpheme-vocab IDs. The shared remaining limitation is **autoregressive `generate()`**, which `LlamaAdapter.generate()` raises `NotImplementedError` for on `CHARACTER_CNN` — so QA evaluation falls back to empty predictions for both. (Older docs claimed `accuracy=0.0` on log-likelihood for these tokenizers; that was true before the `character_cnn` branch was added in `_compute_loglikelihood` and is no longer accurate.)
-- The `dataset_name` defaults (in `configs/tasks/*.yaml` and `_default_dataset_name()` on each task class): `acva` → `OALL/ACVA`; `alghafa` → `OALL/AlGhafa-Arabic-LLM-Benchmark-Native`; `culture_arabic_mmlu` → `OALL/Arabic_MMLU`; `arabic_exam` → `MBZUAI/ArabicMMLU`. Override via the `params.dataset_name` field if a benchmark moves on the Hub.
+- `torch.amp.autocast` in `phases.py` passes `device_type=adapter.device.type` — works for `cuda`, `cpu`, and most accelerators that PyTorch supports; no extra adjustment needed for MPS.
+- CharacterBERT (`character_cnn`) and FarasaCharacterBERT support LightEval log-likelihood scoring via the `character_cnn` branch in `_compute_loglikelihood` (real accuracy in `[0, 1]`, not 0.0). The shared remaining limitation is autoregressive `generate()`, which `LlamaAdapter.generate()` raises `NotImplementedError` for on `CHARACTER_CNN` and `CHARFORMER` — but generation is not exercised by the 3-phase pipeline (eval is teacher-forced log-likelihood MCQ).
+- The `dataset_name` defaults (per task class via `_default_dataset_name()`): `acva` → `OALL/ACVA`; `alghafa` → `OALL/AlGhafa-Arabic-LLM-Benchmark-Native`; `culture_arabic_mmlu` → `OALL/Arabic_MMLU`; `arabic_exam` → `MBZUAI/ArabicMMLU`. Override via `params.dataset_name` if a benchmark moves on the Hub.
+- The Phase 1 + 2 corpus (`Mostafa3zazi/Arabic_SQuAD`) has **train-only** (no validation split). That's fine — Phases 1 and 2 don't run eval mid-phase. Phase 3 uses TyDiQA-Arabic-val + ARCD-val for stagnation early-stop.
+- Full-step experiment wall time on H100: ~5h with SFT (Phase 1 + 2 + 3 + 4 benchmark evals), ~1.5h without SFT (Phase 1 + 2 only + 4 evals).

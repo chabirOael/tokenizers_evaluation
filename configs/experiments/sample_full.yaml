@@ -1,0 +1,216 @@
+# SAMPLE EXPERIMENT YAML — every adjustable parameter documented.
+#
+# Use this as a template when creating new experiments. The runner merges
+# YAMLs in this order:
+#   1. configs/base.yaml             (defaults for everything)
+#   2. this file                      (your experiment overrides)
+#   3. CLI --seed / --device flags   (top of the stack)
+#
+# You only need to specify fields where you want to OVERRIDE the base
+# default. Every block below is shown explicitly for documentation; in
+# practice your real YAMLs will be much smaller (see
+# native_llama_3phase_with_sft.yaml for a minimal real example).
+#
+# Run with:
+#   .venv/bin/python scripts/run_experiment.py --config configs/experiments/<this-file>.yaml
+
+# ---------------------------------------------------------------------------
+# Top-level experiment metadata
+# ---------------------------------------------------------------------------
+experiment:
+  name: "sample_full"                                # Used in logs and as fallback output dir
+  output_dir: "outputs/experiments/sample_full"      # Where artifacts land
+  description: ""                                    # Free text, persisted to config.json
+  seed: 42                                           # Master RNG seed (data shuffles, init, etc.)
+  deterministic: true                                # set torch.backends.cudnn.deterministic=true
+
+
+# ---------------------------------------------------------------------------
+# Main Arabic corpus (used for tokenizer training + intrinsic metrics)
+# ---------------------------------------------------------------------------
+data:
+  dataset_name: "Jr23xd23/ArabicText-Large"          # HF dataset id
+  dataset_config: null                               # null = default config; set if multi-config
+  cache_dir: "outputs/data_cache"
+  train_split: "train"
+  eval_split: "test"
+  max_train_samples: null                            # null = all rows
+  max_eval_samples: 10000                            # cap for intrinsic eval texts
+  preprocessing:
+    normalize_unicode: true                          # NFKC normalization
+    remove_diacritics: false                         # tashkeel removal
+    min_text_length: 10                              # drop rows shorter than this
+
+
+# ---------------------------------------------------------------------------
+# Tokenizer
+# ---------------------------------------------------------------------------
+tokenizer:
+  type: "native_llama"                               # registry key — see registry.py for the 8 + native
+  vocab_size: null                                   # null for char-level / native_llama / charformer
+  load_path: null                                    # set to skip training and reuse a saved tokenizer
+  save_path: "outputs/tokenizers/native_llama"
+  params: {}                                         # per-tokenizer kwargs (see configs/tokenizers/*.yaml)
+
+
+# ---------------------------------------------------------------------------
+# Model
+# ---------------------------------------------------------------------------
+model:
+  type: "llama"                                      # registry key
+  name_or_path: "meta-llama/Llama-3.2-1B"            # gated; needs HF_TOKEN
+  dtype: "bfloat16"
+  device: "auto"                                     # "auto" | "cuda:0" | "cpu"
+  params: {}
+
+
+# ---------------------------------------------------------------------------
+# Training — the 3-phase pipeline
+# ---------------------------------------------------------------------------
+training:
+  bf16: true                                         # mixed-precision dtype (applies to all phases)
+  fp16: false
+  logging_steps: 50                                  # log frequency inside each phase
+
+  phases:
+
+    # =====================================================================
+    # Phase 1 — Embedding Alignment
+    # ---------------------------------------------------------------------
+    # Body frozen; only embed_tokens + lm_head are trainable. For the
+    # native Llama tokenizer this still runs (budget parity across
+    # conditions) even though embeddings are already pretrained.
+    # Default loss is full-sequence causal LM (the goal is to align random
+    # embeddings with the Arabic distribution, not learn QA format yet).
+    # =====================================================================
+    embedding_alignment:
+      enabled: true                                  # set false to skip this phase
+      datasets: ["arabic_squad"]                     # registry keys: arabic_squad | tydiqa_arabic | arcd
+      trainable_parameters:                          # substring match against named_parameters
+        - "embed_tokens"                             # any param with "embed_tokens" in its name
+        - "lm_head"                                  # ditto for "lm_head"
+                                                     # use ["*"] alone to mean "all parameters"
+      steps: 1000                                    # fixed step budget (NOT epochs)
+      learning_rate: 1.0e-3                          # higher LR is fine — only embeddings update
+      batch_size: 8
+      gradient_accumulation_steps: 1                 # effective batch = batch_size * grad_accum
+      optimizer: "adamw"                             # only adamw is supported today
+      weight_decay: 0.0                              # spec: no weight decay on embeddings
+      max_length: 512                                # tokenizer truncation
+      loss_target: "full_sequence"                   # "full_sequence" | "answer_only"
+      lr_scheduler: "constant"                       # "cosine" | "constant" | "linear" (with warmup)
+      warmup_steps: 0                                # linear warmup before scheduler kicks in
+      max_grad_norm: 1.0                             # gradient clipping
+      save_checkpoint: true                          # writes {output_dir}/training/embedding_alignment/
+
+    # =====================================================================
+    # Phase 2 — Warmup
+    # ---------------------------------------------------------------------
+    # Unfreeze everything; continue training on the same translated Arabic
+    # dataset (Phase 2 spec: "translated dataset" — Arabic-SQuAD is MT
+    # SQuAD-v1). Answer-only loss to teach QA format on a regular,
+    # well-formed dataset before exposure to native Arabic complexity.
+    # =====================================================================
+    warmup:
+      enabled: true
+      datasets: ["arabic_squad"]
+      trainable_parameters: ["*"]                    # all parameters
+      steps: 2000
+      learning_rate: 2.0e-4
+      batch_size: 4
+      gradient_accumulation_steps: 4                 # effective batch = 16
+      optimizer: "adamw"
+      weight_decay: 0.01
+      max_length: 512
+      loss_target: "answer_only"                     # mask context + question
+      lr_scheduler: "cosine"
+      warmup_steps: 100
+      max_grad_norm: 1.0
+      save_checkpoint: true
+
+    # =====================================================================
+    # Phase 3 — SFT (Supervised Fine-Tuning)
+    # ---------------------------------------------------------------------
+    # The decisive phase: native Arabic QA. Uses TyDiQA-Arabic + ARCD
+    # train splits. Periodic eval on TyDiQA + ARCD val splits drives
+    # stagnation early-stop. Set ``enabled: false`` to make this the
+    # "no-SFT" baseline.
+    # =====================================================================
+    sft:
+      enabled: true
+      datasets:                                      # multi-corpus list — concatenated + shuffled
+        - "tydiqa_arabic"
+        - "arcd"
+      trainable_parameters: ["*"]
+      steps: 2000
+      learning_rate: 2.0e-4
+      batch_size: 4
+      gradient_accumulation_steps: 4
+      optimizer: "adamw"
+      weight_decay: 0.01
+      max_length: 512
+      loss_target: "answer_only"
+      lr_scheduler: "cosine"
+      warmup_steps: 100
+      max_grad_norm: 1.0
+      save_checkpoint: true
+      early_stopping:
+        enabled: true                                # required when sft.enabled=true
+        metric: "eval_loss"                          # only "eval_loss" supported
+        eval_every_n_steps: 200                      # run eval at every Nth step
+        patience: 5                                  # stop after this many evals without improvement
+        min_delta: 5.0e-4                            # treat improvements smaller than this as noise
+        min_steps_before_stop: 500                   # don't allow early-stop before this step
+        restore_best_at_end: true                    # snapshot best weights, restore at end
+        eval_splits:                                 # which val split per corpus
+          tydiqa_arabic: "validation"
+          arcd: "validation"
+
+
+# ---------------------------------------------------------------------------
+# Evaluation
+# ---------------------------------------------------------------------------
+evaluation:
+  intrinsic_metrics: true                            # fertility / compression / UNK / coverage
+  morphological_metrics: true                        # Arabic root / pattern / morpheme metrics
+  morph_sample_size: 500                             # # of distinct words to sample
+  downstream_metrics: true                           # run task.evaluate()
+  num_eval_samples: null                             # null = full benchmark; integer to cap
+  failure_reports: false                             # writes per-task CSV of wrong answers
+  score_normalization: "char"                        # "char" | "pmi" | "char+pmi"
+
+
+# ---------------------------------------------------------------------------
+# Sweep — eval task list (and optional multi-tokenizer iteration)
+# ---------------------------------------------------------------------------
+# Under the 3-phase pipeline, training happens ONCE per (tokenizer,
+# vocab_size) cell and the trained model is evaluated on every task in
+# ``sweep.tasks``. To run multiple tokenizer cells, list more entries
+# under ``sweep.tokenizers``.
+sweep:
+  tokenizers:
+    - type: "native_llama"
+      vocab_sizes: [null]                            # list — one cell per vocab size
+      params: {}
+  tasks:
+    - type: "acva"                                   # registry keys: acva | alghafa | culture_arabic_mmlu | arabic_exam
+      params:
+        max_length: 512
+        # dataset_name: "OALL/ACVA"                  # override the default HF id if needed
+        # clean_latin_rows: false                    # filter Latin-script rows before eval
+    - type: "alghafa"
+      params: {}
+    - type: "arabic_exam"
+      params: {}
+    # - type: "culture_arabic_mmlu"
+    #   params: {}
+
+
+# ---------------------------------------------------------------------------
+# Tracking (optional — wandb integration)
+# ---------------------------------------------------------------------------
+tracking:
+  use_wandb: false
+  wandb_project: "arabic-tokenizer-eval"
+  wandb_entity: null
+  log_to_file: true

@@ -68,18 +68,12 @@ class ACVATask(LightEvalBenchmarkTask):
     def _format_eval_context(self, ex: Dict[str, Any]) -> str:
         # ACVA is True/False — no need to display "أ. صح / ب. خطأ" choice
         # lines because the answer is the word itself, not a letter.
-        return f"السؤال: {ex['question']}\nالإجابة:"
+        return f"### السؤال:\n{ex['question']}\n\n### الإجابة:"
 
     def _build_continuations(self, ex: Dict[str, Any]) -> List[str]:
         # Score the words themselves, in the same index order as `choices`
         # (so argmax over log-likelihoods → answer index, unchanged).
         return [f" {label}" for label in self.LABELS]
-
-    def _format_sft_text(self, ex: Dict[str, Any]) -> str:
-        # SFT supervision must match eval scoring: train on the word, not
-        # the letter, otherwise the model never sees " صح"/" خطأ" during
-        # fine-tuning.
-        return f"{self._format_eval_context(ex)} {self.LABELS[ex['answer']]}"
 
     def _aggregate_scores(
         self,

@@ -38,12 +38,13 @@ ARABIC_CHOICE_LETTERS: List[str] = ["أ", "ب", "ج", "د", "هـ"]
 
 
 def format_mcq_context(question: str, choices: List[str]) -> str:
-    """Letter-labelled MCQ prompt: question + lettered choice list + ``الإجابة:``."""
-    lines = [f"السؤال: {question}", ""]
+    """Letter-labelled MCQ prompt with ``###`` block headers:
+    ``### السؤال:`` / ``### الخيارات:`` / ``### الإجابة:``."""
+    lines = ["### السؤال:", question, "", "### الخيارات:"]
     for i, choice in enumerate(choices):
         letter = ARABIC_CHOICE_LETTERS[i] if i < len(ARABIC_CHOICE_LETTERS) else str(i)
         lines.append(f"{letter}. {choice}")
-    lines.append("الإجابة:")
+    lines += ["", "### الإجابة:"]
     return "\n".join(lines)
 
 

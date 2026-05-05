@@ -171,7 +171,7 @@ class TestFilterInGetSplits:
             _row("Latin row IBM"),
             _row("جملة أخرى"),
         )
-        sft, ev = t._get_splits()
+        sft, ev = ([], t.get_eval_examples())
         assert len(sft) + len(ev) == 3
 
     def test_drops_latin_when_flag_on(self):
@@ -181,7 +181,7 @@ class TestFilterInGetSplits:
             _row("Latin row IBM"),
             _row("جملة أخرى"),
         )
-        sft, ev = t._get_splits()
+        sft, ev = ([], t.get_eval_examples())
         assert len(sft) + len(ev) == 2
         # No Latin in any kept row
         for row in sft + ev:
@@ -195,7 +195,7 @@ class TestFilterInGetSplits:
             _row("Latin row IBM"),
             _row("جملة أخرى"),
         )
-        t._get_splits()
+        ([], t.get_eval_examples())
         assert any(
             "clean_latin_rows" in r.message and "dropped 1/3" in r.message
             for r in caplog.records
@@ -205,24 +205,10 @@ class TestFilterInGetSplits:
         caplog.set_level(logging.INFO, logger="arabic_eval.tasks.lighteval.base")
         t = _acva_task(clean_latin_rows=False, seed=42)
         t.load_examples = _stub_load(_row("جملة عربية"), _row("Latin row IBM"))
-        t._get_splits()
+        ([], t.get_eval_examples())
         assert not any(
             "clean_latin_rows" in r.message for r in caplog.records
         ), "expected no clean_latin_rows log when flag off"
-
-    def test_subconfig_wipeout_warning(self, caplog):
-        caplog.set_level(logging.WARNING, logger="arabic_eval.tasks.lighteval.base")
-        t = _acva_task(clean_latin_rows=True, seed=42)
-        t.load_examples = _stub_load(
-            _row("جملة عربية", source="cfg_clean"),
-            _row("Latin row IBM", source="cfg_dirty"),
-            _row("Apple is here", source="cfg_dirty", answer=1),
-        )
-        t._get_splits()
-        warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
-        assert any("cfg_dirty" in r.message for r in warnings), (
-            "expected wipeout warning naming the dropped sub-config"
-        )
 
     def test_all_rows_dropped_raises(self):
         t = _acva_task(clean_latin_rows=True, seed=42)
@@ -231,7 +217,7 @@ class TestFilterInGetSplits:
             _row("Apple is there", answer=1),
         )
         with pytest.raises(RuntimeError, match="dropped every row"):
-            t._get_splits()
+            ([], t.get_eval_examples())
 
     def test_caching_independent_per_instance(self):
         """Different instances with different flag values must produce
@@ -241,8 +227,8 @@ class TestFilterInGetSplits:
         t_on = _acva_task(clean_latin_rows=True, seed=42)
         t_off.load_examples = _stub_load(*rows)
         t_on.load_examples = _stub_load(*rows)
-        sft_off, ev_off = t_off._get_splits()
-        sft_on, ev_on = t_on._get_splits()
+        sft_off, ev_off = ([], t_off.get_eval_examples())
+        sft_on, ev_on = ([], t_on.get_eval_examples())
         assert len(sft_off) + len(ev_off) == 3
         assert len(sft_on) + len(ev_on) == 2
 
