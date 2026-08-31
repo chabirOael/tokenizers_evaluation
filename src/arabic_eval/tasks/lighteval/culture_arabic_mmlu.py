@@ -13,7 +13,7 @@ from arabic_eval.registry import task_registry
 from arabic_eval.tasks.lighteval.base import LightEvalBenchmarkTask
 from arabic_eval.tasks.lighteval.utils import (
     ARABIC_CHOICE_LETTERS,
-    format_mcq_context,
+    format_mcq_context_letter_official,
     load_huggingface_mcq,
     parse_mcq_generic,
     select_aggregator,
@@ -45,7 +45,9 @@ class CultureArabicMMLUTask(LightEvalBenchmarkTask):
         )
 
     def _format_eval_context(self, ex: Dict[str, Any]) -> str:
-        return format_mcq_context(ex["question"], ex["choices"])
+        # Official LightEval letter-MCQ format (no ``###`` markers, instruction
+        # prefix + Arabic-letter listings).
+        return format_mcq_context_letter_official(ex["question"], ex["choices"])
 
     def _build_continuations(self, ex: Dict[str, Any]) -> List[str]:
         n = len(ex["choices"])

@@ -20,7 +20,7 @@ from arabic_eval.tasks.lighteval.base import LightEvalBenchmarkTask
 from arabic_eval.tasks.lighteval.utils import (
     ARABIC_CHOICE_LETTERS,
     CHOICE_LETTERS,
-    format_mcq_context,
+    format_mcq_context_letter_official,
     load_huggingface_mcq,
     select_aggregator,
 )
@@ -94,10 +94,14 @@ class ArabicExamTask(LightEvalBenchmarkTask):
         )
 
     def _format_eval_context(self, ex: Dict[str, Any]) -> str:
+        # Official LightEval ArabicMMLU prompt format. ``Context`` field, when
+        # present (~5% of rows), is prepended as a bare ``السياق: …`` line; the
+        # main MCQ block follows the LightEval letter format with the standard
+        # instruction prefix and Arabic-letter listings.
         ctx = ex.get("context", "")
-        base = format_mcq_context(ex["question"], ex["choices"])
+        base = format_mcq_context_letter_official(ex["question"], ex["choices"])
         if ctx:
-            return f"### السياق:\n{ctx}\n\n{base}"
+            return f"السياق: {ctx}\n{base}"
         return base
 
     def _build_continuations(self, ex: Dict[str, Any]) -> List[str]:

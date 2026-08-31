@@ -31,7 +31,12 @@ training:
         - "embed_tokens"
         - "lm_head"
       steps: 1000
-      learning_rate: 1.0e-3
+      # 5e-4 (was 1e-3): default tuned for from-scratch tokenizers whose
+      # embeddings start as N(0, 0.02²) noise. For tokenizers that start
+      # with pretrained embeddings (e.g. native_llama), set
+      # ``training.phases.embedding_alignment.enabled: false`` in the
+      # experiment YAML — Phase 1 there only damages the pretrained signal.
+      learning_rate: 5.0e-4
       batch_size: 8
       gradient_accumulation_steps: 1
       optimizer: "adamw"
@@ -42,6 +47,7 @@ training:
       warmup_steps: 0
       max_grad_norm: 1.0
       save_checkpoint: true
+      clean_latin_rows: false   # drop training records containing Latin-script letters
 
     warmup:                     # Phase 2
       enabled: true
@@ -59,10 +65,15 @@ training:
       warmup_steps: 100
       max_grad_norm: 1.0
       save_checkpoint: true
+      clean_latin_rows: false   # drop training records containing Latin-script letters
 
     sft:                        # Phase 3
       enabled: true
-      datasets: ["tydiqa_arabic", "arcd"]
+      # Mix in the synthetic MCQ corpus derived from Arabic-SQuAD so the
+      # model sees the eval-time MCQ format during SFT (closes the
+      # train/eval format-mismatch). The MCQ corpus is fully disjoint from
+      # every eval benchmark by construction.
+      datasets: ["tydiqa_arabic", "arcd", "arabic_squad_mcq"]
       trainable_parameters: ["*"]
       steps: 2000
       learning_rate: 2.0e-4
@@ -76,6 +87,7 @@ training:
       warmup_steps: 100
       max_grad_norm: 1.0
       save_checkpoint: true
+      clean_latin_rows: false   # drop training records containing Latin-script letters
       early_stopping:
         enabled: true
         metric: "eval_loss"
@@ -98,7 +110,7 @@ evaluation:
   generation_temperature: 1.0
   generation_do_sample: false
   failure_reports: false
-  score_normalization: "char"
+  score_normalization: "char+pmi"
 
 tracking:
   use_wandb: false

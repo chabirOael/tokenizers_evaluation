@@ -23,6 +23,7 @@ from arabic_eval.data.finetune_corpora import (
     _format_qa_full,
     _format_qa_prompt,
     build_qa_dataloader,
+    filter_latin_records,
     tokenize_records,
 )
 from arabic_eval.tokenizers.base import BaseTokenizer, EmbeddingType, TokenizerOutput
@@ -76,24 +77,28 @@ def _rec(answer: str = "بيير كوري") -> QARecord:
 
 
 def test_prompt_template_format_with_marker():
+    """Post-2026-05-06: prompts use bare ``السياق:`` / ``السؤال:`` / ``الإجابة:``
+    (no ``###`` markers) so train and eval share the same prefix tokens."""
     rec = QARecord(
         id="x", question="ما هو ASCII؟", context="نظام ترميز.",
         answer="معيار", source="arabic_squad",  # 'معيار' not in context
     )
     p = _format_qa_prompt(rec)
-    # Must contain the ### markers and the three Arabic field labels
-    assert "### السياق:" in p
-    assert "### السؤال:" in p
-    assert "### الإجابة:" in p
+    # Bare LightEval-aligned labels.
+    assert "السياق:" in p
+    assert "السؤال:" in p
+    assert "الإجابة:" in p
+    # Legacy ``###`` markers must NOT appear.
+    assert "###" not in p
     # Answer label must be the last line (no trailing newline, no answer text)
-    assert p.endswith("### الإجابة:")
+    assert p.endswith("الإجابة:")
     # No answer leaks into the prompt-only form
     assert rec.answer not in p
 
 
 def test_full_includes_answer_with_single_space():
     f = _format_qa_full(_rec("بيير كوري"))
-    assert f.endswith("### الإجابة: بيير كوري")
+    assert f.endswith("الإجابة: بيير كوري")
     # Full text starts with the same prefix as the prompt
     p = _format_qa_prompt(_rec("بيير كوري"))
     assert f.startswith(p)
@@ -226,6 +231,86 @@ def test_build_qa_dataloader_yields_padded_batch():
         # Some labels are -100 (prompt mask + pad mask), some are real
         assert (batch["labels"] == -100).any()
         assert (batch["labels"] != -100).any()
+
+
+# --------------------------------------------------------------------------
+# filter_latin_records — per-phase clean_latin_rows predicate
+# --------------------------------------------------------------------------
+
+def _qa(id_: str, question: str = "ما هي عاصمة مصر؟", context: str = "",
+        answer: str = "القاهرة", source: str = "test",
+        prompt_template: str = "qa", choices=None) -> QARecord:
+    return QARecord(
+        id=id_, question=question, context=context, answer=answer,
+        source=source, prompt_template=prompt_template, choices=choices,
+    )
+
+
+class TestFilterLatinRecords:
+    def test_pure_arabic_passes_through(self):
+        recs = [_qa("a"), _qa("b"), _qa("c")]
+        out = filter_latin_records(recs)
+        assert len(out) == 3
+        assert [r.id for r in out] == ["a", "b", "c"]
+
+    def test_latin_in_question_dropped(self):
+        recs = [_qa("a"), _qa("b", question="What is X?")]
+        out = filter_latin_records(recs)
+        assert [r.id for r in out] == ["a"]
+
+    def test_latin_in_context_dropped(self):
+        recs = [_qa("a", context="مصر بلد عربي"),
+                _qa("b", context="Egypt is a country")]
+        out = filter_latin_records(recs)
+        assert [r.id for r in out] == ["a"]
+
+    def test_latin_in_answer_dropped(self):
+        recs = [_qa("a"), _qa("b", answer="Cairo")]
+        out = filter_latin_records(recs)
+        assert [r.id for r in out] == ["a"]
+
+    def test_latin_in_mcq_choice_dropped(self):
+        recs = [
+            _qa("a", prompt_template="mcq_letter",
+                choices=["القاهرة", "بغداد", "دمشق", "الرياض"]),
+            _qa("b", prompt_template="mcq_letter",
+                choices=["القاهرة", "Cairo", "دمشق", "الرياض"]),
+        ]
+        out = filter_latin_records(recs)
+        assert [r.id for r in out] == ["a"]
+
+    def test_arabic_with_digits_passes(self):
+        # ASCII digits + Arabic-Indic digits are not Latin letters.
+        recs = [_qa("a", question="ما حدث عام 2024؟"),
+                _qa("b", question="ما حدث عام ١٤٤٥؟")]
+        out = filter_latin_records(recs)
+        assert [r.id for r in out] == ["a", "b"]
+
+    def test_empty_input_returns_empty(self):
+        assert filter_latin_records([]) == []
+
+    def test_mixed_batch_preserves_order_and_originals(self):
+        recs = [
+            _qa("a"),
+            _qa("b", question="What?"),
+            _qa("c"),
+            _qa("d", answer="Hello"),
+            _qa("e"),
+        ]
+        out = filter_latin_records(recs)
+        assert [r.id for r in out] == ["a", "c", "e"]
+        # Originals untouched
+        assert recs[1].question == "What?"
+        assert len(recs) == 5
+
+    def test_diacritized_arabic_passes(self):
+        # Diacritics are not Latin letters.
+        recs = [_qa("a", question="الْكِتَابُ جَمِيلٌ")]
+        assert filter_latin_records(recs) == recs
+
+    def test_arabic_with_latin_acronym_dropped(self):
+        recs = [_qa("a", question="ما هو IBM؟")]
+        assert filter_latin_records(recs) == []
 
 
 if __name__ == "__main__":

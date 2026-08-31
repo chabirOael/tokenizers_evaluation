@@ -66,7 +66,7 @@ Five metrics live in `src/arabic_eval/evaluation/intrinsic_metrics.py`:
 |---|---|---|
 | `root_conservation_rate` (RPS) | root letters all inside one token | CharBERT high but not 1.0 (qalsadi extracts non-subsequence roots for irregular forms; observed 0.67); char-JABER ≈ 0.0 by construction; FarasaCharBERT typically high (~0.75–0.85, observed 0.775 on smoke test) — root usually sits inside a non-split stem morpheme but Farasa over-segmentation occasionally splits it; AraRooPat ~1.0 by construction |
 | `pattern_conservation_rate` (PIS) | stem-span pattern (clitics trimmed) recoverable from one token | CharBERT high; char-JABER 0.0; FarasaCharBERT high (clitics already stripped by Farasa, stem morpheme not further split); AraRooPat ~1.0 |
-| `morpheme_integrity_rate` | Farasa morpheme boundaries that align with token boundaries | MorphoBPE ≈ 1.0 (non-trivial — by design); CharBERT ≈ 0.0; char-JABER ≈ 1.0 (mechanical); FarasaCharBERT ≈ 1.0 (mechanical); Charformer = `None` (byte tokens never reconstruct to Arabic-letter offsets, so alignment fails uniformly — *not measurable*, not 1.0) |
+| `morpheme_integrity_rate` | Farasa morpheme boundaries that align with token boundaries — **only over words where `aligned_token_offsets` succeeds** | MorphoBPE ≈ 1.0 (non-trivial — by design); CharBERT ≈ 0.0; char-JABER ≈ 1.0 (mechanical); FarasaCharBERT ≈ 1.0 (mechanical); Charformer = `None`; **AraRooPat 1.0 is an artifact — 0 of its 112 ROOT+PAT words align, so the rate is computed on its character-fallback path only. Always read with `morph_alignment_coverage`.** |
 | `clitic_separation_accuracy` (CSA) | clitic↔stem boundaries that align with token boundaries | char-JABER ≈ 1.0 (every char boundary is a token boundary, mechanical); MorphoBPE ≈ 1.0 (Farasa pre-segments clitics — non-trivial); CharBERT ≈ 0.0 (no internal boundaries); BPE / WordPiece varies — this is the discriminating signal among plain subword tokenizers; Charformer = `None` (alignment-dependent, see above) |
 | `semantic_fragmentation_ratio` (SFR) | raw_tokens / Farasa morphemes — alignment-free | char-JABER ~2.7; Charformer ~5.4 (each Arabic char = 2 bytes); MorphoBPE ~1.0; BPE ~1.1; CharBERT ~0.5 (under-segments — 1 token per multi-morpheme word); SFR ≈ 1.0 = morpheme-aligned grain; >1 over-fragments; <1 under-segments |
 | `root_bearing_token_pct` | % of tokens containing a full root from the sample | char-JABER ≈ 0% mechanical; Charformer ≈ 0% mechanical (one byte cannot hold a 3-letter root, and most Arabic letters span 2 bytes) |
@@ -77,6 +77,25 @@ Five metrics live in `src/arabic_eval/evaluation/intrinsic_metrics.py`:
 **Don't suppress the mechanical extremes.** Reporting `~1.0` for CharBERT on root conservation and `~1.0` for char-JABER / FarasaCharBERT on morpheme integrity is correct and useful — it shows the architectural ceiling. Do flag them in comparison tables (e.g. with an asterisk + footnote) so a reader doesn't conclude char-JABER or FarasaCharBERT is the "best" tokenizer for morphology.
 
 The metric that genuinely separates the field is **`morpheme_integrity_rate`** for *plain* subword tokenizers (BPE/WordPiece) vs *Farasa-aware* ones (MorphoBPE/FarasaCharBERT/AraRooPat). Among the morphology-aware ones, integrity is mechanical for all, so use **`root_conservation_rate`** + downstream task scores to break ties.
+
+### Every headline metric has a ceiling — report the ratio, not the rate
+
+Added 2026-08-30. Three of the four headline metrics are bounded by properties of the *sample*, not of the tokenizer, so the raw rate is not comparable across tokenizers and 1.0 is often unreachable:
+
+| diagnostic | what it bounds | measured on ArabicText-Large |
+|---|---|---|
+| `root_measurable_pct` | `root_conservation_rate` | ~84 % — weak roots (قال/قول) are not subsequences of their own surface, so no tokenizer can preserve them |
+| `root_conservation_attainable` | — | RPS renormalized onto that reachable population; **this is the comparable number** |
+| `morph_alignment_ceiling` | `morpheme_integrity_rate`, `clitic_separation_accuracy` | 0.6202 — what a whole-word tokenizer scores; `clean_token_string` drops `ى`/`ٱ` so those words can never reconstruct |
+| `morph_alignment_coverage` | — | araroopat 0.43, BPE 0.52, CharBERT & char-JABER 0.6202 (exactly the ceiling, as they must) |
+| `root_extractor_agreement` | all root metrics | ~0.80 (qalsadi vs tashaphyne) — noise in the ground truth, not in any tokenization |
+
+Two rules follow:
+
+1. **Compare `root_conservation_attainable`, not `root_conservation_rate`.** The raw rate silently multiplies coverage by preservation and normalizes by an unreachable denominator.
+2. **Never read integrity/CSA without coverage.** A tokenizer whose tokens are not substrings of the source word (araroopat; any future factored or generative tokenizer) is scored only on the words where it fell back — the opposite of the mechanism under test. `generate_report` footnotes any experiment below `LOW_ALIGNMENT_COVERAGE` (0.5).
+
+`root_extractor_agreement` is deliberately **not** sourced from CAMeL Tools: araroopat's ROOT token *is* CAMeL's root, so using CAMeL as ground truth would drive its RPS to ~1.0 by construction.
 
 ### `None` vs `0.0` on the bearing-token metrics — two distinct cases
 
@@ -197,9 +216,11 @@ When adding an *optional* per-task evaluation feature (failure-case CSVs, per-ex
 1. Add the kwarg (e.g. `failure_report_dir: Optional[Path] = None`) to the *concrete* `evaluate()` of the task(s) that support it.
 2. In [pipeline/experiment.py](src/arabic_eval/pipeline/experiment.py), gate the kwarg via `inspect.signature(task.evaluate).parameters` — only pass it when the active task accepts it; log-and-skip otherwise.
 
-Why: a future non-LightEval task family (perplexity, code-eval, etc.) could legitimately want a different evaluation shape. Forcing every one to accept (and silently ignore) a new kwarg pollutes signatures and creates pressure to half-implement features where they don't fit. Signature-based gating keeps the abstract contract minimal and lets each family opt in cleanly. Used today for `failure_reports` and `score_normalization` (LightEval-only); reuse this pattern for any future per-task evaluation switch.
+Why: a future non-LightEval task family (perplexity, code-eval, etc.) could legitimately want a different evaluation shape. Forcing every one to accept (and silently ignore) a new kwarg pollutes signatures and creates pressure to half-implement features where they don't fit. Signature-based gating keeps the abstract contract minimal and lets each family opt in cleanly. Used today for `failure_reports`, `score_normalization`, and `downstream_unk_report` (LightEval-only); reuse this pattern for any future per-task evaluation switch.
 
 The `failure_reports` CSV: one row per wrong-answer example; per-choice log-likelihoods + an `ll_margin = ll_pred - ll_gold`. After the 2026-05-03 char-norm change, two views are persisted: `ll_*` is the raw model log-likelihood (sum over continuation tokens), `score_*` is what the argmax saw after `_aggregate_scores` (default char-norm — divides by `len(continuation.lstrip())`). For 1-char letter MCQ they're identical; for ACVA (`صح`/`خطأ`) and word-scored Alghafa they differ. Use `score_margin` to interpret the model's actual decision and `ll_margin` to debug the unnormalized signal. The margin distinguishes "model was confidently wrong" from "model was nearly right" — histograms answer "why is accuracy bad?" better than the raw accuracy number does.
+
+The `intrinsic_unk_report` / `downstream_unk_report` CSVs: same opt-in flag pattern, narrower scope. Intrinsic dumps `<output_dir>/intrinsic_unks.csv` with one row per unique source word whose per-word encoding produced ≥1 UNK token (`word, unk_token_count, total_token_count, example_context`). Downstream dumps `<output_dir>/unk_reports/<task>_unks.csv` after scanning each example's prompt + every continuation (`word, unk_token_count, source_fields, num_examples_seen_in, example_context`; `source_fields` is pipe-joined like `"continuation_0|prompt"`). Both always write a CSV when their flag is on — header-only when the tokenizer has no `unk_token` in `special_tokens` (byte-level Charformer, Llama under byte-fallback) or when no UNK was seen. The scalar `unk_rate` and `vocab_coverage` are byte-identical with vs. without `intrinsic_unk_report` — the CSV is a side-channel, not a recomputation. Helper module: [src/arabic_eval/evaluation/unk_reports.py](src/arabic_eval/evaluation/unk_reports.py) exposes `scan_text` / `aggregate_occurrences` / `records_to_rows` + the fieldname constants — reuse rather than duplicating if you ever need to surface UNK provenance from another path.
 
 ### Heterogeneous benchmarks: per-topic scoring dispatch (the Alghafa pattern)
 
@@ -283,6 +304,10 @@ evaluation:
 ## Things to push back on
 
 - **"Just split each token character by character to compute root conservation."** No — the metric is *per-token*; that would conflate the metric with the tokenizer's granularity. The right algorithm is `contains_subsequence(token, root)` over each *whole* token, which is what's implemented.
+
+- **"AraRooPat scores 1.0 on `morpheme_integrity_rate`, so it respects every morpheme boundary."**  No — it is scored only on the words it failed to analyze. Alignment requires the cleaned tokens to concatenate back into the word; ROOT+PAT output never does (0 of 112 measured), while the `[LIT_*]` character path always does (488 of 488). The 1.0 is the character path scoring a trivial 1.0. Check `morph_alignment_coverage` before quoting it.
+
+- **"Just normalize `morph_alignment_coverage` away / treat the unaligned words as respected."**  No — that is the `None → 1.0` fallback in a new costume. The metric is not measurable for that tokenizer family; report the coverage and let the reader discount the rate.
 
 - **"CharBERT scores 100% on root conservation, so it must be the best Arabic tokenizer."** It hits the architectural ceiling because it doesn't split at all. Use `morpheme_integrity_rate` and downstream task scores to break ties.
 

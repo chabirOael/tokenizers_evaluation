@@ -60,7 +60,7 @@ out[0].analyses[0].score                       # disambiguation probability
 
 ```python
 {
-  'root':    'ك.ت.ب',           # ← dot-separated. Strip both '.' and '_' (and '#' for defective).
+  'root':    'ك.ت.ب',           # ← dot-separated. Strip '.' and '_'; KEEP '#' (masked radical).
   'pattern': 'وَال1ُ2ّا3ِ',      # ← positional template; clitic surface chars BAKED IN.
   'diac':    'وَالكُتّابِ',      # ← full diacritized surface (with clitics).
   'stem':    'كُتّاب',           # ← lexical bare stem (no clitics, NO inflectional prefixes).
@@ -76,7 +76,7 @@ out[0].analyses[0].score                       # disambiguation probability
 
 Three traps in those fields:
 
-1. **`root` uses `.` separators** (`'ك.ت.ب'`) and sometimes `_`. Some defective entries use `#` as a placeholder for a missing/weak letter (`'ش#ق'`). Strip all three. After stripping, reject roots shorter than 3 letters.
+1. **`root` uses `.` separators** (`'ك.ت.ب'`) and sometimes `_`. A radical whose surface realization is unstable across the paradigm is written `#` (`'ق.#.ل'`). Strip the separators, **keep the `#`**, and count radicals with `root.split('.')` — never by string length after deletion. Deleting `#` renumbers the remaining radicals and desynchronizes them from the pattern's slot digits.
 
 2. **`prc*` and `enc0` are FEATURE TAGS, not Arabic surface strings.** `'wa_conj'` not `'و'`. Translate them via `clitic_surface()` in `araroopat_backend.py` before they leave the analyzer wrapper. There's a hand-built `CAMEL_CLITIC_SURFACE` table covering the common ~60 tags — extend it (don't redo it) when you encounter unknown ones; unknown tags fall through verbatim with a debug log.
 
@@ -198,6 +198,17 @@ The `_strip_clitic_from_start` / `_strip_clitic_from_end` helpers walk char-by-c
 
 **If you change `normalize_pattern`, run the smoke test.** It catches doubling bugs immediately.
 
+### The لِ + الـ contraction (encode and decode must stay inverse)
+
+Arabic writes one lam, not two: لِ + الوَلَد → لِلوَلَد. So in `لِلكِتابِ` the article's surface is `ل`, not `ال`, and a literal strip of `ال` fails — leaving a stray lam in the bare pattern (`ل1ِ2ا3ِ` instead of `1ِ2ا3ِ`) and in the reconstructed stem (`لكتاب` instead of `كتاب`). Cost when it was live: 2,608 duplicate `ل`-prefixed patterns out of 21,578 (12 % of the inventory, expensive now that the pattern budget binds) and `للولد` decoding as `لالولد`.
+
+Two functions implement the rule and **must remain inverse**:
+
+* `strip_proclitics_from_start` in `araroopat_backend.py` — encode side; if `ال` fails to strip and the clitic just removed was `ل`, strip a single `ل` instead. Mirrored in `_normalize_pattern` in the server (different venv, duplicated by necessity).
+* `join_proclitics` in `araroopat.py` — decode side; when re-attaching a buffered `ل` followed by `ال`, emit `لل`.
+
+Check with `الكتاب` · `لكتاب` · `للكتاب` · `بالكتاب`: all four must reduce to the bare pattern `1ِ2ا3ِ` and the stem `كتاب`. Regression tests live in `tests/test_araroopat_normalization.py`.
+
 ### Encoder/pre-pass cache key consistency
 
 The corpus pre-pass builds an LRU-cached `analyze(word)` lookup. If the encoder calls `analyze()` with a different chunking convention than the pre-pass, every encode call hits the analyzer fresh — slow.
@@ -223,9 +234,30 @@ if root == "NTWS" or "NTWS" in pattern_raw:
     return None
 ```
 
-### Defective root handling (`#` placeholder)
+### The `#` masked radical — what it is and why it must be kept
 
-CAMeL uses `#` as a placeholder for missing/weak letters in some entries (e.g. `'ش#ق'`, `'عط#'`). These break Arabic-letter-only checks downstream. Strip them along with `_` and `.`; if the resulting root is shorter than 3 letters, route to LIT.
+`#` is not a missing field. It marks a radical whose **surface realization is not constant across the paradigm** — the weak letters و/ي/ا and the hamza family. It is a property of the *lexeme's root*, not of the surface form:
+
+```
+قال   root='ق.#.ل'  pattern='1ا3َ'      يقول  root='ق.#.ل'  pattern='يَ1ُو3'
+قول   root='ق.#.ل'  pattern='1َوْ3ِ'     أقوال root='ق.#.ل'  pattern='أَ1ْوا3'
+كتب / يكتب / كتاب / المكتبة  → root='ك.ت.ب' (sound root, never masked)
+```
+
+**`#` and the pattern are complementary.** The masked radical's numeric slot is *absent* from the pattern, and the letter that surfaces there is baked in as literal template material. Verified across the corpus: **457 of 457** masked radicals have their slot missing from the pattern — zero counter-examples. Read `#` as "this radical's surface form is unpredictable; read it off the pattern instead."
+
+**Deleting it was doubly destructive** (the pre-2026-08-30 behaviour): the root dropped below the 3-radical bar *and* the remaining radicals were renumbered, so the pattern's slot digits stopped indexing the right letters. Cost: **49.3 % of word occurrences** in real eval text routed to `[LIT_*]`. Weak-rooted words (في، على، قال، سور، القرآن، الأيام، الولد) are exactly the high-frequency ones.
+
+Current behaviour: keep `#` in the root token (`[ROOT_ق#ل]`), count radicals via `split('.')`, reject only genuinely sub-trilateral roots. `WEAK_RADICAL_MARK` in `araroopat_backend.py` is the single source of truth, whitelisted by `_is_arabic_root` and guarded against in `naive_pattern_fill` so it can never reach output text.
+
+**Known trade-off — `#` is lossy.** `[ROOT_س#ر]` covers both س-و-ر (سور, wall) and س-ي-ر (سار, walk); `ص.#.م` covers صوم and صام. The `(root, pattern)` *pair* stays unambiguous — the pattern carries the realized letter — but the root token alone does not, which softens the "each ROOT token is a semantic atom" claim for weak roots. Canonicalizing `#` to a guessed radical was **rejected**: it merges exactly the same pairs while hiding the ambiguity behind a plausible-looking root. `#` is honest about what CAMeL discarded.
+
+**Three places that must stay in sync** — the normalization is duplicated across the venv boundary:
+1. `_dict_to_analysis` in `araroopat_backend.py` (client)
+2. `_op_generate` in `tools/araroopat_camel_server.py` (server, runs in `.venv-camel`)
+3. `naive_pattern_fill` in both
+
+If (1) and (2) disagree, tier-2 reconstruction silently never matches and every unseen pair degrades to tier-3 naive fill.
 
 ### Generator timeout and signal handling
 
@@ -254,13 +286,23 @@ If the smoke test or a real run logs `Unknown CAMeL clitic tag: 'foo_bar'`, exte
 
 ### Diagnosing a low `root_conservation_rate`
 
-The metric uses qalsadi's `RootExtractor`, which extracts a root that may differ from CAMeL's. Three diagnostic steps:
+Since 2026-08-30 the metric ships the diagnostics that decompose it — check them before theorizing:
 
-1. **Count LIT-path words**: in your sample, how many words went through `[LIT_BEGIN]`? On a small smoke corpus this is ~30%; on real-scale corpus ~5–15%. If higher, CAMeL coverage is bad — investigate which words fail `analyze()`.
-2. **Compare extractors**: pick a sample word, run `RootExtractor().extract(w)` and `MorphAnalyzer().analyze(w).root`. Mismatches are common (`مالك` → qalsadi `مول` vs CAMeL `ملك`); not a bug, just a measurement floor.
-3. **Check vocab inclusion**: rare roots/patterns get cut by `min_root_freq` / `min_pattern_freq`. If a sample word's analyzed root isn't in vocab, the encoder routes it to LIT.
+* **`root_measurable_pct`** (~84 %) — RPS's real ceiling. Weak roots are not subsequences of their own surface (قال does not contain the و of قول), so no tokenizer can win them. A raw RPS of 1.0 is unreachable.
+* **`root_conservation_attainable`** — RPS over only the winnable words. This is the comparable number.
+* **`root_extractor_agreement`** (~0.80) — qalsadi vs tashaphyne. That residual is ground-truth noise; araroopat is additionally penalized because the metric's qalsadi root disagrees with CAMeL's root on ~9.5 % of accepted words (مالك → qalsadi مول vs CAMeL ملك). Do **not** "fix" this by switching the metric to CAMeL — araroopat's ROOT token IS CAMeL's root, so RPS would become ~1.0 by construction and measure nothing.
+* **`morph_alignment_coverage`** vs **`morph_alignment_ceiling`** — see the warning below.
 
-The *relative* numbers across tokenizers are what matter — araroopat's 0.54 on a 200-sentence smoke corpus is not the architectural ceiling, it's the corpus-coverage floor.
+Then the tokenizer-side checks:
+
+1. **Count LIT-path words** in your sample. RPS = coverage × preservation, and for araroopat coverage dominates.
+2. **Check vocab inclusion** — a word whose analyzed root or pattern is out of vocab routes to LIT *as a whole*. Measured: 9.4 % of word occurrences have an in-vocab root but an out-of-vocab pattern, because `max_patterns: 500` truncates a 6,076-pattern tail while `max_roots: 10000` is never binding.
+
+### ⚠ `morpheme_integrity_rate` / `clitic_separation_accuracy` do not measure araroopat
+
+Both require `aligned_token_offsets` to succeed, which needs the cleaned tokens to concatenate back into the source word. araroopat's ROOT+PAT output never does — it emits a root plus an inflected stem, not a cover of the word. Measured on a 600-word sample: **0 of 112 ROOT+PAT words align; 488 of 488 LIT words align.**
+
+So the reported `1.0` / `1.0` describes **only the character-fallback path**, where every boundary aligns trivially. It is not the architectural ceiling the older docs claimed. Always read them next to `morph_alignment_coverage` (0.43) and `morph_alignment_ceiling` (0.62 — what a whole-word tokenizer scores, capped by `clean_token_string` dropping `ى`/`ٱ`). Expect coverage to *fall* as the `#` fix moves words onto the ROOT+PAT path — the rate will keep printing 1.0 while measuring even less.
 
 ### Tracing a roundtrip failure
 
@@ -298,13 +340,30 @@ Cache invalidates if `set(unique_words) > set(cached_words)` (new corpus). If eq
 
 ### Changing vocab tier
 
-Three pre-set tiers in `configs/tokenizers/araroopat.yaml` (Compact / Balanced / Max). Coverage product (analyzed-words × in-vocab fraction):
+Re-tiered 2026-08-30 after the `#` fix. **`max_patterns` is the binding constraint now, not `max_roots`** — keeping the masked radical moves the weak letter's identity out of the root and into the pattern, so unique patterns went 8,634 → 21,578 while unique roots barely moved (3,338 → 4,331). Only 4,128 roots clear `min_root_freq`, so a `max_roots` above ~5,000 does nothing at all.
 
-- Compact 5K+200: ~81%
-- Balanced 10K+500 (default): ~94%
-- Max 15K+1000: ~98%
+Admission (share of word occurrences reaching the ROOT+PAT path on 300 real Arabic-Exam questions):
 
-Above Balanced, returns diminish — most extra roots are very rare (single-occurrence) and most extra patterns are inflectional variants that the LLM rarely emits. Stay at Balanced unless you have a specific reason.
+```
+patterns   500 → 26.2 %  (vocab ~4.7K)        patterns  4000 → 48.2 %  (vocab ~8.2K)  ← default
+patterns  1000 → 33.6 %  (vocab ~5.2K)        patterns  6076 → 52.1 %  (vocab ~10.3K) all freq>=2
+patterns  2000 → 42.2 %  (vocab ~6.2K)
+```
+
+CAMeL analyses 66.6 % of occurrences — the ceiling for any budget. The residual 33.4 % is the backoff analyzer (`root='O'`, `pattern='backoff'`) firing where the database has no entry; no budget reaches it.
+
+**The ablation is worth remembering**: the `#` fix *alone*, at the old 500-pattern budget, moved admission only 22.1 % → 26.1 %. It is the pair of changes that gets to 47.8 %. Fixing the analyzer without re-tiering the budget looks like a failed fix.
+
+Train a tier with:
+
+```bash
+.venv/bin/python scripts/train_tokenizer.py --type araroopat \
+    --params '{"max_patterns": 4000}' --output outputs/tokenizers/araroopat_hashfix
+```
+
+### Performance trap in `_build_metadata`
+
+`_vocab_root_set()` / `_vocab_pattern_set()` rebuild a set by scanning the whole vocab. They were being called *inside* the per-entry loop — O(entries × vocab). At 297k analyzed entries and a 3.8K vocab that was survivable; after the `#` fix (506k entries, 8.3K vocab) it became ~11e9 string operations and hung the training run. They are hoisted now. **Keep them hoisted**, and be suspicious of any `self._vocab_*_set()` call inside a loop over corpus entries.
 
 ## Things to push back on
 

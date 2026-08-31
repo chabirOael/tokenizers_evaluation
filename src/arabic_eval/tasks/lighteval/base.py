@@ -33,6 +33,13 @@ import torch
 import torch.nn.functional as F
 from tqdm import tqdm
 
+from arabic_eval.evaluation.unk_reports import (
+    DOWNSTREAM_UNK_FIELDS,
+    WordUnkRecord,
+    aggregate_occurrences,
+    records_to_rows,
+    scan_text,
+)
 from arabic_eval.models.base import BaseModelAdapter
 from arabic_eval.tasks.base import BaseTask
 from arabic_eval.tasks.lighteval.utils import (
@@ -216,7 +223,10 @@ class LightEvalModelWrapper:
 
         for idx, ex in enumerate(tqdm(examples, desc="LightEval MCQ", unit="example")):
             if task is not None:
-                context = task._format_eval_context(ex)
+                # ``_format_eval_context_with_fewshot`` collapses to the bare
+                # ``_format_eval_context`` when ``task.num_fewshot == 0``, so
+                # zero-shot callers see no behavior change.
+                context = task._format_eval_context_with_fewshot(ex)
                 continuations = task._build_continuations(ex)
             else:
                 context = format_mcq_context(ex["question"], ex["choices"])
@@ -326,10 +336,11 @@ class LightEvalModelWrapper:
                 failures.append(record)
             total += 1
 
-        # Build the metrics dict. Under default ``"char"`` mode the shape is
-        # byte-identical to the pre-PMI version (no ``accuracy_char_norm`` /
-        # ``accuracy_pmi`` keys at all). Those keys appear *only* when the
-        # operator opts into a PMI mode.
+        # Build the metrics dict. Under "char" mode the shape is byte-identical
+        # to the pre-PMI version (no ``accuracy_char_norm`` / ``accuracy_pmi``
+        # keys at all). Under "char+pmi" mode (the new default), ``accuracy``
+        # aliases ``accuracy_pmi`` because PMI is the unbiased metric — char-norm
+        # is dominated by class-collapse on weak-signal MCQ tasks.
         metrics: Dict[str, Any] = {"num_samples": total}
         char_acc = round(correct_char / max(total, 1), 4) if want_char else None
         pmi_acc = round(correct_pmi / max(total, 1), 4) if want_pmi else None
@@ -338,8 +349,8 @@ class LightEvalModelWrapper:
         elif want_pmi and not want_char:
             metrics["accuracy"] = pmi_acc
             metrics["accuracy_pmi"] = pmi_acc
-        else:  # char+pmi
-            metrics["accuracy"] = char_acc
+        else:  # char+pmi — PMI is primary
+            metrics["accuracy"] = pmi_acc
             metrics["accuracy_char_norm"] = char_acc
             metrics["accuracy_pmi"] = pmi_acc
 
@@ -353,8 +364,8 @@ class LightEvalModelWrapper:
             elif want_pmi and not want_char:
                 entry["accuracy"] = pmi_a
                 entry["accuracy_pmi"] = pmi_a
-            else:  # char+pmi
-                entry["accuracy"] = char_a
+            else:  # char+pmi — PMI is primary
+                entry["accuracy"] = pmi_a
                 entry["accuracy_char_norm"] = char_a
                 entry["accuracy_pmi"] = pmi_a
             per_sub[k] = entry
@@ -410,7 +421,14 @@ class LightEvalBenchmarkTask(BaseTask):
         self.max_length: int = config.get("max_length", 512)
         self.seed: int = config.get("seed", 42)
         self.clean_latin_rows: bool = bool(config.get("clean_latin_rows", False))
+        # Number of few-shot demonstrations to prepend (per-row) to each eval
+        # prompt. Demos are sampled deterministically from the same
+        # ``_source_config`` as the eval row, with the eval row excluded.
+        # 0 = pure zero-shot (existing default).
+        self.num_fewshot: int = int(config.get("num_fewshot", 0))
         self._cached_examples: Optional[List[Dict]] = None
+        # Sub-config -> list of indices, populated lazily on first few-shot use.
+        self._fewshot_pool_by_config: Optional[Dict[str, List[int]]] = None
 
     # ------------------------------------------------------------------
     # Abstract hooks (every subclass MUST implement)
@@ -480,14 +498,105 @@ class LightEvalBenchmarkTask(BaseTask):
         """Return the unconditioned query used to score each continuation under
         PMI normalization (``log P(c | unconditioned) − log P(c | full)``).
 
-        Default: the bare answer prefix ``"### الإجابة:"`` — matches the
-        trailing line every existing benchmark prompt ends with under the
-        ``###``-block formatting. Tasks whose prompt uses a different
-        answer-prefix convention can override this; the default is the right
-        answer for all four current tasks (acva / alghafa /
-        culture_arabic_mmlu / arabic_exam).
+        Default: the bare answer prefix ``"الإجابة:"`` — matches the trailing
+        line every LightEval-official benchmark prompt ends with (no ``###``
+        marker). Tasks whose prompt uses a different answer-prefix convention
+        can override this; the default is the right answer for all four
+        current tasks (acva / alghafa / culture_arabic_mmlu / arabic_exam).
         """
-        return "### الإجابة:"
+        return "الإجابة:"
+
+    # ------------------------------------------------------------------
+    # Few-shot prompt helpers
+    # ------------------------------------------------------------------
+
+    def _format_eval_context_with_fewshot(self, ex: Dict[str, Any]) -> str:
+        """Return ``ex``'s eval context, optionally prepended with K few-shot
+        demonstrations.
+
+        K = ``self.num_fewshot``. Demonstrations are sampled deterministically
+        (seeded with ``self.seed`` + the eval row's index in the cached list)
+        from rows that share ``ex["_source_config"]``, with the eval row
+        itself excluded from its own pool. Each demo is rendered as
+        ``<demo_eval_context> <demo_gold_continuation>`` followed by a blank
+        line; the eval prompt is appended last.
+
+        When ``num_fewshot == 0`` this collapses to the inherited
+        ``_format_eval_context``.
+        """
+        base_ctx = self._format_eval_context(ex)
+        if self.num_fewshot <= 0:
+            return base_ctx
+        demos = self._build_fewshot_examples(ex)
+        if not demos:
+            return base_ctx
+        rendered_demos: List[str] = []
+        for demo in demos:
+            demo_ctx = self._format_eval_context(demo)
+            demo_conts = self._build_continuations(demo)
+            gold_idx = demo["answer"]
+            if not (0 <= gold_idx < len(demo_conts)):
+                # Defensive: malformed demo — skip.
+                continue
+            # Continuations conventionally have a leading space; strip it for
+            # the demo since we emit ``<ctx> <answer>`` ourselves.
+            rendered_demos.append(f"{demo_ctx}{demo_conts[gold_idx]}")
+        if not rendered_demos:
+            return base_ctx
+        return "\n\n".join(rendered_demos) + "\n\n" + base_ctx
+
+    def _build_fewshot_examples(self, ex: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Sample ``num_fewshot`` demonstration rows for ``ex``.
+
+        Selection rules:
+          * Demos come from the same ``_source_config`` as ``ex`` (when
+            ``_source_config`` is missing on either side, defaults to
+            ``"_default"``). Same-source demos give the model the most
+            representative format for its sub-task.
+          * The eval row itself is excluded by identity (``id(...)``); even
+            if no global ID is available, we never use the same dict object.
+          * Selection is deterministic — seeded with ``self.seed + index``
+            where ``index`` is ``ex``'s position in the cached eval list,
+            so re-running the eval pass produces byte-identical demos.
+          * Returns fewer than K demos if the pool can't supply that many
+            (rare; happens only on tiny sub-configs).
+        """
+        import random
+
+        if self.num_fewshot <= 0:
+            return []
+        if self._cached_examples is None:
+            return []  # Eval set not loaded yet.
+
+        # Build per-sub-config index pools once (lazy).
+        if self._fewshot_pool_by_config is None:
+            pool: Dict[str, List[int]] = {}
+            for i, row in enumerate(self._cached_examples):
+                key = row.get("_source_config", "_default")
+                pool.setdefault(key, []).append(i)
+            self._fewshot_pool_by_config = pool
+
+        cfg_key = ex.get("_source_config", "_default")
+        candidates = self._fewshot_pool_by_config.get(cfg_key, [])
+        if not candidates:
+            return []
+
+        # Find ex's index for deterministic seeding + self-exclusion.
+        ex_index: Optional[int] = None
+        for i, row in enumerate(self._cached_examples):
+            if row is ex:
+                ex_index = i
+                break
+        seed = self.seed + (ex_index if ex_index is not None else 0)
+        rng = random.Random(seed)
+
+        # Exclude ex's index from candidates if present.
+        eligible = [i for i in candidates if i != ex_index]
+        if not eligible:
+            return []
+        k = min(self.num_fewshot, len(eligible))
+        chosen_indices = rng.sample(eligible, k)
+        return [self._cached_examples[i] for i in chosen_indices]
 
     # ------------------------------------------------------------------
     # clean_latin_rows hook: which fields to inspect when filtering Latin-
@@ -550,6 +659,33 @@ class LightEvalBenchmarkTask(BaseTask):
     # Evaluation
     # ------------------------------------------------------------------
 
+    def _compute_downstream_unk_records(
+        self,
+        examples: List[Dict[str, Any]],
+        tokenizer: BaseTokenizer,
+    ) -> Dict[str, WordUnkRecord]:
+        """Scan each example's prompt + every continuation for UNK tokens
+        and aggregate occurrences per unique source word.
+
+        Uses the *same* prompt that the model was scored on
+        (``_format_eval_context_with_fewshot`` — picks up few-shot demos),
+        so the report reflects what the tokenizer actually saw. ``source_field``
+        is ``"prompt"`` for the context and ``"continuation_<i>"`` for the
+        i-th continuation. Returns an empty dict when the tokenizer has no
+        usable ``unk_token`` id — the caller still writes a header-only CSV.
+        """
+        occs_by_example = []
+        for ex in examples:
+            prompt = self._format_eval_context_with_fewshot(ex)
+            continuations = self._build_continuations(ex)
+            ex_occs = list(scan_text(tokenizer, prompt, source_field="prompt"))
+            for i, c in enumerate(continuations):
+                ex_occs.extend(
+                    scan_text(tokenizer, c, source_field=f"continuation_{i}")
+                )
+            occs_by_example.append(ex_occs)
+        return aggregate_occurrences(occs_by_example)
+
     @torch.no_grad()
     def evaluate(
         self,
@@ -559,6 +695,7 @@ class LightEvalBenchmarkTask(BaseTask):
         max_samples: Optional[int] = None,
         failure_report_dir: Optional[Path] = None,
         score_normalization: str = "char",
+        unk_report_dir: Optional[Path] = None,
     ) -> Dict[str, float]:
         """
         Evaluate on the **90 % held-out split** using LightEval's log-likelihood
@@ -566,6 +703,11 @@ class LightEvalBenchmarkTask(BaseTask):
 
         If ``failure_report_dir`` is given, a ``<task_name>_accuracy_failures.csv``
         is written there with one row per wrong-answer example.
+
+        If ``unk_report_dir`` is given, a ``<task_name>_unks.csv`` is written
+        there listing the unique source words that produced UNK tokens in
+        either the prompt or any continuation. Header-only when no UNK was
+        seen or the tokenizer has no ``unk_token`` id.
 
         ``score_normalization`` selects the aggregation policy:
           * ``"char"`` (default) — char-length normalization (existing behavior;
@@ -625,6 +767,18 @@ class LightEvalBenchmarkTask(BaseTask):
             n_written = write_failure_csv(csv_path, failures, fieldnames)
             logger.info(
                 "%s: wrote %d failure rows to %s", self.name, n_written, csv_path
+            )
+
+        if unk_report_dir is not None:
+            udir = Path(unk_report_dir)
+            udir.mkdir(parents=True, exist_ok=True)
+            records = self._compute_downstream_unk_records(examples, tokenizer)
+            rows = records_to_rows(records.values(), DOWNSTREAM_UNK_FIELDS)
+            csv_path = udir / f"{self.name}_unks.csv"
+            n_unk_written = write_failure_csv(csv_path, rows, DOWNSTREAM_UNK_FIELDS)
+            logger.info(
+                "%s: wrote %d UNK word rows to %s",
+                self.name, n_unk_written, csv_path,
             )
 
         # Stamp the eval-preprocessing flag into the metrics dict so downstream

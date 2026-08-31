@@ -10,19 +10,13 @@ Schema: ``query``, ``sol1`` … ``sol5``, ``label``. **``label`` is 0-indexed**
 (``"0"`` → first option correct), matching LightEval's ``alghafa_adapter``.
 ``sol5`` is only present in two grounded-statement configs.
 
-Topic mix (rough share of the eval pool):
-
-  ~35 % T/F + 2-way binary sentiment → word-scored (see overrides below).
-  ~34 % 3-way sentiment             → word-scored.
-  ~30 % 4-way MCQ                   → letter-scored.
-  ~ 1 % 5-way grounded statement    → letter-scored.
-
-The word-scored sub-configs use the same protocol as ACVA: drop the
-letter-listing prompt, score the answer text directly with char-normalization.
-Letter-scored on these binary configs hits the ACVA letter-prior pathology
-(decisions dominated by unigram letter prior, near-tie margins, accuracy
-clusters near majority class). Per-config dispatch is keyed on
-``ex["_source_config"]`` populated by the loader.
+**Scoring (LightEval-official format, post 2026-05-06).** Every sub-config
+uses the same numeric-list prompt and scores the **choice text** directly.
+The per-sub-config word/letter dispatch was removed — LightEval's official
+``alghafa_prompt`` always shows choices as ``0) {c}\\n1) {c}\\n…`` and scores
+``log P(choice_text | prompt)``, regardless of whether the choices are
+binary words (T/F, sentiment) or longer phrases. PMI normalization handles
+the per-continuation prior; char-norm handles continuation length variance.
 """
 from __future__ import annotations
 
@@ -31,8 +25,7 @@ from typing import Any, Dict, List, Optional
 from arabic_eval.registry import task_registry
 from arabic_eval.tasks.lighteval.base import LightEvalBenchmarkTask
 from arabic_eval.tasks.lighteval.utils import (
-    ARABIC_CHOICE_LETTERS,
-    format_mcq_context,
+    format_mcq_context_numeric_official,
     load_huggingface_mcq,
     select_aggregator,
 )
@@ -40,15 +33,6 @@ from arabic_eval.tasks.lighteval.utils import (
 
 @task_registry.register("alghafa")
 class AlghafaTask(LightEvalBenchmarkTask):
-    # Sub-configs that should be scored word-wise rather than letter-wise.
-    # Single source of truth for the per-row dispatch in the four
-    # prompt/scoring hooks below.
-    WORD_SCORED_CONFIGS: frozenset = frozenset({
-        "multiple_choice_facts_truefalse_balanced_task",
-        "multiple_choice_rating_sentiment_no_neutral_task",
-        "multiple_choice_rating_sentiment_task",
-        "multiple_choice_sentiment_task",
-    })
 
     @property
     def name(self) -> str:
@@ -90,29 +74,17 @@ class AlghafaTask(LightEvalBenchmarkTask):
             dataset_config=self.dataset_config,
         )
 
-    # ---- Per-topic prompt / continuation dispatch ----
-
-    def _is_word_scored(self, ex: Dict[str, Any]) -> bool:
-        return ex.get("_source_config") in self.WORD_SCORED_CONFIGS
-
     def _format_eval_context(self, ex: Dict[str, Any]) -> str:
-        if self._is_word_scored(ex):
-            # No "أ. <choice>" listing — the answer is the choice text itself,
-            # not a letter referring to it. Mirrors ACVA's eval prompt shape.
-            return f"### السؤال:\n{ex['question']}\n\n### الإجابة:"
-        return format_mcq_context(ex["question"], ex["choices"])
+        # Official LightEval prompt: numeric list (`0) ...`, `1) ...`) with
+        # the standard Arabic instruction prefix. Continuations score the
+        # choice text directly (numbers in the prompt are display-only).
+        return format_mcq_context_numeric_official(ex["question"], ex["choices"])
 
     def _build_continuations(self, ex: Dict[str, Any]) -> List[str]:
-        if self._is_word_scored(ex):
-            # Score the answer text directly. Char-normalization in
-            # _aggregate_scores rescues the length bias that would otherwise
-            # favor the shorter answer.
-            return [f" {choice}" for choice in ex["choices"]]
-        n = len(ex["choices"])
-        return [
-            " " + (ARABIC_CHOICE_LETTERS[i] if i < len(ARABIC_CHOICE_LETTERS) else str(i))
-            for i in range(n)
-        ]
+        # Score the choice text strings directly (LightEval convention). The
+        # numeric markers in the prompt are display-only; the model picks the
+        # answer by predicting which choice text is most likely.
+        return [f" {choice}" for choice in ex["choices"]]
 
     def _aggregate_scores(
         self,
@@ -122,10 +94,10 @@ class AlghafaTask(LightEvalBenchmarkTask):
         unconditioned_log_likelihoods: Optional[List[float]] = None,
         normalization: str = "char",
     ) -> List[float]:
-        # Letter-scored sub-configs all have 1-char continuations → char-norm
-        # is a mathematical no-op. Word-scored sub-configs need it. PMI is
-        # also valid for both shapes (subtracts the per-letter / per-text
-        # prior under the bare answer-prefix context).
+        # Continuations vary in character length per row (since they're choice
+        # text), so char-norm is essential to avoid favoring shorter answers.
+        # PMI removes the per-continuation prior under the bare answer prefix
+        # ``الإجابة:`` (supplied by `_unconditioned_query` on the base class).
         return select_aggregator(
             continuations, log_likelihoods,
             unconditioned_log_likelihoods, normalization,

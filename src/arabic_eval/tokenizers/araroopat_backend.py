@@ -91,8 +91,8 @@ def _norm_clitic(value: Optional[str]) -> Optional[str]:
 # ---------------------------------------------------------------------------
 
 CAMEL_CLITIC_SURFACE: Dict[str, str] = {
-    # prc3 — question proclitic
-    "AAA_quest": "أ", "Aa_quest": "أ",
+    # prc3 — question proclitic. ">a_ques" is Buckwalter-encoded (">" = أ).
+    "AAA_quest": "أ", "Aa_quest": "أ", ">a_ques": "أ",
     # prc2 — conjunctions and subordinators
     "wa_conj": "و", "wa_part": "و", "wa_prep": "و", "wa_sub": "و",
     "fa_conj": "ف", "fa_rc": "ف", "fa_conn": "ف", "fa_sub": "ف",
@@ -101,12 +101,15 @@ CAMEL_CLITIC_SURFACE: Dict[str, str] = {
     "bi_prep": "ب", "bi_part": "ب",
     "ka_prep": "ك",
     "li_prep": "ل", "li_jus": "ل", "li_sub": "ل",
+    "la_emph": "ل", "la_rc": "ل",
     "sa_fut": "س",
     "ta_prep": "ت",
     # prc0 — definite article / negation
     "Al_det": "ال",
     "lA_neg": "لا",
     "mA_neg": "ما", "mA_part": "ما", "mA_rel": "ما", "ma_rel": "ما",
+    # enc0 — subordinating mA rides the suffix slot (عند + ما)
+    "mA_sub": "ما",
     # enc0 — pronominal enclitics (object / possessive / pronoun)
     "1s_dobj": "ي", "1s_poss": "ي", "1s_pron": "ي",
     "2ms_dobj": "ك", "2ms_poss": "ك", "2ms_pron": "ك",
@@ -137,18 +140,19 @@ CAMEL_CLITIC_SURFACE: Dict[str, str] = {
 
 _PROCLITIC_TAGS: frozenset = frozenset({
     # prc3 — question proclitic
-    "AAA_quest", "Aa_quest",
+    "AAA_quest", "Aa_quest", ">a_ques",
     # prc2 — conjunctions and subordinators
     "wa_conj", "wa_part", "wa_prep", "wa_sub",
     "fa_conj", "fa_rc", "fa_conn", "fa_sub", "fa_part",
     # prc1 — prepositions / future / connective
     "bi_prep", "bi_part", "ka_prep",
-    "li_prep", "li_jus", "li_sub", "sa_fut", "ta_prep",
+    "li_prep", "li_jus", "li_sub", "la_emph", "la_rc", "sa_fut", "ta_prep",
     # prc0 — definite article / negation
     "Al_det", "lA_neg", "mA_neg", "mA_part", "mA_rel", "ma_rel",
 })
 
 _ENCLITIC_TAGS: frozenset = frozenset({
+    "mA_sub",
     "1s_dobj", "1s_poss", "1s_pron",
     "2ms_dobj", "2ms_poss", "2ms_pron",
     "2fs_dobj", "2fs_poss", "2fs_pron",
@@ -187,7 +191,10 @@ def clitic_surface(tag: Optional[str]) -> Optional[str]:
         return None
     if tag in CAMEL_CLITIC_SURFACE:
         return CAMEL_CLITIC_SURFACE[tag]
-    logger.debug("Unknown CAMeL clitic tag: %r — keeping verbatim.", tag)
+    logger.warning(
+        "Unknown CAMeL clitic tag: %r — keeping verbatim. It will enter the vocab "
+        "as non-Arabic text; add it to CAMEL_CLITIC_SURFACE.", tag,
+    )
     return tag
 
 
@@ -195,6 +202,25 @@ def clitic_surface(tag: Optional[str]) -> Optional[str]:
 # here (rather than imported) so this module has no dependency on
 # morphological_utils — keeps the backend slim.
 _PATTERN_DIACRITICS = set("ًٌٍَُِّْٰٕٓٔ")
+
+# Arabic letter block used to validate roots. CAMeL occasionally emits
+# database markers ("FOREIGN") or Buckwalter/ASCII fragments ("Uٌٍ" for
+# هيكتور) in the root field; anything outside this range is not a root.
+_ARABIC_LETTER_RANGE = (("\u0621", "\u064a"), ("\u0671", "\u0671"))
+
+
+# CAMeL's masked-radical placeholder. It is a legitimate part of a root
+# token ('ق#ل'), so it is allowed through the Arabic-letter guard below —
+# unlike the ASCII fragments that guard exists to reject.
+WEAK_RADICAL_MARK = "#"
+
+
+def _is_arabic_root(root: str) -> bool:
+    return bool(root) and all(
+        ch == WEAK_RADICAL_MARK
+        or any(lo <= ch <= hi for lo, hi in _ARABIC_LETTER_RANGE)
+        for ch in root
+    )
 
 
 def _strip_clitic_from_start(pat: str, clitic: str) -> str:
@@ -249,6 +275,32 @@ def _strip_clitic_from_end(pat: str, clitic: str) -> str:
     return pat[:j]
 
 
+# The لِ + الـ contraction: when the preposition li is followed by the definite
+# article, Arabic orthography writes one lam, not two — لِ + الوَلَد → لِلوَلَد.
+# The article's surface is therefore "ل", not "ال", and a literal strip of "ال"
+# silently fails, leaving a stray lam in both the bare pattern and the
+# reconstructed stem ('ل1ِ2ا3ِ' instead of '1ِ2ا3ِ'; 'لكتاب' instead of 'كتاب').
+_LI_PREP, _AL_DET = "ل", "ال"
+
+
+def strip_proclitics_from_start(text: str, proclitics: Tuple[Optional[str], ...]) -> str:
+    """Strip a proclitic stack from the front, outermost first.
+
+    Handles the لِ+الـ contraction: if the article fails to strip literally and
+    the clitic just removed was the li preposition, strip a single lam instead.
+    """
+    prev: Optional[str] = None
+    for clitic in proclitics:
+        if not clitic:
+            continue
+        out = _strip_clitic_from_start(text, clitic)
+        if out == text and clitic == _AL_DET and prev == _LI_PREP:
+            out = _strip_clitic_from_start(text, _LI_PREP)
+        prev = clitic
+        text = out
+    return text
+
+
 def normalize_pattern(
     pattern_raw: str,
     prc3: Optional[str],
@@ -263,10 +315,7 @@ def normalize_pattern(
     prc1 > prc0 on the prefix side. We strip outermost-first there, then
     enc0 from the suffix.
     """
-    pat = pattern_raw
-    for clitic in (prc3, prc2, prc1, prc0):
-        if clitic:
-            pat = _strip_clitic_from_start(pat, clitic)
+    pat = strip_proclitics_from_start(pattern_raw, (prc3, prc2, prc1, prc0))
     if enc0:
         pat = _strip_clitic_from_end(pat, enc0)
     return pat
@@ -279,23 +328,48 @@ def normalize_pattern(
 def _dict_to_analysis(d: Dict[str, str]) -> Optional[Analysis]:
     """Apply post-processing to a trimmed analysis dict from the bridge.
 
-    Returns None for analyses we reject (NTWS loanword markers, missing
-    root/pattern, defective roots that shrink to <3 chars).
+    Returns None for analyses we reject: NTWS/FOREIGN database markers,
+    missing root/pattern, roots with fewer than 3 radicals, and roots
+    carrying characters that are neither Arabic letters nor CAMeL's
+    masked-radical placeholder.
     """
     root = d.get("root") or ""
     pattern_raw = d.get("pattern") or ""
     if not root or not pattern_raw:
         return None
-    # CAMeL uses '_' or '.' to separate root letters and '#' as a
-    # placeholder for missing/weak letters in defective roots. Normalize
-    # all of them away — '#' would break downstream Arabic-letter checks.
-    root = root.replace("_", "").replace(".", "").replace("#", "")
-    if not root or len(root) < 3:
+    # CAMeL separates root letters with '.' (sometimes '_') and marks a
+    # radical whose surface realization is not stable across the paradigm
+    # with '#' — the weak letters و/ي/ا and the hamza family. That mark is
+    # a RADICAL, not a missing field: قال/يقول/قول/أقوال all analyse as
+    # 'ق.#.ل', and the letter that actually surfaces sits in the pattern as
+    # literal template material ('1ا3َ', 'يَ1ُو3', '1َوْ3ِ').
+    #
+    # Deleting '#' is doubly destructive: it drops the root below the
+    # 3-radical bar, and — worse — it renumbers the remaining radicals so
+    # the pattern's slot digits no longer index the right letters. So count
+    # radicals structurally and keep the placeholder in the token string.
+    # Measured on the ArabicText-Large pre-pass, deletion routed 49 % of
+    # word occurrences in real eval text to the character fallback.
+    radicals = [r for r in root.replace("_", ".").split(".") if r]
+    if len(radicals) == 1 and len(radicals[0]) >= 3:
+        # Defensive: an unseparated root string ("كتب" rather than "ك.ت.ب").
+        # Every entry observed in the corpus is dot-separated, but treating
+        # the whole string as one radical would silently reject those.
+        radicals = list(radicals[0])
+    root = "".join(radicals)
+    if len(radicals) < 3:
         return None
     # CAMeL marks loanwords / non-Arabic-source words with root='NTWS'
-    # ("Non-Triliteral Word Source"). These have no real morphological
-    # decomposition — route them to the tokenizer's [LIT_*] fallback.
-    if root == "NTWS" or "NTWS" in pattern_raw:
+    # ("Non-Triliteral Word Source") and some database entries with
+    # root='FOREIGN'. Neither has a real morphological decomposition —
+    # route them to the tokenizer's [LIT_*] fallback.
+    if root in ("NTWS", "FOREIGN") or "NTWS" in pattern_raw or "FOREIGN" in pattern_raw:
+        return None
+    # Catch-all: a root must be Arabic letters only. Without this, ASCII
+    # fragments leak into the vocabulary as [ROOT_*] tokens (observed:
+    # [ROOT_FOREIGN] freq 61, [ROOT_Uٌٍ] freq 3).
+    if not _is_arabic_root(root):
+        logger.debug("Rejecting non-Arabic root %r", root)
         return None
 
     prc3 = clitic_surface(_norm_clitic(d.get("prc3")))
@@ -443,7 +517,11 @@ def naive_pattern_fill(root: str, pattern: str) -> str:
     for ch in pattern:
         if ch in "1234":
             idx = int(ch) - 1
-            if idx < len(root):
+            # A masked radical never has a slot in its own pattern (verified
+            # on 457/457 masked radicals in the corpus: the digit is always
+            # absent, the realized letter being literal template material).
+            # Guard anyway so '#' can never reach output text.
+            if idx < len(root) and root[idx] != WEAK_RADICAL_MARK:
                 out.append(root[idx])
         else:
             out.append(ch)

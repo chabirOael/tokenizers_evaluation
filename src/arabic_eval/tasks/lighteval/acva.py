@@ -18,6 +18,7 @@ from typing import Any, Dict, List, Optional
 from arabic_eval.registry import task_registry
 from arabic_eval.tasks.lighteval.base import LightEvalBenchmarkTask
 from arabic_eval.tasks.lighteval.utils import (
+    format_acva_context_official,
     load_huggingface_mcq,
     select_aggregator,
 )
@@ -66,9 +67,10 @@ class ACVATask(LightEvalBenchmarkTask):
         )
 
     def _format_eval_context(self, ex: Dict[str, Any]) -> str:
-        # ACVA is True/False — no need to display "أ. صح / ب. خطأ" choice
-        # lines because the answer is the word itself, not a letter.
-        return f"### السؤال:\n{ex['question']}\n\n### الإجابة:"
+        # Official LightEval ACVA prompt: bare ``السؤال:`` / ``الإجابة:`` with
+        # no ``###`` block markers and no blank lines. Score the True/False
+        # words directly (continuations from `_build_continuations`).
+        return format_acva_context_official(ex["question"])
 
     def _build_continuations(self, ex: Dict[str, Any]) -> List[str]:
         # Score the words themselves, in the same index order as `choices`

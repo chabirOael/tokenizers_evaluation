@@ -11,7 +11,12 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 # Registry keys understood by data/finetune_corpora.py. Adding a new
 # corpus means editing both this Literal and the loader registry.
-DatasetName = Literal["arabic_squad", "tydiqa_arabic", "arcd"]
+DatasetName = Literal[
+    "arabic_squad",
+    "tydiqa_arabic",
+    "arcd",
+    "arabic_squad_mcq",   # synthetic MCQ derived from arabic_squad
+]
 
 
 # ---------------------------------------------------------------------------
@@ -107,6 +112,7 @@ class PhaseConfig(BaseModel):
     warmup_steps: int = 0
     max_grad_norm: float = 1.0
     save_checkpoint: bool = True
+    clean_latin_rows: bool = False
     early_stopping: Optional[EarlyStoppingConfig] = None
 
     @field_validator("datasets", mode="before")
@@ -177,13 +183,29 @@ class EvaluationConfig(BaseModel):
     generation_temperature: float = 1.0
     generation_do_sample: bool = False
     failure_reports: bool = False  # If true, write per-task CSVs of failing eval cases
-    # LightEval MCQ scoring normalization. ``"char"`` (default) is the
-    # existing per-character-length normalization; ``"pmi"`` subtracts the
-    # unconditioned per-continuation log-likelihood (LightEval's
-    # ``LogProbPMINorm``) which corrects for letter / answer-text priors;
-    # ``"char+pmi"`` reports both. Default stays ``"char"`` so existing
-    # run JSONs remain reproducible — opt in per-experiment YAML.
+    # If true, dump the per-word list underlying ``unk_rate`` to
+    # ``<output_dir>/intrinsic_unks.csv`` (one row per unique source word
+    # that produced an UNK token in the intrinsic eval split). Tokenizers
+    # without a usable ``unk_token`` id produce a header-only CSV.
+    intrinsic_unk_report: bool = False
+    # If true, scan prompts + every continuation during LightEval MCQ
+    # evaluation and write per-task ``<output_dir>/unk_reports/<task>_unks.csv``
+    # listing UNK occurrences. Independent from ``intrinsic_unk_report``.
+    downstream_unk_report: bool = False
+    # LightEval MCQ scoring normalization. ``"char"`` is the per-character-
+    # length normalization; ``"pmi"`` subtracts the unconditioned per-
+    # continuation log-likelihood (LightEval's ``LogProbPMINorm``) which
+    # corrects for letter / answer-text priors; ``"char+pmi"`` reports both
+    # and aliases ``accuracy`` to ``accuracy_pmi`` (PMI is the unbiased
+    # primary metric). Default ``"char+pmi"`` since 2026-05-06.
     score_normalization: Literal["char", "pmi", "char+pmi"] = "char"
+
+    # Number of few-shot demonstrations prepended to each LightEval MCQ
+    # prompt. K demos are sampled deterministically (seeded) from the same
+    # ``_source_config`` as the eval row, with the eval row excluded from
+    # its own pool. ``0`` (default) preserves the existing zero-shot
+    # behavior — opt in per-experiment YAML.
+    num_fewshot: int = 0
 
 
 class TrackingConfig(BaseModel):

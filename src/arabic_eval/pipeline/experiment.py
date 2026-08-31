@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from arabic_eval.config import ExperimentConfig, PhaseConfig
-from arabic_eval.data.finetune_corpora import build_qa_dataloader, load_corpora
+from arabic_eval.data.finetune_corpora import build_qa_dataloader, filter_latin_records, load_corpora
 from arabic_eval.data.loader import extract_texts, load_arabic_dataset
 from arabic_eval.evaluation.evaluator import Evaluator
 from arabic_eval.evaluation.metrics import compute_mei
@@ -96,6 +96,19 @@ def _run_all_phases(
 
         # Build the train loader from the phase's own corpus list.
         train_records = load_corpora(phase_cfg.datasets, splits="train")
+        if phase_cfg.clean_latin_rows:
+            n_before = len(train_records)
+            train_records = filter_latin_records(train_records)
+            n_after = len(train_records)
+            if n_after == 0:
+                raise ValueError(
+                    f"[{phase_name}] clean_latin_rows dropped every record (was {n_before})"
+                )
+            logger.info(
+                "[%s] clean_latin_rows: dropped %d/%d records (%.1f%% removed)",
+                phase_name, n_before - n_after, n_before,
+                100.0 * (n_before - n_after) / n_before,
+            )
         train_loader = build_qa_dataloader(
             train_records, tokenizer,
             batch_size=phase_cfg.batch_size,
@@ -209,10 +222,14 @@ def run_experiment(config: ExperimentConfig) -> Dict[str, Any]:
             eval_texts=eval_texts,
             output_dir=str(output_dir),
         )
+        intrinsic_unk_csv: Optional[str] = None
+        if config.evaluation.intrinsic_unk_report:
+            intrinsic_unk_csv = str(output_dir / "intrinsic_unks.csv")
         results["intrinsic"] = evaluator.run_intrinsic(
             num_samples=config.evaluation.num_eval_samples,
             morphological_metrics=config.evaluation.morphological_metrics,
             morph_sample_size=config.evaluation.morph_sample_size,
+            unk_report_path=intrinsic_unk_csv,
         )
 
     # 4) Load model + adapt
@@ -243,7 +260,12 @@ def run_experiment(config: ExperimentConfig) -> Dict[str, Any]:
         for task_cfg in config.sweep.tasks:
             task_type = task_cfg.type
             task_cls = task_registry.get(task_type)
-            task = task_cls(dict(task_cfg.params))
+            # Inject the global ``num_fewshot`` setting into per-task params
+            # unless the YAML overrode it explicitly. LightEval MCQ tasks
+            # honor this; non-LightEval tasks ignore it (no harm).
+            task_params = dict(task_cfg.params)
+            task_params.setdefault("num_fewshot", config.evaluation.num_fewshot)
+            task = task_cls(task_params)
 
             eval_kwargs: Dict[str, Any] = {
                 "split": "test",
@@ -256,6 +278,10 @@ def run_experiment(config: ExperimentConfig) -> Dict[str, Any]:
                 eval_kwargs["failure_report_dir"] = fdir
             if config.evaluation.score_normalization != "char" and "score_normalization" in eval_params:
                 eval_kwargs["score_normalization"] = config.evaluation.score_normalization
+            if config.evaluation.downstream_unk_report and "unk_report_dir" in eval_params:
+                udir = output_dir / "unk_reports"
+                ensure_dir(udir)
+                eval_kwargs["unk_report_dir"] = udir
 
             # Tokenizer warmup (avoids cold-start charging the timer)
             try:

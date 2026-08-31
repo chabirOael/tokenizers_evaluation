@@ -37,8 +37,16 @@ class Evaluator:
         num_samples: Optional[int] = 5000,
         morphological_metrics: bool = True,
         morph_sample_size: int = 500,
+        unk_report_path: Optional[str] = None,
     ) -> Dict[str, float]:
-        """Compute intrinsic tokenizer metrics."""
+        """Compute intrinsic tokenizer metrics.
+
+        When ``unk_report_path`` is set, the per-word UNK occurrence list
+        underlying the scalar ``unk_rate`` is dumped to that path as a CSV
+        (see ``compute_intrinsic_metrics`` for the column schema). Always
+        writes the CSV when the path is provided — header-only when no
+        UNKs were seen.
+        """
         texts = (
             self.eval_texts
             if num_samples is None
@@ -49,11 +57,13 @@ class Evaluator:
             return {}
 
         logger.info("Running intrinsic evaluation on %d texts", len(texts))
+        from pathlib import Path as _Path
         metrics = compute_intrinsic_metrics(
             self.tokenizer,
             texts,
             morphological_metrics=morphological_metrics,
             morph_sample_size=morph_sample_size,
+            unk_report_path=_Path(unk_report_path) if unk_report_path else None,
         )
         save_json(metrics, f"{self.output_dir}/intrinsic_metrics.json")
         return metrics

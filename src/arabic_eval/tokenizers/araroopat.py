@@ -37,6 +37,7 @@ from arabic_eval.tokenizers.araroopat_backend import (
     _strip_clitic_from_end,
     _strip_clitic_from_start,
     naive_pattern_fill,
+    strip_proclitics_from_start,
 )
 from arabic_eval.tokenizers.base import BaseTokenizer, EmbeddingType, TokenizerOutput
 from arabic_eval.tokenizers.utils.arabic_text import (
@@ -438,16 +439,21 @@ class AraRooPatTokenizer(BaseTokenizer):
     ) -> None:
         """Provenance: which roots/patterns came from which words, with examples."""
         # Build root → example words map (up to 5 each).
+        # Hoist the two vocab-derived sets out of the loop: they were being
+        # rebuilt per entry, which is O(entries x vocab). At 506k analyzed
+        # entries and an 11k vocab that is ~11e9 string operations — hours.
+        vocab_roots = self._vocab_root_set()
+        vocab_patterns = self._vocab_pattern_set()
         root_examples: Dict[str, List[str]] = {}
         pat_examples: Dict[str, List[Tuple[str, str]]] = {}
         for e in entries:
             if not (e.analyzed and e.root and e.pattern):
                 continue
-            if e.root in self._vocab_root_set():
+            if e.root in vocab_roots:
                 lst = root_examples.setdefault(e.root, [])
                 if len(lst) < 5 and e.word not in lst:
                     lst.append(e.word)
-            if e.pattern in self._vocab_pattern_set():
+            if e.pattern in vocab_patterns:
                 lst2 = pat_examples.setdefault(e.pattern, [])
                 if len(lst2) < 5 and (e.root, e.surface or e.word) not in lst2:
                     lst2.append((e.root, e.surface or e.word))
@@ -667,7 +673,7 @@ class AraRooPatTokenizer(BaseTokenizer):
 
         def flush_word(word: str) -> None:
             """Emit a content-bearing word, prepending any buffered proclitics."""
-            out.append("".join(clitic_prefix) + word)
+            out.append(join_proclitics(clitic_prefix) + word)
             clitic_prefix.clear()
 
         def dump_orphan_root() -> None:
@@ -755,7 +761,7 @@ class AraRooPatTokenizer(BaseTokenizer):
         # Final flushes.
         dump_orphan_root()
         if clitic_prefix:
-            out.append("".join(clitic_prefix))
+            out.append(join_proclitics(clitic_prefix))
 
         return " ".join(s for s in out if s)
 
@@ -894,6 +900,20 @@ class AraRooPatTokenizer(BaseTokenizer):
 # Module helpers
 # ---------------------------------------------------------------------------
 
+def join_proclitics(clitics: List[str]) -> str:
+    """Concatenate buffered proclitics, applying the لِ + الـ contraction.
+
+    Arabic writes one lam, not two: لِ + الوَلَد → لِلوَلَد. Joining naively
+    produces "لالولد". Mirrors ``strip_proclitics_from_start`` on the encode
+    side — the two must stay inverse to each other or round trips break on
+    every ``لل...`` word.
+    """
+    out: List[str] = []
+    for c in clitics:
+        out.append("ل" if (c == "ال" and out and out[-1] == "ل") else c)
+    return "".join(out)
+
+
 def _strip_clitic_surfaces(
     surface: str,
     proclitics: Tuple[str, ...],
@@ -905,9 +925,7 @@ def _strip_clitic_surfaces(
     string. Used to compute the reconstruction value (clitic-free *inflected*
     stem) from CAMeL's full ``diac`` field.
     """
-    s = surface
-    for c in proclitics:
-        s = _strip_clitic_from_start(s, c)
+    s = strip_proclitics_from_start(surface, proclitics)
     for c in enclitics:
         s = _strip_clitic_from_end(s, c)
     return s

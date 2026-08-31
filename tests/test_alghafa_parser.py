@@ -1,18 +1,19 @@
-"""Regression tests for the Alghafa parser fix and per-topic scoring dispatch.
+"""Regression tests for the Alghafa parser + LightEval-official scoring.
 
-These tests pin down the contract corrected in the 2026-05-03 fix:
+These tests pin down the contract:
 
   * ``label`` is **0-indexed** in OALL/AlGhafa-Native (matches LightEval's
     reference ``alghafa_adapter``). Rows with ``label="0"`` must be kept;
     earlier code dropped 36 % of all rows by treating the field as 1-indexed.
   * ``sol5`` is supported (two grounded-statement sub-configs ship five
     options).
-  * Per-topic scoring dispatch keys on ``ex["_source_config"]``: T/F + 2/3-way
-    sentiment use word-based scoring, 4-way MCQ + 5-way grounded statement
-    keep the inherited letter-based scoring.
+  * **All sub-configs use the LightEval-official numeric prompt format**
+    (post 2026-05-06): choices listed as ``0) {c}\\n1) {c}\\n…`` and the
+    continuations score the choice text directly. The pre-2026-05-06 word/
+    letter dispatch was removed — LightEval doesn't distinguish.
   * Char-normalization on the base ``_aggregate_scores`` is the LightEval
-    ``LogProbCharNorm`` equivalent — no-op for 1-char continuations,
-    discriminative for variable-length answer text.
+    ``LogProbCharNorm`` equivalent — important for these continuations
+    because their character lengths vary per row.
   * ``evaluate_mcq`` emits ``per_subconfig_accuracy`` so heterogeneous
     benchmarks can be diagnosed without re-running.
 """
@@ -109,72 +110,76 @@ def test_empty_query_rejected():
 
 
 # ---------------------------------------------------------------------------
-# Per-topic prompt / continuation / SFT dispatch
+# LightEval-official prompt / continuation contract
 # ---------------------------------------------------------------------------
 
-WORD_CFG = "multiple_choice_rating_sentiment_no_neutral_task"
-LETTER_CFG = "meta_ar_dialects"
+# Sub-configs spanning the 2/3/4/5-way shapes. Per the LightEval-official
+# format every sub-config gets the same numeric-list prompt and scores choice
+# text directly — no word/letter dispatch.
+TWO_WAY_CFG = "multiple_choice_rating_sentiment_no_neutral_task"
+FOUR_WAY_CFG = "meta_ar_dialects"
+FIVE_WAY_CFG = "multiple_choice_grounded_statement_soqal_task"
 
 
-def _word_ex():
+def _two_way_ex():
     return {
         "question": "Q?",
         "choices": ["ايجابي", "سلبي"],
         "answer": 0,
-        "_source_config": WORD_CFG,
+        "_source_config": TWO_WAY_CFG,
     }
 
 
-def _letter_ex():
+def _four_way_ex():
     return {
         "question": "Q?",
         "choices": ["a", "b", "c", "d"],
         "answer": 1,
-        "_source_config": LETTER_CFG,
+        "_source_config": FOUR_WAY_CFG,
     }
 
 
-def test_word_scored_eval_context_drops_choice_listing():
+def test_eval_context_uses_numeric_list_for_all_subconfigs():
+    """Every sub-config gets the same ``0) … 1) …`` numeric format —
+    no word/letter dispatch in the post-2026-05-06 design."""
     t = _alghafa_task()
-    ctx = t._format_eval_context(_word_ex())
-    assert "أ." not in ctx
-    assert "### السؤال:" in ctx
-    assert "### الإجابة:" in ctx
-    # Word-scored prompts must NOT carry the letter-MCQ choices block.
-    assert "### الخيارات:" not in ctx
+    ctx_two = t._format_eval_context(_two_way_ex())
+    ctx_four = t._format_eval_context(_four_way_ex())
+    for ctx, choices in [
+        (ctx_two, ["ايجابي", "سلبي"]),
+        (ctx_four, ["a", "b", "c", "d"]),
+    ]:
+        # Numeric markers, not Arabic letters.
+        for i, c in enumerate(choices):
+            assert f"{i}) {c}" in ctx
+        # No legacy ``###`` block markers anywhere.
+        assert "###" not in ctx
+        # Ends with bare ``الإجابة:``.
+        assert ctx.endswith("الإجابة:")
 
 
-def test_word_scored_continuations_use_choice_text():
+def test_continuations_score_choice_text_for_all_subconfigs():
+    """Continuations are the choice text strings (not letters / numbers)."""
     t = _alghafa_task()
-    assert t._build_continuations(_word_ex()) == [" ايجابي", " سلبي"]
+    assert t._build_continuations(_two_way_ex()) == [" ايجابي", " سلبي"]
+    assert t._build_continuations(_four_way_ex()) == [" a", " b", " c", " d"]
 
 
-def test_letter_scored_eval_context_lists_letters():
-    t = _alghafa_task()
-    ctx = t._format_eval_context(_letter_ex())
-    for letter, choice in zip(["أ", "ب", "ج", "د"], ["a", "b", "c", "d"]):
-        assert f"{letter}. {choice}" in ctx
-
-
-def test_letter_scored_continuations_use_letters():
-    t = _alghafa_task()
-    assert t._build_continuations(_letter_ex()) == [" أ", " ب", " ج", " د"]
-
-
-def test_missing_source_config_falls_back_to_letter():
-    """Defensive: no ``_source_config`` (legacy callers) → letter dispatch."""
+def test_missing_source_config_still_works():
+    """Defensive: no ``_source_config`` should still produce a valid prompt
+    (the new format doesn't dispatch on it)."""
     ex = {"question": "Q?", "choices": ["a", "b"], "answer": 0}
     t = _alghafa_task()
-    assert t._build_continuations(ex) == [" أ", " ب"]
+    assert t._build_continuations(ex) == [" a", " b"]
 
 
-def test_five_way_letter_continuations():
+def test_five_way_continuations_use_choice_text():
     ex = {
         "question": "Q?", "choices": ["a", "b", "c", "d", "e"], "answer": 4,
-        "_source_config": "multiple_choice_grounded_statement_soqal_task",
+        "_source_config": FIVE_WAY_CFG,
     }
     cnt = _alghafa_task()._build_continuations(ex)
-    assert len(cnt) == 5 and cnt[:4] == [" أ", " ب", " ج", " د"]
+    assert cnt == [" a", " b", " c", " d", " e"]
 
 
 # ---------------------------------------------------------------------------
@@ -235,21 +240,21 @@ def test_evaluate_mcq_emits_per_subconfig_accuracy():
     examples = [
         # 4-way letter-scored, model picks idx 0 → 1 correct + 1 wrong
         {"question": "Q1", "choices": ["a", "b", "c", "d"], "answer": 0,
-         "_source_config": LETTER_CFG},
+         "_source_config": FOUR_WAY_CFG},
         {"question": "Q2", "choices": ["a", "b", "c", "d"], "answer": 1,
-         "_source_config": LETTER_CFG},
+         "_source_config": FOUR_WAY_CFG},
         # 2-way word-scored, model picks idx 0 → 1 correct + 1 wrong
         {"question": "Q3", "choices": ["ايجابي", "سلبي"], "answer": 0,
-         "_source_config": WORD_CFG},
+         "_source_config": TWO_WAY_CFG},
         {"question": "Q4", "choices": ["ايجابي", "سلبي"], "answer": 1,
-         "_source_config": WORD_CFG},
+         "_source_config": TWO_WAY_CFG},
     ]
     metrics, _ = w.evaluate_mcq(examples, task=t)
     assert metrics["accuracy"] == 0.5
     psa = metrics["per_subconfig_accuracy"]
-    assert set(psa.keys()) == {LETTER_CFG, WORD_CFG}
-    assert psa[LETTER_CFG] == {"accuracy": 0.5, "num_samples": 2}
-    assert psa[WORD_CFG] == {"accuracy": 0.5, "num_samples": 2}
+    assert set(psa.keys()) == {FOUR_WAY_CFG, TWO_WAY_CFG}
+    assert psa[FOUR_WAY_CFG] == {"accuracy": 0.5, "num_samples": 2}
+    assert psa[TWO_WAY_CFG] == {"accuracy": 0.5, "num_samples": 2}
 
 
 def test_evaluate_mcq_failure_record_has_score_margin():
@@ -260,7 +265,7 @@ def test_evaluate_mcq_failure_record_has_score_margin():
     # Force a wrong prediction — gold is idx 1, model picks idx 0.
     examples = [
         {"question": "Q1", "choices": ["ايجابي", "سلبي"], "answer": 1,
-         "_source_config": WORD_CFG},
+         "_source_config": TWO_WAY_CFG},
     ]
     _, failures = w.evaluate_mcq(examples, task=t, collect_failures=True)
     assert len(failures) == 1

@@ -266,6 +266,10 @@ def patched_root_extractor():
     ) as RE:
         instance = MagicMock()
         instance.extract.side_effect = lambda w: table.get(w)
+        # Secondary (tashaphyne) extractor agrees with the primary here, so
+        # root_extractor_agreement is 1.0 and the pre-existing assertions
+        # in this module stay unaffected.
+        instance.extract_secondary.side_effect = lambda w: table.get(w)
         RE.return_value = instance
         yield
 
@@ -311,6 +315,11 @@ class TestAggregation:
             "root_bearing_token_pct",
             "pattern_bearing_token_pct",
             "morph_sample_size",
+            "root_measurable_pct",
+            "root_conservation_attainable",
+            "morph_alignment_coverage",
+            "morph_alignment_ceiling",
+            "root_extractor_agreement",
         }
         assert set(em.keys()) == expected_keys
         assert all(em[k] is None for k in expected_keys - {"morph_sample_size"})
@@ -444,3 +453,130 @@ class TestEndToEndRegression:
         assert m["clitic_separation_accuracy"] is None
         # SFR: 2 raw tokens / 5 morphemes = 0.4.
         assert m["semantic_fragmentation_ratio"] == round(2 / 5, 4)
+
+
+# ===========================================================================
+# §7. Ceiling / coverage diagnostics
+#
+# These four fields exist to stop the four headline metrics being misread:
+#   - root_measurable_pct           how much of the sample is winnable at all
+#   - root_conservation_attainable  RPS over only the winnable part
+#   - morph_alignment_coverage      what share of words integrity/CSA saw
+#   - root_extractor_agreement      how stable the ground truth itself is
+# ===========================================================================
+
+def _patched_extractors(primary, secondary=None):
+    """Patch RootExtractor with explicit primary/secondary tables."""
+    secondary = primary if secondary is None else secondary
+    ctx = patch("arabic_eval.evaluation.intrinsic_metrics.RootExtractor")
+    RE = ctx.__enter__()
+    instance = MagicMock()
+    instance.extract.side_effect = lambda w: primary.get(w)
+    instance.extract_secondary.side_effect = lambda w: secondary.get(w)
+    RE.return_value = instance
+    return ctx
+
+
+class TestCeilingDiagnostics:
+    def test_weak_root_is_not_measurable(self):
+        """قال has root قول, but و never surfaces — no tokenizer can win it."""
+        ctx = _patched_extractors({"قال": "قول", "كتاب": "كتب"})
+        try:
+            tok = _FakeTokenizer({"قال": ["قال"], "كتاب": ["كتاب"]})
+            m = compute_morphological_metrics(
+                tok, _texts_with_words(["قال", "كتاب"]),
+                sample_size=10, use_farasa=False,
+            )
+        finally:
+            ctx.__exit__(None, None, None)
+        # 1 of 2 words is winnable.
+        assert m["root_measurable_pct"] == 50.0
+        # Raw rate is dragged down by the unwinnable word ...
+        assert m["root_conservation_rate"] == 0.5
+        # ... while the attainable rate correctly reads a perfect score.
+        assert m["root_conservation_attainable"] == 1.0
+
+    def test_all_sound_roots_measurable(self):
+        ctx = _patched_extractors({"كتاب": "كتب", "مدرسة": "درس"})
+        try:
+            tok = _FakeTokenizer({"كتاب": ["كتاب"], "مدرسة": ["مدرسة"]})
+            m = compute_morphological_metrics(
+                tok, _texts_with_words(["كتاب", "مدرسة"]),
+                sample_size=10, use_farasa=False,
+            )
+        finally:
+            ctx.__exit__(None, None, None)
+        assert m["root_measurable_pct"] == 100.0
+        assert m["root_conservation_attainable"] == m["root_conservation_rate"] == 1.0
+
+    def test_attainable_never_below_raw(self):
+        """Invariant: removing unwinnable words can only help (or tie)."""
+        ctx = _patched_extractors({"قال": "قول", "كتاب": "كتب", "مدرسة": "درس"})
+        try:
+            tok = _FakeTokenizer({
+                "قال": ["قال"], "كتاب": ["ك", "تاب"], "مدرسة": ["مدرسة"],
+            })
+            m = compute_morphological_metrics(
+                tok, _texts_with_words(["قال", "كتاب", "مدرسة"]),
+                sample_size=10, use_farasa=False,
+            )
+        finally:
+            ctx.__exit__(None, None, None)
+        assert m["root_conservation_attainable"] >= m["root_conservation_rate"]
+
+    def test_alignment_coverage_full_for_substring_tokenizer(self):
+        ctx = _patched_extractors({"وكتاب": "كتب"})
+        try:
+            tok = _FakeTokenizer({"وكتاب": ["و", "كتاب"]})
+            m = compute_morphological_metrics(
+                tok, _texts_with_words(["وكتاب"]), sample_size=10, use_farasa=False,
+            )
+        finally:
+            ctx.__exit__(None, None, None)
+        assert m["morph_alignment_coverage"] == 1.0
+
+    def test_alignment_coverage_zero_for_non_substring_tokenizer(self):
+        """araroopat-shaped: tokens are a root + a stem, not a cover of the word.
+
+        integrity / CSA are computed only over aligned words, so a coverage
+        of 0.0 means those metrics saw none of this tokenizer's real output.
+        """
+        ctx = _patched_extractors({"يذهب": "ذهب"})
+        try:
+            tok = _FakeTokenizer({"يذهب": ["ذهب", "يذهب"]})
+            m = compute_morphological_metrics(
+                tok, _texts_with_words(["يذهب"]), sample_size=10, use_farasa=False,
+            )
+        finally:
+            ctx.__exit__(None, None, None)
+        assert m["morph_alignment_coverage"] == 0.0
+
+    def test_extractor_agreement_reports_ground_truth_noise(self):
+        ctx = _patched_extractors(
+            primary={"والكتاب": "كتب", "مدرسة": "درس"},
+            secondary={"والكتاب": "كوب", "مدرسة": "درس"},   # tashaphyne disagrees once
+        )
+        try:
+            tok = _FakeTokenizer({"والكتاب": ["والكتاب"], "مدرسة": ["مدرسة"]})
+            m = compute_morphological_metrics(
+                tok, _texts_with_words(["والكتاب", "مدرسة"]),
+                sample_size=10, use_farasa=False,
+            )
+        finally:
+            ctx.__exit__(None, None, None)
+        assert m["root_extractor_agreement"] == 0.5
+
+    def test_alignment_ceiling_excludes_uncleanable_words(self):
+        """ى is not in ARABIC_LETTERS, so clean_token_string drops it and the
+        word cannot be aligned by any tokenizer — not even a whole-word one."""
+        ctx = _patched_extractors({"مستشفى": "شفي", "كتاب": "كتب"})
+        try:
+            tok = _FakeTokenizer({"مستشفى": ["مستشفى"], "كتاب": ["كتاب"]})
+            m = compute_morphological_metrics(
+                tok, _texts_with_words(["مستشفى", "كتاب"]),
+                sample_size=10, use_farasa=False,
+            )
+        finally:
+            ctx.__exit__(None, None, None)
+        assert m["morph_alignment_ceiling"] == 0.5
+        assert m["morph_alignment_coverage"] <= m["morph_alignment_ceiling"]

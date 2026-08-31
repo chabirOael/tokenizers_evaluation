@@ -9,6 +9,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from pathlib import Path
 
@@ -36,6 +37,10 @@ def main() -> None:
     parser.add_argument("--output", type=str, default=None,
                         help="Output directory (default: outputs/tokenizers/<type>_<vocab>)")
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--params", type=str, default=None,
+                        help='JSON dict of tokenizer constructor params, e.g. '
+                             '\'{"max_patterns": 4000}\' (matches the params block '
+                             'in configs/tokenizers/<type>.yaml)')
     args = parser.parse_args()
 
     setup_logger("arabic_eval")
@@ -59,7 +64,10 @@ def main() -> None:
     # Train tokenizer
     print(f"Training {args.type} tokenizer (vocab_size={args.vocab_size})...")
     tokenizer_cls = tokenizer_registry.get(args.type)
-    tokenizer = tokenizer_cls()
+    params = json.loads(args.params) if args.params else {}
+    if params:
+        print(f"Tokenizer params: {params}")
+    tokenizer = tokenizer_cls(**params)
     tokenizer.train(texts, vocab_size=args.vocab_size)
 
     # Save

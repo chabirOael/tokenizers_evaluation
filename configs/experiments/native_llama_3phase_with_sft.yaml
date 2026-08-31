@@ -37,13 +37,28 @@ model:
 #       sft:
 #         steps: 1000
 
+training:
+  phases:
+    embedding_alignment:
+      # native_llama's embeddings start as the pretrained Llama-3.2-1B
+      # weights (resize_token_embeddings is a no-op when vocab matches),
+      # so Phase 1 only damages the pretrained signal — measured 35%
+      # relative L2 drift after 1000 steps at LR=1e-3 (pre-2026-05-06
+      # default). For from-scratch tokenizers (BPE, AraRooPat, etc.) keep
+      # this enabled — they need the alignment.
+      enabled: false
+
 sweep:
   tokenizers:
     - type: "native_llama"
       vocab_sizes: [null]
   tasks:
     - type: "acva"
-      params: {}
+      params:
+        # ACVA is True/False — few-shot demos shift the answer-distribution
+        # prior more than they help format-teaching, and PMI over-corrects.
+        # Keep zero-shot here; other tasks inherit ``evaluation.num_fewshot``.
+        num_fewshot: 0
     - type: "alghafa"
       params: {}
     - type: "arabic_exam"
@@ -56,4 +71,5 @@ evaluation:
   downstream_metrics: true
   failure_reports: true
   score_normalization: "char+pmi"
+  num_fewshot: 3            # 3-shot in-context demos per LightEval MCQ row
   num_eval_samples: null   # use full benchmark

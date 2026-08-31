@@ -287,5 +287,22 @@ def test_loss_decreases_on_simple_task(tmp_path):
     assert last_5 < first_5, f"loss did not decrease: first_5={first_5:.4f}, last_5={last_5:.4f}"
 
 
+class TestPhaseConfigCleanLatinRows:
+    """The clean_latin_rows flag is a per-phase opt-in; the field must
+    round-trip through pydantic with a False default and accept True."""
+
+    def test_default_is_false(self):
+        cfg = _phase_cfg()
+        assert cfg.clean_latin_rows is False
+
+    def test_explicit_true_roundtrips(self):
+        cfg = _phase_cfg(clean_latin_rows=True)
+        assert cfg.clean_latin_rows is True
+
+    def test_explicit_false_roundtrips(self):
+        cfg = _phase_cfg(clean_latin_rows=False)
+        assert cfg.clean_latin_rows is False
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-v"]))

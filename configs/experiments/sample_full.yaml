@@ -91,7 +91,7 @@ training:
         - "lm_head"                                  # ditto for "lm_head"
                                                      # use ["*"] alone to mean "all parameters"
       steps: 1000                                    # fixed step budget (NOT epochs)
-      learning_rate: 1.0e-3                          # higher LR is fine — only embeddings update
+      learning_rate: 1.0e-4                          # higher LR is fine — only embeddings update
       batch_size: 8
       gradient_accumulation_steps: 1                 # effective batch = batch_size * grad_accum
       optimizer: "adamw"                             # only adamw is supported today
@@ -102,6 +102,7 @@ training:
       warmup_steps: 0                                # linear warmup before scheduler kicks in
       max_grad_norm: 1.0                             # gradient clipping
       save_checkpoint: true                          # writes {output_dir}/training/embedding_alignment/
+      clean_latin_rows: false                        # drop training records whose question/context/answer/choices contain any Latin-script letter
 
     # =====================================================================
     # Phase 2 — Warmup
@@ -116,7 +117,7 @@ training:
       datasets: ["arabic_squad"]
       trainable_parameters: ["*"]                    # all parameters
       steps: 2000
-      learning_rate: 2.0e-4
+      learning_rate: 2.0e-5
       batch_size: 4
       gradient_accumulation_steps: 4                 # effective batch = 16
       optimizer: "adamw"
@@ -127,6 +128,7 @@ training:
       warmup_steps: 100
       max_grad_norm: 1.0
       save_checkpoint: true
+      clean_latin_rows: false                        # drop training records whose question/context/answer/choices contain any Latin-script letter
 
     # =====================================================================
     # Phase 3 — SFT (Supervised Fine-Tuning)
@@ -143,7 +145,7 @@ training:
         - "arcd"
       trainable_parameters: ["*"]
       steps: 2000
-      learning_rate: 2.0e-4
+      learning_rate: 2.0e-5
       batch_size: 4
       gradient_accumulation_steps: 4
       optimizer: "adamw"
@@ -154,6 +156,7 @@ training:
       warmup_steps: 100
       max_grad_norm: 1.0
       save_checkpoint: true
+      clean_latin_rows: false                        # drop training records whose question/context/answer/choices contain any Latin-script letter
       early_stopping:
         enabled: true                                # required when sft.enabled=true
         metric: "eval_loss"                          # only "eval_loss" supported
@@ -177,6 +180,8 @@ evaluation:
   downstream_metrics: true                           # run task.evaluate()
   num_eval_samples: null                             # null = full benchmark; integer to cap
   failure_reports: false                             # writes per-task CSV of wrong answers
+  intrinsic_unk_report: false                        # dumps per-word UNK list -> intrinsic_unks.csv
+  downstream_unk_report: false                       # dumps per-task UNK list -> unk_reports/<task>_unks.csv
   score_normalization: "char"                        # "char" | "pmi" | "char+pmi"
 
 

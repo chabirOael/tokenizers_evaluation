@@ -3,14 +3,29 @@ tokenizer:
   vocab_size: null  # Derived from max_roots + max_patterns + fixed slots; ignored.
   params:
     # ----- Vocab budget (three pre-set tiers; pick one) -----
-    # Compact:   max_roots:  5000, max_patterns: 200    (~5,400 total, ~81% coverage)
-    # Balanced:  max_roots: 10000, max_patterns: 500    (~10,700 total, ~94% coverage)  ← default
-    # Max:       max_roots: 15000, max_patterns: 1000   (~16,200 total, ~98% coverage)
+    # Re-tiered 2026-08-30 after the '#' weak-radical fix. Keeping CAMeL's
+    # masked radical moves the weak letter's identity out of the root and
+    # into the pattern, so the pattern inventory grew 8,634 -> 21,578 unique
+    # (15,219 at freq>=2) while unique roots barely moved (3,338 -> 4,331).
+    # max_roots is now never the binding constraint; max_patterns is.
+    #
+    # Measured admission (share of word occurrences reaching the ROOT+PAT
+    # path on 300 real Arabic-Exam questions; CAMeL analyzes 66.6 % of them,
+    # which is the ceiling for any budget):
+    #   patterns   500 -> 26.2 %   (vocab ~4.7K)
+    #   patterns  1000 -> 33.6 %   (vocab ~5.2K)
+    #   patterns  2000 -> 42.2 %   (vocab ~6.2K)
+    #   patterns  4000 -> 48.2 %   (vocab ~8.2K)   <- default
+    #   patterns  6076 -> 52.1 %   (vocab ~10.3K)  all patterns with freq>=2
+    # Raising max_roots 10000 -> 15000 changes nothing (only 4,128 roots
+    # clear min_root_freq), so spend the budget on patterns.
+    #
+    # Compact:   max_roots: 10000, max_patterns: 1000   (~5.2K, 33.6 % admission)
+    # Balanced:  max_roots: 10000, max_patterns: 4000   (~8.2K, 48.2 %)  <- default
+    # Max:       max_roots: 10000, max_patterns: 6076   (~10.3K, 52.1 %)
     max_roots: 10000
-    max_patterns: 500
+    max_patterns: 4000
 
-    # Frequency thresholds — drop very-low-freq roots/patterns even if budget
-    # allows. Stops vocab from filling with single-occurrence noise.
     min_root_freq: 2
     min_pattern_freq: 2
 

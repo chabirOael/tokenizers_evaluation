@@ -32,6 +32,30 @@ RPS_MECHANICAL_FLAGS: Dict[str, str] = {
 # 41 % accuracy as "this tokenizer is bad at Arabic culture knowledge" when
 # the gold itself is broken. Same policy as RPS_MECHANICAL_FLAGS: report and
 # footnote, don't suppress.
+# Below this share of the word sample, morpheme_integrity_rate and
+# clitic_separation_accuracy describe only the subset of words whose tokens
+# could be aligned back onto the source word — for a tokenizer whose tokens
+# are not substrings of the word (araroopat emits a root + an inflected stem)
+# that subset is exactly its *fallback* path, so the number says nothing
+# about the mechanism under test. Report and footnote, never suppress.
+LOW_ALIGNMENT_COVERAGE = 0.5
+
+# The morphological block, in reading order: the headline rate, the ceiling
+# that makes it interpretable, then the alignment-dependent pair and the
+# coverage that qualifies them.
+MORPH_METRIC_KEYS = [
+    "root_conservation_rate",
+    "root_conservation_attainable",
+    "root_measurable_pct",
+    "pattern_conservation_rate",
+    "morpheme_integrity_rate",
+    "clitic_separation_accuracy",
+    "morph_alignment_coverage",
+    "morph_alignment_ceiling",
+    "semantic_fragmentation_ratio",
+    "root_extractor_agreement",
+]
+
 LABEL_NOISY_TASKS: Dict[str, str] = {
     "acva": "synthetic-generation label noise + ~30 % duplicates "
             "+ 51 within-eval label conflicts (see CLAUDE.md → ACVA limitations)",
@@ -165,11 +189,11 @@ def _build_mei_section(experiments: Dict[str, Dict[str, Any]]) -> List[str]:
     lines.append("")
 
     headers = [
-        "Experiment", "Tokenizer", "MEI", "Accuracy", "RPS",
+        "Experiment", "Tokenizer", "Task", "MEI", "Accuracy", "RPS",
         "Compression", "Time (s)", "Rows",
     ]
     rows: List[List[Any]] = []
-    skipped: List[tuple] = []  # (name, status)
+    skipped: List[tuple] = []  # (name, tok_type, task, status)
     flagged: Dict[str, str] = {}  # tokenizer_type -> footnote text
 
     def _fmt(x: Any) -> str:
@@ -179,30 +203,49 @@ def _build_mei_section(experiments: Dict[str, Dict[str, Any]]) -> List[str]:
             return f"{x:.4f}"
         return str(x)
 
+    def _iter_task_records(record):
+        """Yield (task_name, sub_record) pairs.
+
+        The pipeline (post-2026-05-04) writes ``results["mei"]`` as a dict
+        keyed by task name. Archived runs predating that change wrote a flat
+        single record with ``status`` / ``mei`` / ``inputs`` at the top
+        level — detect by the presence of a top-level ``status`` key and
+        yield it under the sentinel task name "—".
+        """
+        if isinstance(record, dict) and "status" in record:
+            yield ("—", record)
+            return
+        if isinstance(record, dict):
+            for task_name, sub in record.items():
+                if isinstance(sub, dict):
+                    yield (task_name, sub)
+
     for name, results in sorted(experiments.items()):
         record = results.get("mei")
         if record is None:
             continue
         tok_type = (results.get("config") or {}).get("tokenizer", "?")
-        status = record.get("status")
-        if status != "ok":
-            skipped.append((name, tok_type, status))
-            continue
-        inputs = record.get("inputs") or {}
-        flag = RPS_MECHANICAL_FLAGS.get(tok_type)
-        display_tok = f"{tok_type}*" if flag else tok_type
-        if flag:
-            flagged[tok_type] = flag
-        rows.append([
-            name,
-            display_tok,
-            _fmt(record.get("mei")),
-            _fmt(inputs.get("accuracy")),
-            _fmt(inputs.get("rps")),
-            _fmt(inputs.get("compression")),
-            _fmt(inputs.get("inference_time_sec")),
-            _fmt(inputs.get("num_eval_rows")),
-        ])
+        for task_name, sub in _iter_task_records(record):
+            status = sub.get("status")
+            if status != "ok":
+                skipped.append((name, tok_type, task_name, status))
+                continue
+            inputs = sub.get("inputs") or {}
+            flag = RPS_MECHANICAL_FLAGS.get(tok_type)
+            display_tok = f"{tok_type}*" if flag else tok_type
+            if flag:
+                flagged[tok_type] = flag
+            rows.append([
+                name,
+                display_tok,
+                task_name,
+                _fmt(sub.get("mei")),
+                _fmt(inputs.get("accuracy")),
+                _fmt(inputs.get("rps")),
+                _fmt(inputs.get("compression")),
+                _fmt(inputs.get("inference_time_sec")),
+                _fmt(inputs.get("num_eval_rows")),
+            ])
 
     if rows:
         lines.append(tabulate(rows, headers=headers, tablefmt="grid"))
@@ -215,9 +258,9 @@ def _build_mei_section(experiments: Dict[str, Dict[str, Any]]) -> List[str]:
         lines.append("")
 
     if skipped:
-        lines.append("MEI not computed for the following experiments:")
-        for name, tok_type, status in skipped:
-            lines.append(f"  - {name} ({tok_type}): status={status}")
+        lines.append("MEI not computed for the following (experiment, task) cells:")
+        for name, tok_type, task_name, status in skipped:
+            lines.append(f"  - {name} ({tok_type}) / {task_name}: status={status}")
         lines.append("")
 
     return lines
@@ -233,6 +276,65 @@ def _flatten_metrics(d: Dict[str, Any], prefix: str = "") -> Dict[str, Any]:
         else:
             flat[key] = v
     return flat
+
+
+def _build_morphological_section(
+    experiments: Dict[str, Dict[str, Any]],
+) -> List[str]:
+    """Morphological metrics + the diagnostics that say how to read them."""
+    data: Dict[str, Dict[str, Any]] = {}
+    low_coverage: List[tuple] = []
+    flagged: Dict[str, str] = {}
+
+    for name, results in sorted(experiments.items()):
+        intrinsic = results.get("intrinsic") or {}
+        if not any(k in intrinsic for k in MORPH_METRIC_KEYS):
+            continue
+        tok_type = (results.get("config") or {}).get("tokenizer", "?")
+        flag = RPS_MECHANICAL_FLAGS.get(tok_type)
+        if flag:
+            flagged[tok_type] = flag
+        label = f"{name}*" if flag else name
+        data[label] = intrinsic
+        cov = intrinsic.get("morph_alignment_coverage")
+        if cov is not None and cov < LOW_ALIGNMENT_COVERAGE:
+            low_coverage.append((name, tok_type, cov))
+
+    if not data:
+        return []
+
+    lines = ["## Morphological Metrics", ""]
+    lines.append(build_comparison_table(data, metric_keys=MORPH_METRIC_KEYS))
+    lines.append("")
+    lines.append(
+        "Reading order: root_conservation_rate is bounded by root_measurable_pct "
+        "(the share of sampled words whose root is recoverable from the surface "
+        "at all — weak roots such as قال/قول are not). root_conservation_attainable "
+        "renormalizes onto that reachable population, so 1.0 means 'preserved the "
+        "root everywhere it was possible to'."
+    )
+    lines.append("")
+
+    if flagged:
+        lines.append("Footnotes (mechanical RPS extremes — flag, don't over-interpret):")
+        for tok_type, note in sorted(flagged.items()):
+            lines.append(f"  * {tok_type}: {note}")
+        lines.append("")
+
+    if low_coverage:
+        lines.append(
+            "‡ morpheme_integrity_rate / clitic_separation_accuracy below "
+            f"{LOW_ALIGNMENT_COVERAGE:.0%} alignment coverage — computed only over "
+            "words whose tokens could be aligned back onto the source word:"
+        )
+        for name, tok_type, cov in low_coverage:
+            lines.append(
+                f"  ‡ {name} ({tok_type}): morph_alignment_coverage={cov:.2f} — "
+                "the two rates describe that aligned subset, not the whole sample."
+            )
+        lines.append("")
+
+    return lines
 
 
 def generate_report(
@@ -268,6 +370,8 @@ def generate_report(
                          "vocab_coverage", "vocab_size"],
         ))
         lines.append("")
+
+    lines.extend(_build_morphological_section(experiments))
 
     # Downstream metrics tables
     downstream_tasks = set()

@@ -37,10 +37,91 @@ CHOICE_LETTERS: List[str] = ["A", "B", "C", "D", "E"]
 ARABIC_CHOICE_LETTERS: List[str] = ["أ", "ب", "ج", "د", "هـ"]
 
 
+# Official LightEval Arabic-MCQ instruction prefix. Used by ArabicMMLU and
+# AlGhafa Native prompts (LightEval ``community_tasks/arabic_evals.py``).
+ALGHAFA_INSTRUCTION = (
+    "الأسئلة التالية هي أسئلة متعددة الإختيارات مع الجواب الصحيح\n\n"
+)
+
+
+def format_mcq_context_letter_official(question: str, choices: List[str]) -> str:
+    """ArabicMMLU-style prompt (LightEval official format).
+
+    Surface form::
+
+        الأسئلة التالية هي أسئلة متعددة الإختيارات مع الجواب الصحيح
+
+        {question}
+        أ. {choice_0}
+        ب. {choice_1}
+        ج. {choice_2}
+        د. {choice_3}
+        الإجابة:
+
+    Continuations to score are the Arabic letters ``" أ"``, ``" ب"``, etc.
+    """
+    lines = [ALGHAFA_INSTRUCTION + question]
+    for i, choice in enumerate(choices):
+        letter = ARABIC_CHOICE_LETTERS[i] if i < len(ARABIC_CHOICE_LETTERS) else str(i)
+        lines.append(f"{letter}. {choice}")
+    lines.append("الإجابة:")
+    return "\n".join(lines)
+
+
+def format_mcq_context_numeric_official(question: str, choices: List[str]) -> str:
+    """AlGhafa Native-style prompt (LightEval official format).
+
+    Surface form::
+
+        الأسئلة التالية هي أسئلة متعددة الإختيارات مع الجواب الصحيح
+
+        السؤال: {question}
+        0) {choice_0}
+        1) {choice_1}
+        ...
+        الإجابة:
+
+    Continuations to score are the **choice text strings themselves** (with a
+    leading space), NOT the numeric markers — the numbers are display-only.
+    """
+    lines = [ALGHAFA_INSTRUCTION + f"السؤال: {question}"]
+    for i, choice in enumerate(choices):
+        lines.append(f"{i}) {choice}")
+    lines.append("الإجابة:")
+    return "\n".join(lines)
+
+
+def format_acva_context_official(question: str) -> str:
+    """ACVA-style prompt (LightEval official format).
+
+    Surface form::
+
+        السؤال: {question}
+        الإجابة:
+
+    Continuations to score are the True/False words ``" صح"`` / ``" خطأ"``.
+    """
+    return f"السؤال: {question}\nالإجابة:"
+
+
+# ---------------------------------------------------------------------------
+# Legacy `###`-block formatters (kept for backward-compat with old experiments
+# that may want to reproduce pre-2026-05-06 numbers; new code should use the
+# `_official` variants above to match the OALL leaderboard).
+# ---------------------------------------------------------------------------
+
 def format_mcq_context(question: str, choices: List[str]) -> str:
-    """Letter-labelled MCQ prompt with ``###`` block headers:
-    ``### السؤال:`` / ``### الخيارات:`` / ``### الإجابة:``."""
-    lines = ["### السؤال:", question, "", "### الخيارات:"]
+    """Legacy ``###``-block MCQ prompt. Kept for backward compatibility.
+
+    New tasks should use ``format_mcq_context_letter_official``.
+    """
+    lines = [
+        "### السؤال:",
+        question,
+        "إختار الإجابة الصحيحة من بين الإحتمالات التالية: ",
+        "",
+        "### الخيارات:",
+    ]
     for i, choice in enumerate(choices):
         letter = ARABIC_CHOICE_LETTERS[i] if i < len(ARABIC_CHOICE_LETTERS) else str(i)
         lines.append(f"{letter}. {choice}")

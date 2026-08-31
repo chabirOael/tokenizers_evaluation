@@ -70,22 +70,26 @@ def test_context_empty_when_nan():
 
 
 def test_eval_prompt_includes_context_prefix():
+    """When the row has a non-empty ``Context``, it's prepended as a bare
+    ``السياق: …`` line (LightEval-official, no ``###`` markers)."""
     task = _arabic_exam_task()
     ex = task._parse_example(_row(Context="حدد إجابة هذا السؤال بعد قراءة المقطع التالي"))
     rendered = task._format_eval_context(ex)
-    assert rendered.startswith("### السياق:\n")
-    assert "حدد إجابة هذا السؤال" in rendered
-    # Sanity: the question and answer headers still appear after the context.
-    assert "### السؤال:" in rendered
-    assert rendered.rstrip().endswith("### الإجابة:")
+    assert rendered.startswith("السياق: حدد إجابة هذا السؤال")
+    # Sanity: no legacy block markers remain anywhere.
+    assert "###" not in rendered
+    # Ends with the bare answer prefix.
+    assert rendered.rstrip().endswith("الإجابة:")
 
 
 def test_eval_prompt_byte_identical_when_no_context():
-    """No-context fallback must equal the inherited base helper byte-for-byte."""
-    from arabic_eval.tasks.lighteval.utils import format_mcq_context
+    """No-context fallback must equal the LightEval-official letter format."""
+    from arabic_eval.tasks.lighteval.utils import format_mcq_context_letter_official
     task = _arabic_exam_task()
     ex = task._parse_example(_row(Context=None))
-    assert task._format_eval_context(ex) == format_mcq_context(ex["question"], ex["choices"])
+    assert task._format_eval_context(ex) == format_mcq_context_letter_official(
+        ex["question"], ex["choices"]
+    )
 
 
 # ---------------------------------------------------------------------------

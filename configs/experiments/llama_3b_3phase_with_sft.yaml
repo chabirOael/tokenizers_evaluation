@@ -1,0 +1,75 @@
+# Llama-3.2-3B + native_llama tokenizer + full 3-phase training pipeline.
+#
+# Strategy D from the 2026-05-06 fix-strategy menu: swap to a stronger base
+# model. Llama-3.2-3B has the same tokenizer (vocab=128256) and architecture
+# as Llama-3.2-1B, so the rest of the pipeline (NativeLlamaTokenizer +
+# LlamaAdapter + 3-phase training + LightEval-official eval prompts) works
+# unchanged. Phase 1 stays disabled (native_llama embeddings start
+# pretrained); Phase 2 + Phase 3 (with MCQ-augmented Phase 3) train on the
+# same corpora as the 1B reference.
+#
+# Use this config to measure how much of the "weak base model" ceiling can
+# be raised by simply scaling up. Compare against
+# native_llama_3phase_with_sft on the same eval task list to read the lift.
+#
+# Prerequisites:
+#   * Llama-3.2-3B is a gated model on HuggingFace. Before running:
+#       1. Request access at https://huggingface.co/meta-llama/Llama-3.2-3B
+#       2. Set HF_TOKEN env var (or run `huggingface-cli login`)
+#   * Wall time: ~10-15h on H100 (vs ~5h for 1B) — 3B has 2.7× the params
+#     and the same step budget. Plan accordingly.
+
+experiment:
+  name: "llama_3b_3phase_with_sft"
+  output_dir: "outputs/experiments/llama_3b_3phase_with_sft"
+  seed: 42
+
+tokenizer:
+  type: "native_llama"
+  vocab_size: null
+  load_path: null
+  save_path: "outputs/tokenizers/native_llama_3b"
+  # The whole Llama-3.2 family (1B / 3B / 11B / 90B) ships an identical
+  # tokenizer (vocab=128256, inherited from Llama-3.1), so functionally the
+  # 1B and 3B tokenizers are byte-identical. We pin model_name_or_path here
+  # explicitly so the dependency on "the 3B model's tokenizer" isn't an
+  # accidental fallback to NativeLlamaTokenizer.DEFAULT_MODEL = 1B.
+  params:
+    model_name_or_path: "meta-llama/Llama-3.2-3B"
+
+model:
+  type: "llama"
+  name_or_path: "meta-llama/Llama-3.2-3B"
+  dtype: "bfloat16"
+  device: "auto"
+
+training:
+  phases:
+    embedding_alignment:
+      # native_llama embeddings start as the pretrained Llama-3.2-3B weights
+      # (resize_token_embeddings is a no-op when vocab matches), so Phase 1
+      # only damages them. See native_llama_3phase_with_sft.yaml.
+      enabled: false
+
+sweep:
+  tokenizers:
+    - type: "native_llama"
+      vocab_sizes: [null]
+  tasks:
+    - type: "acva"
+      params:
+        num_fewshot: 0   # ACVA: 0-shot (T/F task — few-shot hurts under PMI)
+    - type: "alghafa"
+      params: {}
+    - type: "arabic_exam"
+      params: {}
+
+evaluation:
+  intrinsic_metrics: true
+  morphological_metrics: true
+  morph_sample_size: 500
+  downstream_metrics: true
+  failure_reports: true
+  score_normalization: "char+pmi"
+  num_fewshot: 3            # 3-shot in-context demos per LightEval MCQ row
+  num_eval_samples: null

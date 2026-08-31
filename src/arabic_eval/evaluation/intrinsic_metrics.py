@@ -23,10 +23,16 @@ from __future__ import annotations
 import logging
 import random
 from functools import lru_cache
-from typing import Dict, List, Optional, Tuple
+from pathlib import Path
+from typing import Dict, List, Optional, Set, Tuple
 
 from tqdm import tqdm
 
+from arabic_eval.evaluation.unk_reports import (
+    INTRINSIC_UNK_FIELDS,
+    WordUnkRecord,
+    records_to_rows,
+)
 from arabic_eval.tokenizers.araroopat_backend import (
     ENCLITIC_SURFACES,
     PROCLITIC_SURFACES,
@@ -38,6 +44,11 @@ from arabic_eval.tokenizers.utils.arabic_text import (
     clean_token_string,
     strip_diacritics,
 )
+from arabic_eval.utils.io import write_failure_csv
+
+# Char cap on the ``example_context`` column emitted by the UNK report.
+# Full eval texts can be very long; keep the CSV human-readable.
+_UNK_REPORT_CONTEXT_MAX_CHARS = 200
 
 logger = logging.getLogger("arabic_eval.evaluation.intrinsic_metrics")
 
@@ -63,12 +74,20 @@ def compute_intrinsic_metrics(
     morphological_metrics: bool = True,
     morph_sample_size: int = DEFAULT_MORPH_SAMPLE_SIZE,
     morph_seed: int = 42,
+    unk_report_path: Optional[Path] = None,
 ) -> Dict[str, float]:
     """Compute intrinsic tokenizer quality metrics on a corpus.
 
     Returns the standard size/coverage metrics plus, if
     ``morphological_metrics`` is True, the five Arabic morphological metrics
     (see :func:`compute_morphological_metrics`).
+
+    When ``unk_report_path`` is given, the per-word data that underlies the
+    scalar ``unk_rate`` is also dumped to that path as a CSV (one row per
+    unique source word that produced at least one UNK token). The CSV is
+    always written when the path is provided — even when no UNK was seen
+    or the tokenizer has no ``unk_token`` id, in which case only the
+    header row is emitted (consistent file-per-experiment shape for sweeps).
     """
     total_tokens = 0
     total_words = 0
@@ -79,6 +98,14 @@ def compute_intrinsic_metrics(
     token_counts: List[int] = []
 
     unk_id = tokenizer.special_tokens.get("unk_token")
+
+    # When the UNK report is requested, accumulate per-word records inline
+    # so each word is encoded only once. The records are aggregated across
+    # all texts at the end. ``None`` keeps the report code path inert and
+    # the original loop semantics unchanged.
+    unk_records: Optional[Dict[str, WordUnkRecord]] = (
+        {} if unk_report_path is not None else None
+    )
 
     for text in tqdm(texts, desc="Intrinsic metrics", unit="text"):
         words = text.split()
@@ -93,11 +120,31 @@ def compute_intrinsic_metrics(
         if unk_id is not None:
             total_unk += encoded.input_ids.count(unk_id)
 
+        snippet: str = ""
+        if unk_records is not None:
+            snippet = text[:_UNK_REPORT_CONTEXT_MAX_CHARS]
+        seen_this_text: Set[str] = set()
+
         for word in words:
             unique_words.add(word)
             word_enc = tokenizer.encode(word)
-            if unk_id is not None and unk_id in word_enc.input_ids:
+            word_unk = (
+                word_enc.input_ids.count(unk_id) if unk_id is not None else 0
+            )
+            if word_unk > 0:
                 unique_words_with_unk.add(word)
+                if unk_records is not None:
+                    rec = unk_records.setdefault(word, WordUnkRecord(word=word))
+                    rec.unk_token_count += word_unk
+                    rec.total_token_count += len(word_enc.input_ids)
+                    rec.source_fields.add("text")
+                    if not rec.example_context:
+                        rec.example_context = snippet
+                    seen_this_text.add(word)
+
+        if unk_records is not None:
+            for w in seen_this_text:
+                unk_records[w].num_examples_seen_in += 1
 
     n_texts = len(texts)
     fertility = total_tokens / max(total_words, 1)
@@ -114,6 +161,18 @@ def compute_intrinsic_metrics(
         "avg_token_count": round(avg_token_count, 2),
         "vocab_size": tokenizer.vocab_size,
     }
+
+    if unk_report_path is not None:
+        rows = records_to_rows(
+            (unk_records or {}).values(), INTRINSIC_UNK_FIELDS,
+        )
+        n_written = write_failure_csv(
+            unk_report_path, rows, INTRINSIC_UNK_FIELDS,
+        )
+        logger.info(
+            "Wrote %d UNK word rows to %s (unique unk-producing words)",
+            n_written, unk_report_path,
+        )
 
     if morphological_metrics:
         morph = compute_morphological_metrics(
@@ -185,6 +244,28 @@ def compute_morphological_metrics(
 
     root_conserved = 0
     root_total = 0
+    # Ceiling bookkeeping: a root that is not a subsequence of the *unsplit*
+    # word cannot be preserved by any tokenizer (weak roots — قال/قول — are
+    # the common case). Counting those in the denominator makes 1.0
+    # unreachable and makes tokenizers incomparable, so we track the
+    # attainable population separately.
+    root_measurable = 0
+    root_conserved_measurable = 0
+    # How often the cleaned tokens can be aligned back onto the word at all.
+    # The alignment-dependent metrics (morpheme_integrity_rate,
+    # clitic_separation_accuracy) are computed ONLY over these words, so a
+    # low coverage means those numbers describe a subset, not the tokenizer.
+    align_ok = 0
+    # Ceiling for the above: a word whose own characters do not survive
+    # `clean_token_string` (ى, ٱ, embedded digits/Latin) cannot be aligned by
+    # ANY tokenizer, not even one that emits the whole word untouched.
+    # Measured ~0.62 on ArabicText-Large, so a raw coverage of 0.43 is 69 %
+    # of what is reachable, not 43 %.
+    align_ceiling = 0
+    # Stability of the ground truth itself: primary (qalsadi) vs secondary
+    # (tashaphyne) extractor agreement on the same sample.
+    extractor_agree = 0
+    extractor_comparable = 0
     pattern_conserved = 0
     pattern_total = 0
     integrity_sum = 0.0
@@ -212,6 +293,16 @@ def compute_morphological_metrics(
             continue
         sample_roots.add(root)
 
+        # Ceiling for this word: is the root even recoverable from the
+        # surface, before any tokenization happens?
+        measurable = contains_subsequence(strip_diacritics(word), root)
+        root_measurable += int(measurable)
+
+        secondary = root_extractor.extract_secondary(word)
+        if secondary is not None:
+            extractor_comparable += 1
+            extractor_agree += int(secondary == root)
+
         word_pattern = derive_pattern(word, root)
         stem_pattern = stem_pattern_span(word, root)
         if stem_pattern:
@@ -224,8 +315,19 @@ def compute_morphological_metrics(
 
         # --- root_conservation_rate ---
         root_total += 1
-        if any(contains_subsequence(t, root) for t in content):
-            root_conserved += 1
+        conserved = any(contains_subsequence(t, root) for t in content)
+        root_conserved += int(conserved)
+        if measurable:
+            root_conserved_measurable += int(conserved)
+
+        # --- alignment coverage (mirrors what _morpheme_metrics_for_word does) ---
+        if aligned_token_offsets(
+            [t for t in tokens if t not in SPECIAL_TOKEN_STRINGS], word
+        ) is not None:
+            align_ok += 1
+        # What a whole-word tokenizer would score on this word.
+        if aligned_token_offsets([word], word) is not None:
+            align_ceiling += 1
 
         # --- pattern_conservation_rate ---
         if word_pattern and stem_pattern:
@@ -297,6 +399,20 @@ def compute_morphological_metrics(
             round(pattern_bearing_pct, 2) if pattern_bearing_pct is not None else None
         ),
         "morph_sample_size": root_total,
+        # --- diagnostics: how to read the four metrics above ---
+        "root_measurable_pct": (
+            round(100.0 * root_measurable / root_total, 2) if root_total else None
+        ),
+        "root_conservation_attainable": _safe_rate(
+            root_conserved_measurable, root_measurable
+        ),
+        "morph_alignment_coverage": (
+            round(align_ok / root_total, 4) if root_total else None
+        ),
+        "morph_alignment_ceiling": (
+            round(align_ceiling / root_total, 4) if root_total else None
+        ),
+        "root_extractor_agreement": _safe_rate(extractor_agree, extractor_comparable),
     }
 
 
@@ -342,6 +458,11 @@ def _empty_morph_metrics() -> Dict[str, Optional[float]]:
         "root_bearing_token_pct": None,
         "pattern_bearing_token_pct": None,
         "morph_sample_size": 0,
+        "root_measurable_pct": None,
+        "root_conservation_attainable": None,
+        "morph_alignment_coverage": None,
+        "morph_alignment_ceiling": None,
+        "root_extractor_agreement": None,
     }
 
 
@@ -661,6 +782,36 @@ class RootExtractor:
             return skeleton
         if len(skeleton) > 4:
             return skeleton[:3]
+        return None
+
+    @lru_cache(maxsize=20_000)
+    def extract_secondary(self, word: str) -> Optional[str]:
+        """Tashaphyne-only root, used to gauge ground-truth *stability*.
+
+        ``extract`` returns the first backend that succeeds, so it never
+        reveals whether the backends agree. Comparing the primary result
+        against this one gives ``root_extractor_agreement`` — the share of
+        the sample where two independent extractors pick the same root.
+        A tokenizer cannot be credited or blamed for the residual: it is
+        noise in the ground truth, not in the tokenization.
+
+        Deliberately NOT sourced from CAMeL Tools: araroopat's ROOT token
+        *is* CAMeL's root, so using CAMeL as the reference would make its
+        root_conservation_rate ~1.0 by construction.
+        """
+        word = strip_diacritics(word).strip()
+        if not word:
+            return None
+        self._ensure_backends()
+        if self._tashaphyne is None:
+            return None
+        try:
+            self._tashaphyne.light_stem(word)
+            root = strip_diacritics(self._tashaphyne.get_root() or "")
+            if 3 <= len(root) <= 4:
+                return root
+        except Exception:
+            pass
         return None
 
 

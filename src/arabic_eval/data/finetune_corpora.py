@@ -10,12 +10,12 @@ Phase 1 + Phase 2 use ``arabic_squad`` (translated, Phase 2 spec calls for
 "a large translated Arabic dataset"). Phase 3 uses
 ``tydiqa_arabic + arcd`` (native Arabic QA).
 
-Prompt format — implemented fresh in this module rather than imported from
-``tasks/question_answering.py`` (which is being removed). Surface form:
+Prompt format (matches the LightEval-official eval prefix so train/eval
+share the same ``السؤال:`` / ``الإجابة:`` tokens). Surface form:
 
-    ### السياق: {context}
-    ### السؤال: {question}
-    ### الإجابة: {answer}
+    السياق: {context}
+    السؤال: {question}
+    الإجابة: {answer}
 
 For ``loss_target='answer_only'`` the prompt span ends just before
 ``{answer}`` and is masked to -100 via ``answer_only_masking``.
@@ -41,12 +41,24 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class QARecord:
-    """A single question-answering example after normalization across corpora."""
+    """A single question-answering example after normalization across corpora.
+
+    ``prompt_template`` selects the surface form:
+      * ``"qa"`` (default): extractive QA — ``السياق: …\\nالسؤال: …\\nالإجابة:``
+        followed by the answer text. Used by Arabic-SQuAD, TyDiQA-Arabic, ARCD.
+      * ``"mcq_letter"``: 4-way MCQ — LightEval-official letter prompt
+        (instruction + question + ``أ.`` / ``ب.`` / ``ج.`` / ``د.`` listing +
+        ``الإجابة:``) followed by a single Arabic letter. Used by the
+        synthetic ``arabic_squad_mcq`` corpus to teach the eval-time MCQ
+        format. ``choices`` must be set when ``prompt_template == "mcq_letter"``.
+    """
     id: str
     question: str
     context: str
     answer: str
-    source: str  # corpus name: arabic_squad | tydiqa_arabic | arcd
+    source: str  # corpus name: arabic_squad | tydiqa_arabic | arcd | arabic_squad_mcq
+    prompt_template: str = "qa"  # "qa" | "mcq_letter"
+    choices: Optional[List[str]] = None  # required when prompt_template == "mcq_letter"
 
 
 # --------------------------------------------------------------------------
@@ -54,12 +66,43 @@ class QARecord:
 # --------------------------------------------------------------------------
 
 def _format_qa_prompt(record: QARecord) -> str:
-    """Prompt text up to (but excluding) the answer. Used for LCP masking."""
+    """Prompt text up to (but excluding) the answer. Used for LCP masking.
+
+    Dispatches on ``record.prompt_template``:
+
+      * ``"qa"`` (default): ``السياق: …\\nالسؤال: …\\nالإجابة:`` — matches the
+        LightEval-official eval prefix (no ``### `` markers) so train/eval
+        share the same prefix tokens.
+      * ``"mcq_letter"``: LightEval-official MCQ letter prompt — instruction
+        line + question + ``أ.`` / ``ب.`` / ``ج.`` / ``د.`` listing +
+        ``الإجابة:``. ``record.choices`` must be set; when ``record.context``
+        is non-empty it's prepended as ``السياق: …\\n`` (mirrors
+        ``ArabicExamTask._format_eval_context``).
+    """
+    if record.prompt_template == "mcq_letter":
+        return _format_mcq_letter_prompt(record)
     return (
-        f"### السياق: {record.context}\n"
-        f"### السؤال: {record.question}\n"
-        f"### الإجابة:"
+        f"السياق: {record.context}\n"
+        f"السؤال: {record.question}\n"
+        f"الإجابة:"
     )
+
+
+def _format_mcq_letter_prompt(record: QARecord) -> str:
+    """LightEval-official letter MCQ prompt for synthetic ``arabic_squad_mcq``."""
+    # Lazy import to keep the layering intentional: data/ knows about
+    # tasks/lighteval/utils as a generic helper module, not vice-versa.
+    from arabic_eval.tasks.lighteval.utils import format_mcq_context_letter_official
+
+    if not record.choices:
+        raise ValueError(
+            f"prompt_template='mcq_letter' requires record.choices "
+            f"(record id={record.id!r})"
+        )
+    base = format_mcq_context_letter_official(record.question, record.choices)
+    if record.context:
+        return f"السياق: {record.context}\n{base}"
+    return base
 
 
 def _format_qa_full(record: QARecord) -> str:
@@ -153,10 +196,18 @@ def _load_arcd(split: str) -> List[QARecord]:
     return records
 
 
+def _load_arabic_squad_mcq(split: str) -> List[QARecord]:
+    """Lazy-import wrapper for the synthetic MCQ corpus (avoids cycling
+    through ``synthetic_mcq.py`` at module-import time)."""
+    from .synthetic_mcq import load_arabic_squad_mcq
+    return load_arabic_squad_mcq(split)
+
+
 _LOADERS = {
     "arabic_squad": _load_arabic_squad,
     "tydiqa_arabic": _load_tydiqa_arabic,
     "arcd": _load_arcd,
+    "arabic_squad_mcq": _load_arabic_squad_mcq,
 }
 
 
@@ -191,6 +242,27 @@ def load_corpora(
             raise KeyError(f"no split provided for corpus {n!r}")
         out.extend(load_corpus(n, s))
     return out
+
+
+# --------------------------------------------------------------------------
+# Latin-row filtering (shared predicate with the eval-side LightEval flag)
+# --------------------------------------------------------------------------
+
+def filter_latin_records(records: Sequence[QARecord]) -> List[QARecord]:
+    """Drop records whose question, context, answer, or any choice contains
+    a Latin-script letter. Mirrors ``LightEvalBenchmarkTask._row_has_latin``
+    so the per-phase ``clean_latin_rows`` flag uses the same predicate as
+    the eval-side one.
+    """
+    from ..tokenizers.utils.arabic_text import contains_latin_letters
+
+    def _has_latin(rec: QARecord) -> bool:
+        fields = [rec.question, rec.context, rec.answer]
+        if rec.choices:
+            fields.extend(rec.choices)
+        return any(contains_latin_letters(t) for t in fields)
+
+    return [r for r in records if not _has_latin(r)]
 
 
 # --------------------------------------------------------------------------

@@ -124,7 +124,13 @@ def _op_generate(disambig, root: str, pattern: str) -> Optional[str]:
         return naive
     for scored in disambig_results[0].analyses:
         a = scored.analysis
-        a_root = (a.get("root") or "").replace("_", "").replace(".", "").replace("#", "")
+        # Must mirror `_dict_to_analysis` in araroopat_backend.py exactly:
+        # separators dropped, CAMeL's masked-radical '#' KEPT. If the two
+        # normalizations disagree, the client's root never matches here and
+        # every tier-2 reconstruction silently degrades to tier-3 naive fill.
+        a_root = "".join(
+            r for r in (a.get("root") or "").replace("_", ".").split(".") if r
+        )
         a_pat_raw = a.get("pattern") or ""
         a_pat_bare = _normalize_pattern(
             a_pat_raw,
@@ -148,18 +154,20 @@ _PATTERN_DIACRITICS = set("ًٌٍَُِّْٰٕٓٔ")
 # Duplicated (not imported) because that module lives in the main venv,
 # not here. Keep the two in sync if you add tags.
 _CLITIC_SURFACE: Dict[str, str] = {
-    "AAA_quest": "أ", "Aa_quest": "أ",
+    "AAA_quest": "أ", "Aa_quest": "أ", ">a_ques": "أ",
     "wa_conj": "و", "wa_part": "و", "wa_prep": "و", "wa_sub": "و",
     "fa_conj": "ف", "fa_rc": "ف", "fa_conn": "ف", "fa_sub": "ف",
     "fa_part": "ف",
     "bi_prep": "ب", "bi_part": "ب",
     "ka_prep": "ك",
     "li_prep": "ل", "li_jus": "ل", "li_sub": "ل",
+    "la_emph": "ل", "la_rc": "ل",
     "sa_fut": "س",
     "ta_prep": "ت",
     "Al_det": "ال",
     "lA_neg": "لا",
     "mA_neg": "ما", "mA_part": "ما", "mA_rel": "ما", "ma_rel": "ما",
+    "mA_sub": "ما",
     "1s_dobj": "ي", "1s_poss": "ي", "1s_pron": "ي",
     "2ms_dobj": "ك", "2ms_poss": "ك", "2ms_pron": "ك",
     "2fs_dobj": "ك", "2fs_poss": "ك", "2fs_pron": "ك",
@@ -231,10 +239,17 @@ def _normalize_pattern(
     enc0_tag: Optional[str],
 ) -> str:
     pat = pattern_raw
+    prev = None
     for tag in (prc3_tag, prc2_tag, prc1_tag, prc0_tag):
         s = _surface(tag)
-        if s:
-            pat = _strip_start(pat, s)
+        if not s:
+            continue
+        out = _strip_start(pat, s)
+        # لِ + الـ contraction — mirror strip_proclitics_from_start in
+        # araroopat_backend.py. Keep the two in sync.
+        if out == pat and s == "ال" and prev == "ل":
+            out = _strip_start(pat, "ل")
+        prev, pat = s, out
     enc_s = _surface(enc0_tag)
     if enc_s:
         pat = _strip_end(pat, enc_s)
@@ -248,7 +263,7 @@ def _naive_fill(root: str, pattern: str) -> str:
     for ch in pattern:
         if ch in "1234":
             idx = int(ch) - 1
-            if idx < len(root):
+            if idx < len(root) and root[idx] != "#":
                 out.append(root[idx])
         else:
             out.append(ch)

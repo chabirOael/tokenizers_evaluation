@@ -1,13 +1,12 @@
-# Native Llama tokenizer — Phase 1 + Phase 2 only (Phase 3 SFT skipped).
+# Native Llama tokenizer — Phase 2 only (Phase 1 + Phase 3 disabled).
 #
-# Companion baseline to native_llama_3phase_with_sft.yaml. Same Phase 1 +
-# Phase 2 training (embedding alignment + warmup on Arabic-SQuAD), but
-# the SFT phase is disabled so the model never sees TyDiQA-Arabic + ARCD
-# during training. Lets us isolate Phase 3's contribution to downstream
-# accuracy: the (with_sft − no_sft) delta on each benchmark.
+# Companion baseline to native_llama_3phase_with_sft.yaml. Phase 1 is
+# disabled because native_llama's embeddings start pretrained — Phase 1
+# only damages them. Phase 3 SFT is disabled so the model never sees
+# TyDiQA-Arabic + ARCD during training. Lets us isolate the (Phase 2 vs
+# Phase 2 + Phase 3) delta with no Phase-1 noise.
 #
-# All phase parameters inherit from configs/base.yaml — this file only
-# changes the SFT enable flag and pipes the same eval task list through.
+# All other phase parameters inherit from configs/base.yaml.
 
 experiment:
   name: "native_llama_3phase_no_sft"
@@ -28,8 +27,13 @@ model:
 
 training:
   phases:
+    embedding_alignment:
+      # See native_llama_3phase_with_sft.yaml for the rationale (35% L2
+      # drift on pretrained Llama embeddings under the pre-2026-05-06
+      # default Phase 1 LR).
+      enabled: false
     sft:
-      enabled: false   # ← the only training-config delta vs the with-SFT YAML
+      enabled: false
 
 sweep:
   tokenizers:
@@ -37,7 +41,8 @@ sweep:
       vocab_sizes: [null]
   tasks:
     - type: "acva"
-      params: {}
+      params:
+        num_fewshot: 0   # ACVA: 0-shot (T/F task — few-shot hurts under PMI)
     - type: "alghafa"
       params: {}
     - type: "arabic_exam"
@@ -50,4 +55,5 @@ evaluation:
   downstream_metrics: true
   failure_reports: true
   score_normalization: "char+pmi"
+  num_fewshot: 3            # 3-shot in-context demos per LightEval MCQ row
   num_eval_samples: null

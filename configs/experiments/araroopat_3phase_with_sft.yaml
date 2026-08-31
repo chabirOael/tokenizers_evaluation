@@ -59,7 +59,8 @@ sweep:
       vocab_sizes: [null]
   tasks:
     - type: "acva"
-      params: {}
+      params:
+        num_fewshot: 0   # ACVA: 0-shot (T/F task — few-shot hurts under PMI)
     - type: "alghafa"
       params: {}
     - type: "arabic_exam"
@@ -72,4 +73,5 @@ evaluation:
   downstream_metrics: true
   failure_reports: true                # per-task CSV of wrong answers
   score_normalization: "char+pmi"      # both char-norm and PMI-debiased accuracy
+  num_fewshot: 3                       # 3-shot in-context demos per LightEval MCQ row
   num_eval_samples: null               # use full benchmark
