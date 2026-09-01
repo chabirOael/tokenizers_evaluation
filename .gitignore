@@ -19,3 +19,4 @@ wandb/
 *.safetensors
 .ipynb_checkpoints/
 .pytest_cache/
+.venv-camel/
