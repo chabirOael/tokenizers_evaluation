@@ -505,7 +505,7 @@ def trace_training(text: str, params: Optional[Dict[str, Any]] = None) -> Dict[s
             "server_pipeline": [
                 "MLEDisambiguator.disambiguate(words) — analyzer + MLE ranking, one call per batch",
                 "for each word: keep every scored analysis, top-scored first",
-                "_trim(analysis) — keep only the 11 fields the client consumes",
+                "_trim(analysis) — keep only the 12 fields the client consumes (incl. asp for the peeler)",
                 "json.dumps(ensure_ascii=False) → one line on stdout",
             ],
         }, t0, notes=[
@@ -522,7 +522,8 @@ def trace_training(text: str, params: Optional[Dict[str, Any]] = None) -> Dict[s
         for w in unique_words:
             cands = raw_by_word[w]
             real = MorphAnalyzer._first_valid(cands, w, backend.particles)
-            backend._analyze_cache[w] = real  # same side effect as analyze_many()
+            backend._native_cache[w] = real   # same side effect as analyze_many()
+            backend._analyze_cache[w] = real  # (overwritten below if the peeler rescues it)
             analyses[w] = real
             traced = []
             for ci, c in enumerate(cands):
@@ -552,6 +553,92 @@ def trace_training(text: str, params: Optional[Dict[str, Any]] = None) -> Dict[s
             "Clitic tags become Arabic surfaces here; then normalize_pattern strips those surfaces from "
             "the raw pattern (outermost proclitic first: prc3 → prc2 → prc1 → prc0, then enc0) so the "
             "[PAT_*] token is a bare-stem template.",
+        ])
+
+        # ---- Step 1h': clitic peeler on the native misses -----------------
+        # Only words CAMeL could not analyse reach this step. Each closed-list
+        # slicing is tried least-peeled-first; the residual goes through the
+        # same native call + validation as a whole word (its rows are in the
+        # bridge trace as extra requests), then `peel_compatible` decides.
+        t0 = time.perf_counter()
+        peel_rows = []
+        if backend.enable_peeler:
+            for w in unique_words:
+                if analyses[w] is not None:
+                    continue
+                cands = B.peel_candidates(w, backend.peel_bare_alef)
+                spellings: List[str] = []
+                for c in cands:
+                    for sp in MorphAnalyzer._residual_spellings(c):
+                        if sp not in spellings:
+                            spellings.append(sp)
+                # Every valid reading of each residual (server `top` > 1): for
+                # an unseen word the MLE scores tie at 1.0, so rank 1 is just
+                # database order and the reading we need may sit further down.
+                readings = dict(zip(spellings, backend._candidates_many(spellings)))
+                tried = []
+                accepted = None
+                for c in cands:
+                    for sp in MorphAnalyzer._residual_spellings(c):
+                        reads = readings.get(sp, [])
+                        if not reads:
+                            tried.append({"proclitics": list(c.proclitics), "residual": sp,
+                                          "enclitics": list(c.enclitics), "peeled_len": c.peeled_len,
+                                          "residual_analyzed": False,
+                                          "verdict": "residual has no analysis"})
+                            continue
+                        for rank, res in enumerate(reads):
+                            row = {"proclitics": list(c.proclitics), "residual": sp,
+                                   "enclitics": list(c.enclitics), "peeled_len": c.peeled_len,
+                                   "residual_analyzed": True, "reading": rank + 1,
+                                   "of_readings": len(reads),
+                                   "residual_analysis": {"pos": res.pos, "surface": res.surface,
+                                                         "proclitics": list(res.proclitics),
+                                                         "enclitics": list(res.enclitics),
+                                                         "root": res.root, "pattern": res.pattern}}
+                            verdict = MorphAnalyzer.residual_verdict(c, sp, res)
+                            row["verdict"] = verdict or "accepted"
+                            tried.append(row)
+                            if verdict is None:
+                                accepted = B.merge_peeled(w, c, res)
+                                break
+                        if accepted is not None:
+                            break
+                    if accepted is not None:
+                        break
+                real = backend._peel(w)
+                backend._analyze_cache[w] = real
+                analyses[w] = real
+                matches = (real is None) == (accepted is None) and (
+                    real is None or (real.proclitics, real.root, real.pattern, real.enclitics)
+                    == (accepted.proclitics, accepted.root, accepted.pattern, accepted.enclitics))
+                peel_rows.append({
+                    "word": w, "num_candidates": len(cands), "candidates": tried,
+                    "accepted": accepted is not None,
+                    "result": None if accepted is None else {
+                        "proclitics": list(accepted.proclitics), "root": accepted.root,
+                        "pattern": accepted.pattern, "enclitics": list(accepted.enclitics),
+                        "surface": accepted.surface},
+                    "path": "ROOT+PAT (peeled)" if accepted is not None else "LIT (character fallback)",
+                    "matches_real": matches,
+                })
+        tr.step("peel", "Clitic peeler: closed-list slicing of the words CAMeL rejected",
+                B.peel_candidates, {
+            "enabled": backend.enable_peeler,
+            "words": peel_rows,
+            "rescued": sum(1 for r in peel_rows if r["accepted"]),
+            "total": len(peel_rows),
+        }, t0, notes=[
+            "calima-msa-r13 has no interrogative-أ prefix row, no second enclitic slot (enc1) and no "
+            "lengthened كمو/همو — any word carrying one of those has no analysis at all.",
+            "The peeler may only remove what CAMeL cannot represent (أ, a second pronoun, كمو/همو); "
+            "a peel that removes only و/ب/ال/… or a single pronoun is refused, because CAMeL models "
+            "those natively and its refusal of the whole word was informative.",
+            "Least-peeled candidate first; the residual's own CAMeL clitics are kept and merged; the "
+            "residual's canonical spelling must equal the slice so the word decodes byte-identically.",
+            "Each residual is looked up with top=32: the MLE model scores every reading of an unseen "
+            "word 1.0, so rank 1 is database order (ألزمنا: noun + نا first, the PV + SUBJ:1P we need "
+            "sixth). Readings are walked in order and the first one the peeled clitics fit wins.",
         ])
 
         # ---- Step 1i: CorpusEntry ---------------------------------------

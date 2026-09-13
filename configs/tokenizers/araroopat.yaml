@@ -46,6 +46,23 @@ tokenizer:
     # Wrap encode() output with <s>...</s>. Standard for the platform.
     add_bos_eos: true
 
+    # Closed-list clitic peeler, run only when CAMeL has no analysis for the
+    # whole word. calima-msa-r13 has no interrogative-أ prefix row, no second
+    # enclitic slot (enc1) and no lengthened كمو/همو, so أتكتب / سلمتكها /
+    # أنلزمكموها had no analysis at all. The peeler strips exactly those
+    # clitics and sends the residual to CAMeL; anything CAMeL models natively
+    # (و/ف/ب/ل/ك/ال/س, a single pronoun) is never peeled. The interrogative
+    # is accepted as أ or bare ا (normalize_alef rewrites أ → ا upstream).
+    # Lengthened forms get their own [CLITICE_كمو] / [CLITICE_همو] tokens —
+    # no surface is rewritten. Changing this re-runs the corpus pre-pass
+    # (cache key).
+    clitic_peeler: true
+    # Also accept a bare ا as the interrogative (the platform's preprocessing
+    # normalises أ → ا). Off by default: word-initial ا is also hamzat-wasl
+    # (Forms VII–X, imperatives), ابن/اسم and the article, and enabling it
+    # doubled false peels on CAMeL-rejected corpus types (0.6 % → 1.2 %).
+    peel_bare_alef: false
+
     # Closed-class prepositions / particles emitted as ONE [PREP_*] token
     # each (clitics still ride outside: [CLITICP_و] [PREP_إلى] [CLITICE_ه]).
     # Matched on CAMeL's lemma, so عليه / منهم / وإلى all resolve to their

@@ -196,16 +196,17 @@ class CamelBridge:
     # Public ops
     # ------------------------------------------------------------------
 
-    def analyze(self, words: List[str]) -> List[List[Dict[str, str]]]:
+    def analyze(self, words: List[str], top: int = 1) -> List[List[Dict[str, str]]]:
         """Disambiguate a batch of words. Returns one sublist per word.
 
-        Sublists are top-scored-first; empty sublist ⇒ no analysis.
-        Each candidate is a trimmed dict with the ~11 fields araroopat
-        consumes (root, pattern, stem, diac, lex, pos, prc0–prc3, enc0).
+        Sublists are top-scored-first, at most ``top`` per word (the server
+        caps it at its MAX_TOP); empty sublist ⇒ no analysis. Each candidate
+        is a trimmed dict with the ~12 fields araroopat consumes (root,
+        pattern, stem, diac, lex, pos, prc0–prc3, enc0, asp).
         """
         proc = self._ensure_started()  # noqa: F841
         req_id = self._take_id()
-        self._send({"id": req_id, "op": "analyze", "words": list(words)})
+        self._send({"id": req_id, "op": "analyze", "words": list(words), "top": int(top)})
         resp = self._read_response()
         self._check(resp, req_id)
         return resp["results"]

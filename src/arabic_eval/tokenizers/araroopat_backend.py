@@ -60,6 +60,13 @@ class Analysis:
     written ة word-finally, ت before a pronoun (مدرسة / مدرسته). It is
     stripped from ``pattern`` and emitted as ``[CLITICE_ة]``; see
     ``strip_fem_from_pattern``.
+
+    ``enc1`` is the second pronominal enclitic of a double-object verb
+    (أعطيتكه = أعطيت + ك + ه). CAMeL's calima-msa-r13 has no ``enc1``
+    feature at all, so this slot is only ever filled by the clitic peeler
+    (``peel_clitics``); ``peeled`` records that the analysis came from
+    that fallback rather than from a native CAMeL analysis of the whole
+    word.
     """
     root: str
     pattern: str       # clitic-stripped (bare-stem) template
@@ -75,11 +82,24 @@ class Analysis:
     enc0: Optional[str] = None
     particle: Optional[str] = None  # bare preposition surface, e.g. "من"
     fem: Optional[str] = None       # TAA_MARBUTA when the ة suffix was factored out
+    enc1: Optional[str] = None      # second object pronoun (peeler only)
+    peeled: bool = False            # True when produced by the clitic peeler
+    aspect: Optional[str] = None    # CAMeL `asp` for verbs: p / i / c
 
     @property
     def enclitics(self) -> Tuple[str, ...]:
-        """Enclitic surfaces in emission order, innermost first: (ة, pronoun)."""
-        return tuple(c for c in (self.fem, self.enc0) if c)
+        """Enclitic surfaces in emission order, innermost first: (ة, pronoun, pronoun)."""
+        return tuple(c for c in (self.fem, self.enc0, self.enc1) if c)
+
+    @property
+    def pronoun_enclitics(self) -> Tuple[str, ...]:
+        """The pronominal enclitics only (no ة), innermost first."""
+        return tuple(c for c in (self.enc0, self.enc1) if c)
+
+    @property
+    def proclitics(self) -> Tuple[str, ...]:
+        """Proclitic surfaces outermost first."""
+        return tuple(c for c in (self.prc3, self.prc2, self.prc1, self.prc0) if c)
 
 
 def _norm_clitic(value: Optional[str]) -> Optional[str]:
@@ -382,6 +402,7 @@ def _strip_clitic_from_end(pat: str, clitic: str) -> str:
 # silently fails, leaving a stray lam in both the bare pattern and the
 # reconstructed stem ('ل1ِ2ا3ِ' instead of '1ِ2ا3ِ'; 'لكتاب' instead of 'كتاب').
 _LI_PREP, _AL_DET = "ل", "ال"
+_SA_FUT = "س"
 
 
 def strip_proclitics_from_start(text: str, proclitics: Tuple[Optional[str], ...]) -> str:
@@ -458,6 +479,13 @@ _ALEF_MAKSURA, _YEH = "ى", "ي"
 
 def _strip_diac(s: str) -> str:
     return "".join(c for c in s if c not in _PATTERN_DIACRITICS)
+
+
+_ALEF_VARIANTS = str.maketrans({"أ": "ا", "إ": "ا", "آ": "ا", "ٱ": "ا"})
+
+
+def _alef_norm(s: str) -> str:
+    return s.translate(_ALEF_VARIANTS)
 
 
 def join_particle_enclitic(particle: str, enclitic: str) -> str:
@@ -630,7 +658,340 @@ def _dict_to_analysis(
         pos=d.get("pos", ""),
         prc3=prc3, prc2=prc2, prc1=prc1, prc0=prc0, enc0=enc0,
         fem=fem,
+        aspect=_norm_clitic(d.get("asp")),
     )
+
+
+# ---------------------------------------------------------------------------
+# Clitic peeler — closed-list fallback for clitic *combinations* CAMeL lacks
+# ---------------------------------------------------------------------------
+#
+# calima-msa-r13 is table-driven: finite PREFIX / SUFFIX tables plus
+# compatibility tables. Backoff only invents unknown *stems*, never unknown
+# clitic combinations, so a word whose clitic stack is not a table row has
+# no analysis at all. Measured gaps (2026-09-13, see
+# tests/test_araroopat_clitic_peeler.py):
+#
+#   * no prefix row carries prc3 — the interrogative hamza أ is absent, so
+#     even أتكتب ("do you write?") returns nothing;
+#   * there is no ``enc1`` feature — of 193 suffix keys none holds two
+#     pronouns, so every double-object verb (سلمتكها, أعطيتنيه) fails;
+#   * the classical lengthened 2mp/3mp forms before a second pronoun
+#     (أنلزمكموها, يحدثكموه) are missing on top of that.
+#
+# The peeler fixes the *class*: it strips clitics from a closed list
+# itself and sends only the residual to CAMeL, which is good at stems and
+# inflection. It runs ONLY when CAMeL has no valid analysis for the whole
+# word (so a word CAMeL already reads — أستكتبه as Form X — is never
+# touched), tries the *least* peeled candidate first, and accepts a
+# candidate only if CAMeL returns a valid analysis of the residual that is
+# compatible with the peeled clitics (object pronouns need a verb, ب/ك a
+# nominal, ...). Reversibility is by construction: every peeled surface is
+# a literal slice of the word, so proclitics + residual + enclitics == word.
+# ---------------------------------------------------------------------------
+
+# Proclitic grammar, outermost first. Each slot is optional; the لِ+الـ
+# contraction (لل = ل + ال) is handled when enumerating. The interrogative
+# is also accepted as bare ا because the platform's default preprocessing
+# (normalize_alef) rewrites أ → ا before text reaches the tokenizer.
+PEEL_PRC3: Tuple[str, ...] = ("أ",)
+# Under the platform's alef normalisation the interrogative surfaces as a
+# bare alef. Opt-in only (`peel_bare_alef`): word-initial ا is also the
+# hamzat-wasl of Forms VII–X and imperatives (اعرفوني, استضف), ابن/اسم and
+# the article, and enabling it doubled the false-peel rate on CAMeL-rejected
+# corpus types (0.6 % → 1.2 % on a 3,000-type sample, 2026-09-13).
+BARE_ALEF_INTERROGATIVE = "ا"
+INTERROGATIVE_SURFACES: Tuple[str, ...] = PEEL_PRC3 + (BARE_ALEF_INTERROGATIVE,)
+PEEL_PRC2: Tuple[str, ...] = ("و", "ف")
+PEEL_PRC1: Tuple[str, ...] = ("س", "ب", "ل", "ك")
+PEEL_PRC0: Tuple[str, ...] = ("ال",)
+_PEEL_SLOT: Dict[str, int] = {
+    **{c: 3 for c in INTERROGATIVE_SURFACES}, **{c: 2 for c in PEEL_PRC2},
+    **{c: 1 for c in PEEL_PRC1}, **{c: 0 for c in PEEL_PRC0},
+}
+
+# Pronominal enclitics. First slot: any object/possessive pronoun. Second
+# slot: when a verb takes two object pronouns the first outranks the
+# second (1st > 2nd > 3rd person — Wright §187), so the second is always
+# 3rd person: أعطيتكَه, أعطيتنيه, ألزمناهموها. The classical lengthened
+# 2mp/3mp forms exist only when a second pronoun follows (أنلزم + كمو + ها).
+PEEL_ENC_FIRST: Tuple[str, ...] = (
+    "ني", "نا", "ك", "كما", "كم", "كن", "ه", "ها", "هما", "هم", "هن", "ي",
+)
+LENGTHENED_ENCLITICS: Tuple[str, ...] = ("كمو", "همو")
+PEEL_ENC_SECOND: Tuple[str, ...] = ("ه", "ها", "هم", "هن", "هما")
+# A residual whose root has two masked radicals (ر##) is too little
+# evidence to hang a peel on — such readings came from transliterations.
+MAX_MASKED_RADICALS_IN_PEEL = 1
+# First of two object pronouns: the 1sg *object* is ني, never the possessive ي.
+PEEL_ENC_DOUBLE_FIRST: Tuple[str, ...] = tuple(
+    c for c in PEEL_ENC_FIRST if c != "ي"
+) + LENGTHENED_ENCLITICS
+# Verb residual may end up with (native enc0) + peeled; never more than this.
+MAX_PRONOUN_ENCLITICS = 2
+# Never leave fewer letters than a hollow stem (قل, رد).
+MIN_RESIDUAL_LEN = 2
+
+
+@dataclass(frozen=True)
+class PeelCandidate:
+    """One way of slicing ``word`` into peeled clitics + residual."""
+    proclitics: Tuple[str, ...]   # outermost first
+    residual: str
+    enclitics: Tuple[str, ...]    # innermost first (emission order)
+
+    @property
+    def peeled_len(self) -> int:
+        return sum(len(c) for c in self.proclitics) + sum(len(c) for c in self.enclitics)
+
+
+def _prefix_parses(word: str, bare_alef: bool = False) -> List[Tuple[Tuple[str, ...], int]]:
+    """All grammar-valid proclitic stacks at the start of ``word``.
+
+    Returns ``(stack, consumed_chars)`` pairs including the empty stack.
+    The article after the li preposition is written as a single lam
+    (لل = ل + ال), so ``("ل", "ال")`` consumes two characters, not three.
+    """
+    out: List[Tuple[Tuple[str, ...], int]] = [((), 0)]
+    frontier = [((), 0)]
+    prc3 = INTERROGATIVE_SURFACES if bare_alef else PEEL_PRC3
+    for slot in (prc3, PEEL_PRC2, PEEL_PRC1, PEEL_PRC0):
+        nxt = []
+        for stack, pos in frontier:
+            for c in slot:
+                surface = c
+                if c == _AL_DET and stack and stack[-1] == _SA_FUT:
+                    continue                     # the future marker takes a verb, never ال
+                if c == _AL_DET and stack and stack[-1] == _LI_PREP:
+                    surface = _LI_PREP           # the contraction
+                if c == _LI_PREP and stack == (BARE_ALEF_INTERROGATIVE,):
+                    continue   # bare ا + ل is just the article ال — never peel it
+                if c == BARE_ALEF_INTERROGATIVE and word.startswith("ل", pos + 1):
+                    continue   # same when the ل stays in the residual (المسا → ا | لمسا)
+                if word.startswith(surface, pos):
+                    cand = (stack + (c,), pos + len(surface))
+                    nxt.append(cand)
+                    out.append(cand)
+        frontier = frontier + nxt
+    return out
+
+
+def _suffix_parses(word: str) -> List[Tuple[Tuple[str, ...], int]]:
+    """All enclitic stacks at the end of ``word`` as ``(stack, consumed_chars)``.
+
+    Stacks are in emission order (innermost first). One pronoun, or a
+    first-slot pronoun (plain or lengthened) followed by a second-slot one.
+    """
+    out: List[Tuple[Tuple[str, ...], int]] = [((), 0)]
+    for p1 in PEEL_ENC_FIRST:
+        if word.endswith(p1):
+            out.append(((p1,), len(p1)))
+    for p2 in PEEL_ENC_SECOND:
+        if not word.endswith(p2):
+            continue
+        head = word[: len(word) - len(p2)]
+        for p1 in PEEL_ENC_DOUBLE_FIRST:
+            if head.endswith(p1):
+                out.append(((p1, p2), len(p1) + len(p2)))
+    return out
+
+
+def peel_candidates(word: str, bare_alef: bool = False) -> List[PeelCandidate]:
+    """Enumerate every closed-list slicing of ``word``, least peeled first.
+
+    The un-peeled slicing is excluded (that is the native CAMeL call the
+    caller already made). Ties break on fewer clitics, then on a fixed
+    string order so the result is deterministic. ``bare_alef`` also
+    accepts ا as the interrogative (see BARE_ALEF_INTERROGATIVE).
+    """
+    cands: List[PeelCandidate] = []
+    seen = set()
+    for procs, head in _prefix_parses(word, bare_alef):
+        for encs, tail in _suffix_parses(word):
+            if not procs and not encs:
+                continue
+            if len(word) - head - tail < MIN_RESIDUAL_LEN:
+                continue
+            residual = word[head: len(word) - tail]
+            key = (procs, residual, encs)
+            if key in seen:
+                continue
+            seen.add(key)
+            cands.append(PeelCandidate(procs, residual, encs))
+    cands.sort(key=lambda c: (c.peeled_len, len(c.proclitics) + len(c.enclitics),
+                              c.proclitics, c.enclitics))
+    return cands
+
+
+def _is_verb(pos: str) -> bool:
+    return pos.startswith("verb")
+
+
+def _is_nominal(pos: str) -> bool:
+    return pos.startswith(_NOMINAL_POS_PREFIXES)
+
+
+def peel_compatible(cand: PeelCandidate, residual: Analysis) -> bool:
+    """Gate: may the peeled clitics attach to this analysis of the residual?
+
+    The governing rule is that the peeler may only remove what the CAMeL
+    database structurally *cannot* represent: the interrogative أ (no
+    prc3 prefix row), a second object pronoun (no ``enc1`` feature), or a
+    lengthened كمو/همو. Everything else — و/ف/ب/ل/ك/ال/س and a single
+    pronoun — CAMeL models natively, so if it refused the whole word the
+    refusal was informative (المسا: article + tanween; المجتهدي: article +
+    possessive) and a peel that "rescues" it is wrong. Measured on 3,000
+    corpus types CAMeL rejects, this rule alone removed most false peels
+    (nisba ي read as a possessive, transliterations, misspellings).
+
+    The remaining rules exist because CAMeL happily reads a residual that
+    the peeled clitics cannot attach to (بيرنيني → ب + يرني + ني would be
+    "in he-sees-me me"):
+
+    * peeled proclitics must sit strictly outside CAMeL's own;
+    * أ needs a verb, a particle, or a word that already carries clitics —
+      never a bare noun (أكتاب؟ exists but transliterations starting with
+      أ vastly outnumber it);
+    * س needs a verb with no native proclitic; ب/ك a nominal or particle;
+      ل a nominal, verb (لأعطينكموها) or particle; ال a nominal with no
+      native proclitic;
+    * object pronouns: a verb takes at most two in total (native + peeled),
+      the second from ``PEEL_ENC_SECOND``; a nominal takes one and only
+      when CAMeL saw none and there is no article; a particle or anything
+      else takes none; the lengthened كمو/همو only on a verb.
+    """
+    pos = residual.pos or ""
+    if (residual.root or "").count(WEAK_RADICAL_MARK) > MAX_MASKED_RADICALS_IN_PEEL:
+        return False
+    if residual.particle:
+        kind = "particle"
+    elif _is_verb(pos):
+        kind = "verb"
+    elif _is_nominal(pos):
+        kind = "nominal"
+    else:
+        kind = "other"
+    native_procs = residual.proclitics
+    native_encs = residual.pronoun_enclitics
+    all_encs = native_encs + cand.enclitics
+    has_hamza = any(c in INTERROGATIVE_SURFACES for c in cand.proclitics)
+    has_lengthened = any(c in LENGTHENED_ENCLITICS for c in cand.enclitics)
+
+    # -- necessity: the peel must remove something CAMeL cannot represent --
+    if not (has_hamza or has_lengthened or len(all_encs) >= 2):
+        return False
+    # Bare ا followed by a ل proclitic — peeled or CAMeL's own on the
+    # residual — is the article ال, not interrogative + preposition
+    # (الحيفي → ا + لحيفي was the single biggest false-peel shape).
+    merged_procs = cand.proclitics + native_procs
+    if merged_procs[:2] == ("ا", _LI_PREP):
+        return False
+
+    # -- proclitic side --
+    if cand.proclitics:
+        if any(c not in _PEEL_SLOT for c in native_procs):
+            return False           # a native لا/ما/ت stack we don't model
+        native_slots = [_PEEL_SLOT[c] for c in native_procs]
+        peeled_slots = [_PEEL_SLOT[c] for c in cand.proclitics]
+        if native_slots and min(peeled_slots) <= max(native_slots):
+            return False
+    # What licenses أ on a noun: a preposition/article/pronoun — not a
+    # peeled conjunction alone (أوديس, أومالي are transliterations; the
+    # glued "أو + noun" would decode correctly but is not an interrogative).
+    hamza_licensed = bool(
+        all_encs
+        or [c for c in native_procs + cand.proclitics if c not in INTERROGATIVE_SURFACES + PEEL_PRC2]
+    )
+    for c in cand.proclitics:
+        if c in INTERROGATIVE_SURFACES:
+            if kind == "other":
+                return False
+            if kind == "nominal" and not hamza_licensed:
+                return False
+        elif c == "س":
+            # The future particle attaches to imperfect verbs only
+            # (سلمناهموها is سلّمنا + ..., never س + لمّنا).
+            if kind != "verb" or native_procs or residual.aspect != "i":
+                return False
+        elif c in ("ب", "ك"):
+            if kind not in ("nominal", "particle"):
+                return False
+        elif c == _LI_PREP:
+            if kind == "other":
+                return False
+        elif c == _AL_DET:
+            if kind != "nominal" or native_procs:
+                return False
+
+    # -- enclitic side --
+    if cand.enclitics:
+        if has_lengthened and kind != "verb":
+            return False
+        if kind == "verb":
+            if len(all_encs) > MAX_PRONOUN_ENCLITICS:
+                return False
+            if len(all_encs) == 2 and (
+                all_encs[0] not in PEEL_ENC_DOUBLE_FIRST
+                or all_encs[1] not in PEEL_ENC_SECOND
+            ):
+                return False
+        elif kind == "nominal":
+            if len(cand.enclitics) > 1 or native_encs:
+                return False
+        else:
+            return False
+    # A possessive never co-occurs with the definite article.
+    if kind == "nominal" and all_encs and (
+        _AL_DET in cand.proclitics or _AL_DET in native_procs
+    ):
+        return False
+    return True
+
+
+def merge_peeled(word: str, cand: PeelCandidate, residual: Analysis) -> Analysis:
+    """Build the whole-word ``Analysis`` from a peel candidate + residual analysis.
+
+    Peeled proclitics fill their CAMeL slot (أ→prc3, و/ف→prc2, س/ب/ل/ك→prc1,
+    ال→prc0); CAMeL's own (inner) clitics on the residual are kept. The
+    ``surface`` is rebuilt as peeled proclitics + residual ``diac`` + peeled
+    enclitics so that ``_strip_clitic_surfaces`` recovers the same inflected
+    stem it would for a native analysis — and so that concatenating the
+    pieces reproduces ``word`` exactly.
+    """
+    slots = {3: residual.prc3, 2: residual.prc2, 1: residual.prc1, 0: residual.prc0}
+    for c in cand.proclitics:
+        slots[_PEEL_SLOT[c]] = c
+    encs = residual.pronoun_enclitics + cand.enclitics
+    enc0 = encs[0] if len(encs) > 0 else None
+    enc1 = encs[1] if len(encs) > 1 else None
+    proc_surface = "".join(
+        _LI_PREP if (c == _AL_DET and i and cand.proclitics[i - 1] == _LI_PREP) else c
+        for i, c in enumerate(cand.proclitics)
+    )
+    surface = proc_surface + (residual.surface or cand.residual) + "".join(cand.enclitics)
+    return Analysis(
+        root=residual.root,
+        pattern=residual.pattern,
+        pattern_raw=residual.pattern_raw,
+        stem=residual.stem,
+        surface=surface,
+        lemma=residual.lemma,
+        pos=residual.pos,
+        prc3=slots[3], prc2=slots[2], prc1=slots[1], prc0=slots[0],
+        enc0=enc0, enc1=enc1,
+        particle=residual.particle,
+        fem=residual.fem,
+        peeled=True,
+        aspect=residual.aspect,
+    )
+
+
+def _fem_spelling(residual: str) -> Optional[str]:
+    """``مدرست`` → ``مدرسة``: the ة is written ت before a pronoun, so a residual
+    that ends in ت may be a ة-final noun. Returns the ة spelling or None."""
+    if residual.endswith(_TAA) and len(residual) > MIN_RESIDUAL_LEN:
+        return residual[:-1] + TAA_MARBUTA
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -650,6 +1011,8 @@ class MorphAnalyzer:
         generator_timeout_ms: int = 50,  # kept for backwards-compat; unused now
         bridge: Optional[CamelBridge] = None,
         particles: Optional[frozenset] = None,
+        enable_peeler: bool = True,
+        peel_bare_alef: bool = False,
     ) -> None:
         # `generator_timeout_ms` used to drive a SIGALRM-based timeout
         # around per-call CAMeL generation. The bridge now bounds calls
@@ -663,23 +1026,158 @@ class MorphAnalyzer:
             frozenset(particles) if particles is not None
             else frozenset(PREPOSITION_INVENTORY)
         )
+        # Fallback for clitic combinations the CAMeL database lacks (see
+        # `peel_candidates`). Off → a native miss goes straight to None.
+        self.enable_peeler = enable_peeler
+        self.peel_bare_alef = peel_bare_alef
+        # Final answers (native or peeled) keyed by word.
         self._analyze_cache: Dict[str, Optional[Analysis]] = {}
+        # Native (whole-word, un-peeled) CAMeL answers. Residuals are looked
+        # up here so a residual can never itself be peeled — the peeler is
+        # one level deep by construction.
+        self._native_cache: Dict[str, Optional[Analysis]] = {}
+        # Every valid candidate analysis of a *residual*, MLE order. For an
+        # unseen word the MLE model scores all readings 1.0, so the top one
+        # is database order (ألزمنا: noun + نا before the PV + SUBJ:1P we
+        # need); the peeler walks the list and takes the first reading the
+        # peeled clitics can attach to.
+        self._candidates_cache: Dict[str, List[Analysis]] = {}
         self._generate_cache: Dict[Tuple[str, str], Optional[str]] = {}
+        # "peeled" = words rescued by the peeler; "exhausted" = words where
+        # every candidate was rejected (they fall to the caller's LIT path).
+        self.peel_stats: Dict[str, int] = {"peeled": 0, "exhausted": 0}
 
     # ------------------------------------------------------------------
     # Analysis: surface → (root, pattern, clitics, features)
     # ------------------------------------------------------------------
 
     def analyze(self, word: str) -> Optional[Analysis]:
-        """Return the best disambiguated analysis or None if CAMeL can't analyze."""
+        """Best analysis of ``word``: CAMeL native, else the clitic peeler, else None.
+
+        None means every tier was exhausted; the caller routes the word to
+        its character fallback. Both outcomes are logged at DEBUG (one line
+        per word) and counted in ``peel_stats``.
+        """
         if not word:
             return None
         if word in self._analyze_cache:
             return self._analyze_cache[word]
-        results = self._bridge.analyze([word])
-        analysis = self._first_valid(results[0] if results else [], word, self.particles)
+        analysis = self._native_many([word])[0]
+        if analysis is None and self.enable_peeler:
+            analysis = self._peel(word)
         self._analyze_cache[word] = analysis
         return analysis
+
+    def _native_many(self, words: List[str]) -> List[Optional[Analysis]]:
+        """Whole-word CAMeL analyses (no peeling), through ``_native_cache``."""
+        out: List[Optional[Analysis]] = [None] * len(words)
+        todo = [(i, w) for i, w in enumerate(words) if w and w not in self._native_cache]
+        if todo:
+            results = self._bridge.analyze([w for _, w in todo])
+            for (i, w), cands in zip(todo, results):
+                self._native_cache[w] = self._first_valid(cands, w, self.particles)
+        for i, w in enumerate(words):
+            out[i] = self._native_cache.get(w) if w else None
+        return out
+
+    # How many ranked candidates to fetch for a residual. Words rarely have
+    # more than ~30 raw analyses; the server caps at its MAX_TOP anyway.
+    RESIDUAL_TOP = 32
+
+    def _candidates_many(self, words: List[str]) -> List[List[Analysis]]:
+        """All valid analyses per word (MLE order), through ``_candidates_cache``."""
+        todo = [w for w in dict.fromkeys(words) if w and w not in self._candidates_cache]
+        if todo:
+            results = self._bridge.analyze(todo, top=self.RESIDUAL_TOP)
+            for w, cands in zip(todo, results):
+                valid = []
+                for d in cands:
+                    a = _dict_to_analysis(d, self.particles, w)
+                    if a is not None:
+                        valid.append(a)
+                if not valid:
+                    # Same bare-particle fallback as the native path.
+                    a = self._first_valid([], w, self.particles)
+                    if a is not None:
+                        valid.append(a)
+                self._candidates_cache[w] = valid
+        return [self._candidates_cache.get(w, []) if w else [] for w in words]
+
+    @staticmethod
+    def _residual_spellings(cand: PeelCandidate) -> List[str]:
+        """Residual strings to try for a candidate: as sliced, plus the ة
+        spelling when a pronoun was peeled off a ت-final residual."""
+        out = [cand.residual]
+        if cand.enclitics:
+            fem = _fem_spelling(cand.residual)
+            if fem:
+                out.append(fem)
+        return out
+
+    @staticmethod
+    def residual_verdict(cand: PeelCandidate, spelling: str, res: Analysis) -> Optional[str]:
+        """Why this reading of the residual cannot take the peeled clitics; None if it can.
+
+        Shared with the train explorer's trace so the two never disagree.
+        """
+        if spelling != cand.residual and not res.fem:
+            return "ة spelling but CAMeL saw no ة"
+        # CAMeL normalizes ة/ه, hamza and ى/ي on lookup and reports its
+        # canonical spelling in `diac`. A residual whose canonical form is a
+        # different *word* from the slice we cut (قرضة read as قرض+ه) would
+        # decode to a different string — never accept it. Hamza variants are
+        # compared normalized: the platform's own preprocessing rewrites
+        # them, and the native path already decodes to CAMeL's hamza spelling.
+        canonical = _strip_diac(res.surface or "")
+        if _alef_norm(canonical) != _alef_norm(spelling):
+            return f"surface mismatch: CAMeL canonical form is {canonical!r}"
+        if not peel_compatible(cand, res):
+            return "rejected by peel_compatible"
+        return None
+
+    def _resolve_peel(
+        self, word: str, cands: List[PeelCandidate],
+        residual_candidates: Dict[str, List[Analysis]],
+    ) -> Optional[Analysis]:
+        """Walk slicings least-peeled-first and each residual's readings in MLE
+        order; accept the first reading the peeled clitics can attach to."""
+        tried = 0
+        for cand in cands:
+            for spelling in self._residual_spellings(cand):
+                for rank, res in enumerate(residual_candidates.get(spelling, [])):
+                    tried += 1
+                    if self.residual_verdict(cand, spelling, res) is not None:
+                        continue
+                    merged = merge_peeled(word, cand, res)
+                    self.peel_stats["peeled"] += 1
+                    logger.debug(
+                        "clitic peeler: %r -> %s | %s | %s (residual %r, reading #%d, "
+                        "%d slicing(s))",
+                        word, "+".join(cand.proclitics) or "-", spelling,
+                        "+".join(cand.enclitics) or "-", res.pos, rank + 1, len(cands),
+                    )
+                    return merged
+        self.peel_stats["exhausted"] += 1
+        logger.debug(
+            "clitic peeler: %r exhausted — %d slicing(s), %d residual reading(s), "
+            "none compatible; falling through to the character path",
+            word, len(cands), tried,
+        )
+        return None
+
+    def _peel(self, word: str) -> Optional[Analysis]:
+        cands = peel_candidates(word, self.peel_bare_alef)
+        if not cands:
+            self.peel_stats["exhausted"] += 1
+            logger.debug("clitic peeler: %r has no closed-list slicing; character path", word)
+            return None
+        spellings: List[str] = []
+        for c in cands:
+            for sp in self._residual_spellings(c):
+                if sp not in spellings:
+                    spellings.append(sp)
+        readings = dict(zip(spellings, self._candidates_many(spellings)))
+        return self._resolve_peel(word, cands, readings)
 
     def analyze_many(
         self,
@@ -705,14 +1203,42 @@ class MorphAnalyzer:
                 uncached_positions.append(i)
                 uncached_words.append(w)
 
-        # Second pass: batch the uncached words.
+        # Second pass: batch the uncached words through CAMeL.
+        misses: List[Tuple[int, str]] = []
         for start in range(0, len(uncached_words), batch_size):
             batch = uncached_words[start:start + batch_size]
-            results = self._bridge.analyze(batch)
-            for offset, raw_candidates in enumerate(results):
+            for offset, analysis in enumerate(self._native_many(batch)):
                 pos = uncached_positions[start + offset]
                 word = uncached_words[start + offset]
-                analysis = self._first_valid(raw_candidates, word, self.particles)
+                if analysis is None and self.enable_peeler:
+                    misses.append((pos, word))
+                    continue
+                self._analyze_cache[word] = analysis
+                out[pos] = analysis
+
+        # Third pass: peel the native misses. All residual spellings of a
+        # batch of misses go over the wire together — one round-trip per
+        # ``batch_size`` residuals, same as the native pass.
+        if misses:
+            per_word = [(pos, w, peel_candidates(w, self.peel_bare_alef)) for pos, w in misses]
+            spellings: List[str] = []
+            seen = set()
+            for _, _, cands in per_word:
+                for c in cands:
+                    for sp in self._residual_spellings(c):
+                        if sp not in seen:
+                            seen.add(sp)
+                            spellings.append(sp)
+            readings: Dict[str, List[Analysis]] = {}
+            for start in range(0, len(spellings), batch_size):
+                chunk = spellings[start:start + batch_size]
+                readings.update(zip(chunk, self._candidates_many(chunk)))
+            for pos, word, cands in per_word:
+                if cands:
+                    analysis = self._resolve_peel(word, cands, readings)
+                else:
+                    self.peel_stats["exhausted"] += 1
+                    analysis = None
                 self._analyze_cache[word] = analysis
                 out[pos] = analysis
 
@@ -814,17 +1340,19 @@ class CorpusEntry:
     proclitics: Tuple[str, ...] = ()
     enclitics: Tuple[str, ...] = ()
     particle: Optional[str] = None       # set for [PREP_*] words; root/pattern None
+    peeled: bool = False                 # analysis came from the clitic peeler
 
     @classmethod
     def from_analysis(cls, word: str, a: Optional[Analysis]) -> "CorpusEntry":
         if a is None:
             return cls(word=word, analyzed=False)
-        proclitics = tuple(c for c in (a.prc3, a.prc2, a.prc1, a.prc0) if c)
+        proclitics = a.proclitics
         enclitics = a.enclitics
         if a.particle:
             return cls(
                 word=word, analyzed=True, surface=a.surface,
                 proclitics=proclitics, enclitics=enclitics, particle=a.particle,
+                peeled=a.peeled,
             )
         return cls(
             word=word,
@@ -836,6 +1364,7 @@ class CorpusEntry:
             surface=a.surface,
             proclitics=proclitics,
             enclitics=enclitics,
+            peeled=a.peeled,
         )
 
     def to_dict(self) -> Dict:
@@ -850,6 +1379,7 @@ class CorpusEntry:
             "proclitics": list(self.proclitics),
             "enclitics": list(self.enclitics),
             "particle": self.particle,
+            "peeled": self.peeled,
         }
 
     @classmethod
@@ -865,4 +1395,5 @@ class CorpusEntry:
             proclitics=tuple(d.get("proclitics") or ()),
             enclitics=tuple(d.get("enclitics") or ()),
             particle=d.get("particle"),
+            peeled=bool(d.get("peeled", False)),
         )

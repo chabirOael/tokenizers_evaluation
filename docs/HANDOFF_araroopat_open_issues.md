@@ -397,12 +397,188 @@ against it.
 
 ---
 
+## 6b. Clitic combinations the CAMeL database lacks — FIXED 2026-09-13 (clitic peeler)
+
+### The failure
+
+`أنلزمكموها` (Qurʾān 11:28, *shall we compel you to it?*) had no CAMeL analysis and went to
+`[LIT_*]`. Diagnosis on `calima-msa-r13` (the only MSA DB we can load — `calima-msa-s31` ships as
+`morphology.db.muddle` under an LDC licence and needs SAMA 3.1 to unmuddle):
+
+| probe | result |
+|---|---|
+| `Analyzer(backoff='NONE')` | 0 analyses |
+| `NOAN_ALL` / `ADD_ALL` | 66 analyses, all `root='O', pattern='backoff'` → rejected by `_dict_to_analysis` |
+| `NOAN_PROP` (what `MLEDisambiguator.pretrained()` uses in the server) | 1 `NOUN_PROP` backoff → rejected → LIT |
+| `db.suffix_hash` | 193 keys; `كموها`, `كمو`, `كمها`, `كها`, `نيها`, `هها` all **missing** |
+| `db.defines['enc1']` | **`None` — the feature does not exist in r13** |
+| prefix table | 60 keys; **no row carries `prc3`** — the interrogative أ is absent (`أتكتب` → 0 analyses) |
+
+So the word fails for three independent reasons — no interrogative prefix, no second enclitic
+slot, no classical lengthened form — and the class is *every* interrogative and *every*
+double-object verb, not a Qurʾānic quirk. The apparent double-pronoun suffixes in the table
+(`تموها`, `ناها`, `وها`) are subject-suffix + one object.
+
+Stress set (37 words, `tests/test_araroopat_clitic_peeler.py`): **13/37 correct before** — every
+control passed, every word with أ or two enclitics went to LIT. Corpus: the ArabicText-Large
+pre-pass holds `أنلزمكموها` itself plus `أكفيكموه`, `يحدثكموه`, `فأسقيناكموه`, `لأحدثنهموه`, …
+(rare by type count — this fix is about correctness on classical/QA text, not admission).
+
+### What was rejected
+
+* **Pre-normalisation (`كموها → كمها`)** — measured zero gain: the MSA target forms are absent too.
+* **Extending the DB** — hundreds of new prefix/suffix rows plus `AB/BC/AC` compat lines, no
+  `enc1` feature to put the second pronoun in, no MLE statistics for new rows, and r13 is GPL v2.
+* **Qurʾānic gold lookup** — only helps verbatim Qurʾān tokens; does nothing for `سلمتكها`.
+
+### What shipped — `peel_candidates` / `peel_compatible` / `merge_peeled` in `araroopat_backend.py`
+
+Fallback chain in `MorphAnalyzer.analyze` / `analyze_many`, explicit:
+**CAMeL native (whole word) → clitic peeler → bare-particle check → `[LIT_*]`.**
+
+* Runs **only** on a native miss; a word CAMeL reads (أستكتبه as Form X) is never touched.
+* Closed lists: proclitics `أ > (و|ف) > (س|ب|ل|ك) > ال` (with `لل` = `ل`+`ال`); enclitics = one
+  pronoun, or a first pronoun (or lengthened `كمو`/`همو`) + a **3rd-person** second pronoun
+  (Wright §187: the first object outranks the second, so `نا+ني` "us me" is impossible).
+* Candidates least-peeled-first; the residual goes through the same native call + validation as
+  a whole word; CAMeL's own inner clitics on the residual are kept and merged.
+* **The governing gate:** the peel must remove something CAMeL *cannot* represent — أ, a second
+  pronoun, or a lengthened form. Removing only و/ب/ال/… or a single pronoun is refused: CAMeL
+  models those natively, so its refusal of the whole word was informative (`المجتهدي` is a nisba,
+  not article + possessive; `المسا` is article + tanween). This one rule took false peels on
+  3,000 CAMeL-rejected corpus types from **5.8 % → 0.8 %**; the person-rank rule, "a peeled
+  conjunction does not license أ on a bare noun", and "reject a residual root with two masked
+  radicals" took it to **0.6 %**. Accepting bare `ا` as the interrogative (required: the
+  pipeline's `normalize_alef` rewrites `أ → ا`) re-opened one shape — `ا + ل` read as
+  interrogative + preposition on `ال…` words CAMeL rejects (`الحيفي`, 150 of 10,000) — closed by
+  refusing bare `ا` followed by a `ل` proclitic, peeled or CAMeL's own. Final: **122 of 10,000
+  CAMeL-rejected types (1.2 %)**, every one round-tripping. What remains is أ-initial
+  transliterations whose residual is a well-formed verb (`أوهارا` → `هارا`) — not separable
+  without context.
+* `س` attaches to imperfects only (`سلمناهموها` is `سلّمنا + …`, never `س + لمّنا`): CAMeL's `asp`
+  is now in the server's `_TRIMMED_FIELDS` and on `Analysis.aspect`.
+* **Reversibility by construction:** every peeled surface is a literal slice of the word, and the
+  residual's CAMeL canonical spelling must equal the slice modulo alef variants (CAMeL normalises
+  ة/ه, hamza, ى/ي on lookup — `قرضة` comes back as `قرض + ه`; accepting that would decode `القرضة`
+  as `القرضه`, so ة/ه and ى/ي are strict; hamza is compared normalised because the native path
+  already decodes to CAMeL's hamza spelling and the pipeline rewrites it upstream anyway).
+  **No surface form is altered:** `كمو`/`همو` are their own `[CLITICE_*]` tokens, never rewritten
+  to `كم`/`هم` (decode could not know when to re-lengthen, since MSA writes `كمها`).
+* Data model: `Analysis.enc1` + `Analysis.peeled`; `CorpusEntry.peeled`; `_CACHE_FORMAT` 3 → 4
+  (the key also carries the `clitic_peeler` flag); `vocab_metadata.json["peeled"]` lists count +
+  200 examples for auditing; `config.json` persists `clitic_peeler`. YAML: `clitic_peeler: true`.
+* `_emit_alpha` is now **all-or-nothing on clitic tokens** on the ROOT+PAT path (as the PREP path
+  already was): an OOV `[CLITICE_كمو]` sends the whole word to LIT instead of emitting a literal
+  clitic that decodes with a space. Also fixed on the way: a tokenizer saved before the
+  `[CLITICE_ة]` slot recursed forever in `_emit_lit` on any ة-final word.
+* Explorer: `araroopat_trace.py` gained a `peel` step (every candidate, its residual analysis
+  and the verdict); the un-instrumented `train()` self-check still passes.
+
+### Measured result
+
+| | before | after |
+|---|---|---|
+| stress set (37 words) | 13 correct | **36 correct** (`أستكتبه` keeps its native Form X reading by design) |
+| `أنلزمكموها` | LIT (12 tokens) | `[CLITICP_أ] [ROOT_لزم] [PAT_نَ1ْ2َ3] [CLITICE_كمو] [CLITICE_ها]` |
+| false peels on 3,000 CAMeL-rejected corpus types | — | 21 (0.7 %) |
+| existing suites + smoke | green | green (220 new tests, live tier included) |
+
+### P7 — residual readings below rank 1 — **FIXED 2026-09-13** (server `top`, candidate walk)
+
+`ألزمناهموها` and `وسأعطيكموه` stayed on LIT because the server built
+`MLEDisambiguator.pretrained()` with the default **`top=1`** (a constructor argument, not a
+per-call one), so every residual came back with one reading. For a word the MLE model has never
+seen every reading scores 1.0, so rank 1 is just database order: `ألزمنا` → noun + `نا` ("our
+necessity"), while the `أَلْزَمْنا` PV + `SUBJ:1P` we need is reading **6 of 7**; `وسأعطي` → three
+passive `وَسَأُعْطَى` readings (surface guard rejects them — they'd decode with `ى`), the active
+`وَسَأُعْطِي` is reading **4 of 5**.
+
+Shipped: the server keeps `MAX_TOP = 32` candidates and each `analyze` request carries `top`
+(default 1); the bridge forwards it; `MorphAnalyzer._candidates_many` fetches every valid reading
+of a *residual* (`RESIDUAL_TOP = 32`, own cache) and `_resolve_peel` walks slicings
+least-peeled-first and readings in order, accepting the first that passes
+`residual_verdict` (the ة/surface/compatibility gate, now one shared helper the tracer also
+uses). **The native whole-word path still requests one candidate**, so native admission is
+unchanged (P7b below). False-peel rate under the walk: 0.6 % → 0.7 % (one extra, `أكابده`).
+
+**Determinism bug found and fixed on the way.** The analyzer's candidate order behind an MLE tie
+follows Python string hashing, i.e. it differed from process to process — the same word could get
+a different top-1 reading on every run (`وَمالٍ` vs `وَمَآلٍ`, both alef-normalising to `ومال`),
+and the peeler a different residual reading. `_op_analyze` now sorts by
+`(-score, diac, bw, pos, prc*, enc0, asp)` so the order is a function of the word only. This is
+the native path too — a latent non-reproducibility that predates the peeler.
+`TestLiveCamel::test_live_reading_order_is_deterministic_across_processes` pins it.
+
+### P7b — should the native whole-word path also see `top > 1`?
+
+`_first_valid`'s "walk lower-ranked candidates" is still dead code on the native path (it sees
+one candidate). Requesting `top=32` there would let a rank-2 root+pattern reading rescue a
+rank-1 NTWS/backoff one — but it changes admission across the whole corpus and the pre-pass
+payload grows ~10×. Measure on the 300-question Arabic-Exam admission benchmark before
+deciding; if it helps, it's a one-line change in `_native_many`.
+
+### Bare alef as the interrogative — opt-in (`peel_bare_alef`, default off)
+
+The platform's preprocessing normalises `أ → ا`, so in pipeline text the interrogative surfaces as
+a bare alef. Adding `ا` to the closed list unguarded **doubled** the false-peel rate on
+CAMeL-rejected corpus types (0.6 % → 1.2 %): word-initial `ا` is also the hamzat-wasl of Forms
+VII–X and imperatives (`اعرفوني` → `ا + عرفون + ي`, `استضف` → `ا+س + تضف`), `ابن/اسم`, and the
+article (`المسا` → `ا + لمسا`). The article case is now excluded in the grammar (a lone `ا`
+followed by `ل` is never the interrogative), which brings the mode to 1.1 % — still the
+hamzat-wasl and transliteration classes. It is therefore a YAML knob (`peel_bare_alef: false`;
+part of the cache key and `config.json`). Turn it on only for alef-normalised corpora, and
+re-measure false peels first (`peel_bare_alef=True` in the measurement script gives you the list).
+
+### Regenerating the test fixture
+
+`tests/data/araroopat_camel_recorded.json` holds every *valid* reading (`top=32`, server order)
+for every whole word and residual the suite consults. Regenerate after any camel-tools / DB /
+`_dict_to_analysis` change — `TestLiveCamel::test_live_recorded_readings_are_current` tells you
+when:
+
+```python
+# .venv/bin/python — from the repo root
+import json, sys; sys.path.insert(0, "src")
+from tests.test_araroopat_clitic_peeler import STRESS, NATIVE_AMBIGUOUS
+from arabic_eval.tokenizers.araroopat_backend import (MorphAnalyzer, peel_candidates,
+                                                       _dict_to_analysis, PREPOSITION_INVENTORY)
+from arabic_eval.tokenizers.araroopat_bridge import get_shared_bridge
+br, P = get_shared_bridge(), frozenset(PREPOSITION_INVENTORY)
+words = [w for w, *_ in STRESS] + [NATIVE_AMBIGUOUS, "بيرنيني", "أندرسون", "المجتهدي", "القرضة",
+         "عدناني", "أومالي", "أوديس", "أوهموه", "أعطيتني", "كتاب", "مدرسة", "مدرست", "مدرسته",
+         "اتكتب", "المسا", "اعرفوني"]
+need = list(dict.fromkeys(w for word in words for w in [word] + [
+    sp for c in peel_candidates(word, bare_alef=True) for sp in MorphAnalyzer._residual_spellings(c)]))
+rec = {}
+for i in range(0, len(need), 64):
+    for w, cands in zip(need[i:i + 64], br.analyze(need[i:i + 64], top=32)):
+        valid = [d for d in cands if _dict_to_analysis(d, P, w) is not None]
+        if valid:
+            rec[w] = valid
+json.dump(rec, open("tests/data/araroopat_camel_recorded.json", "w"), ensure_ascii=False, indent=1, sort_keys=True)
+```
+
+### P8 — native analyses decode to CAMeL's canonical spelling, not the input (pre-existing)
+
+Measured on the pre-pass cache: **84,470 of 506,101** natively analysed types (16.7 %) have
+`dediac(surface) != word` — ة/ه (`عميلة` → `عميله`, 22k), hamza restoration (`الاسفل` →
+`الأسفل`, 22k), ى/ي (3k). `قرضة` encodes as `[ROOT_قرض] [PAT_1َ2ْ3] [CLITICE_ه]` and decodes as
+`قرضه` today. The peeler refuses such residuals; the native path does not check. The PREP path
+already applies the right rule (accept only if the input chunk equals the decoder's output) —
+generalising it to `_dict_to_analysis` is the fix, but it changes native admission, so measure
+before shipping. Note the platform's preprocessing normalises alef variants (`normalize_alef=True`),
+which interacts with this: in pipeline text the interrogative surfaces as bare `ا`, so
+`PEEL_PRC3 = ("أ", "ا")` — with the `ا + ل`-is-the-article guard, measured at 1.2 % false peels on
+10,000 CAMeL-rejected types (§6b).
+
+---
+
 ## 7. Verification commands
 
 ```bash
 cd /home/s3user/tokenizers_evaluation
 
-# full suite — 312 tests currently pass
+# full suite
 .venv/bin/python -m pytest tests/ -q
 
 # 7 roundtrip cases (clear the smoke cache first)

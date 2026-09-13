@@ -508,15 +508,45 @@ R.validate = d => {
     const inner = h('div', {class:'inner'});
     if (!w.candidates.length) inner.append(h('p',{class:'muted'}, 'CAMeL returned an empty candidate list — the word is not in the morphology DB at all.'));
     for (const c of w.candidates){
-      inner.append(h('div',{class:'subh'}, `candidate #${c.index} — raw dict from the server (11 trimmed fields)`), candidateDict(c.candidate));
+      inner.append(h('div',{class:'subh'}, `candidate #${c.index} — raw dict from the server (12 trimmed fields)`), candidateDict(c.candidate));
       inner.append(h('div',{class:'subh'}, '_dict_to_analysis gates, in order'), gatesView(c.gates));
       if (c.accepted){
-        inner.append(h('div',{class:'subh'},'→ Analysis (emission order)'), h('div',{class:'tokrow ltr'}, ...[c.analysis.prc3,c.analysis.prc2,c.analysis.prc1,c.analysis.prc0].filter(Boolean).map(x=>tok('[CLITICP_'+x+']','cliticp')), ...(c.analysis.particle ? [tok('[PREP_'+c.analysis.particle+']','prep')] : [tok('[ROOT_'+c.analysis.root+']','root'), tok('[PAT_'+c.analysis.pattern+']','pat')]), c.analysis.fem?tok('[CLITICE_'+c.analysis.fem+']','clitice'):null, c.analysis.enc0?tok('[CLITICE_'+c.analysis.enc0+']','clitice'):null),
+        inner.append(h('div',{class:'subh'},'→ Analysis (emission order)'), h('div',{class:'tokrow ltr'}, ...[c.analysis.prc3,c.analysis.prc2,c.analysis.prc1,c.analysis.prc0].filter(Boolean).map(x=>tok('[CLITICP_'+x+']','cliticp')), ...(c.analysis.particle ? [tok('[PREP_'+c.analysis.particle+']','prep')] : [tok('[ROOT_'+c.analysis.root+']','root'), tok('[PAT_'+c.analysis.pattern+']','pat')]), c.analysis.fem?tok('[CLITICE_'+c.analysis.fem+']','clitice'):null, c.analysis.enc0?tok('[CLITICE_'+c.analysis.enc0+']','clitice'):null, c.analysis.enc1?tok('[CLITICE_'+c.analysis.enc1+']','clitice'):null),
           h('div',{class:'kv',style:'margin-top:8px'}, ...['stem','surface','lemma','pos'].map(k => h('div',{}, h('span',{class:'k'},k), h('span',{class:'v'+(k==='pos'?' lat':'')}, c.analysis[k])))));
       } else {
         inner.append(h('div',{style:'margin-top:8px'}, badge('rejected: '+c.reject_reason,'bad')));
       }
     }
+    det.append(inner); list.append(det);
+  }
+  out.append(list);
+  return out;
+};
+
+R.peel = d => {
+  const out = h('div', {});
+  if (!d.enabled) { out.append(h('p',{class:'muted'}, 'clitic_peeler is off — every native miss goes straight to the character fallback.')); return out; }
+  out.append(h('div',{}, h('span',{class:'stat'}, h('b',{},d.rescued), h('span',{},'rescued → ROOT+PAT / PREP')), h('span',{class:'stat'}, h('b',{},d.total-d.rescued), h('span',{},'exhausted → LIT fallback'))));
+  if (!d.words.length) out.append(h('p',{class:'muted'}, 'Nothing to peel: CAMeL analysed every word natively.'));
+  const list = seq(''); list.style.setProperty('--stagger','80ms');
+  for (const w of d.words){
+    const det = h('details', {class:'wordcard'}, h('summary', {}, h('span',{class:'w'}, w.word),
+      w.accepted ? badge('peeled','ok') : badge('LIT fallback','warn'),
+      h('span',{class:'small muted'}, `${w.num_candidates} candidate${w.num_candidates===1?'':'s'}, least peeled first`),
+      w.matches_real ? null : badge('trace ≠ real','bad')));
+    const inner = h('div', {class:'inner'});
+    if (!w.candidates.length) inner.append(h('p',{class:'muted'}, 'No closed-list slicing exists for this word (no listed clitic at either end, or the residual would be shorter than 2 letters).'));
+    for (const c of w.candidates){
+      const ok = c.verdict === 'accepted';
+      const resInfo = typeof c.residual === 'object' && c.residual ? c.residual : null;
+      const resText = resInfo ? w.word.slice(c.proclitics.join('').length, w.word.length - c.enclitics.join('').length) : c.residual;
+      inner.append(h('div',{style:'display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:5px 0;border-bottom:1px dashed var(--line)'},
+        h('span',{class:'tokrow ltr'}, ...c.proclitics.map(x=>tok('[CLITICP_'+x+']','cliticp')), h('span',{class:'run '+(c.residual_analyzed?'kept':'drop')}, resText), ...c.enclitics.map(x=>tok('[CLITICE_'+x+']','clitice'))),
+        resInfo ? h('span',{class:'small muted'}, `residual: ${resInfo.pos}` + (resInfo.proclitics.length?` · CAMeL proclitics ${resInfo.proclitics.join('+')}`:'') + (resInfo.enclitics.length?` · CAMeL enclitics ${resInfo.enclitics.join('+')}`:'')) : null,
+        badge(c.verdict, ok?'ok':'bad')));
+    }
+    if (w.result) inner.append(h('div',{class:'subh'},'→ merged Analysis (emission order)'), h('div',{class:'tokrow ltr'}, ...w.result.proclitics.map(x=>tok('[CLITICP_'+x+']','cliticp')), tok('[ROOT_'+w.result.root+']','root'), tok('[PAT_'+w.result.pattern+']','pat'), ...w.result.enclitics.map(x=>tok('[CLITICE_'+x+']','clitice'))),
+      h('div',{class:'kv',style:'margin-top:8px'}, h('div',{}, h('span',{class:'k'},'surface'), h('span',{class:'v'}, w.result.surface))));
     det.append(inner); list.append(det);
   }
   out.append(list);
@@ -615,7 +645,7 @@ R.verify = d => h('div', {class:'bigcheck'},
 /* ------------------------------------------------------------------ */
 /* step card + playback                                                */
 /* ------------------------------------------------------------------ */
-const GROUP = {config:'setup', nfkc:'1 · pre-pass', split:'1 · pre-pass', chunks:'1 · pre-pass', dedup:'1 · pre-pass', cache:'1 · pre-pass', ipc:'1 · pre-pass', validate:'1 · pre-pass', entries:'1 · pre-pass', freq:'2 · counts', vocab:'3 · vocab', reconstruction:'4 · reconstruction', metadata:'5 · provenance', encode:'6 · proof', decode:'6 · proof', verify:'check'};
+const GROUP = {config:'setup', nfkc:'1 · pre-pass', split:'1 · pre-pass', chunks:'1 · pre-pass', dedup:'1 · pre-pass', cache:'1 · pre-pass', ipc:'1 · pre-pass', validate:'1 · pre-pass', peel:'1 · pre-pass', entries:'1 · pre-pass', freq:'2 · counts', vocab:'3 · vocab', reconstruction:'4 · reconstruction', metadata:'5 · provenance', encode:'6 · proof', decode:'6 · proof', verify:'check'};
 
 function stepCard(s){
   const card = h('section', {class:'card step', id:'step-'+s.id});

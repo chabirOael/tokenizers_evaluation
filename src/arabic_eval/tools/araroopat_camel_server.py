@@ -12,7 +12,7 @@ client spawns it via subprocess only.
 Wire format (one JSON object per line, both directions):
 
   client → server:
-    {"id": <int>, "op": "analyze",  "words": ["wordA", "wordB", ...]}
+    {"id": <int>, "op": "analyze",  "words": ["wordA", "wordB", ...], "top": 1}
     {"id": <int>, "op": "generate", "root": "...", "pattern": "..."}
     {"id": <int>, "op": "shutdown"}
 
@@ -60,6 +60,9 @@ except Exception as e:  # noqa: BLE001 — startup must catch everything
 _TRIMMED_FIELDS = (
     "root", "pattern", "stem", "diac", "lex", "pos",
     "prc3", "prc2", "prc1", "prc0", "enc0",
+    # Verb aspect (p=perfect, i=imperfect, c=command). Consumed only by
+    # the client's clitic peeler: the future س attaches to imperfects only.
+    "asp",
 )
 
 
@@ -72,8 +75,12 @@ def _init_backends() -> tuple:
     """Load analyzer/disambiguator/generator. Fail loud on error."""
     try:
         # Disambiguator wraps an Analyzer internally — no need for a
-        # separate analyzer instance for the analyze op.
-        disambig = MLEDisambiguator.pretrained()
+        # separate analyzer instance for the analyze op. `top` is a
+        # constructor argument: keep every ranked candidate here and let
+        # each request slice (default 1). For a word the MLE model has
+        # never seen every analysis scores 1.0, so rank 1 is just database
+        # order — the clitic peeler needs the whole list for its residuals.
+        disambig = MLEDisambiguator.pretrained(top=MAX_TOP)
         gen_db = MorphologyDB.builtin_db(flags="g")
         generator = Generator(gen_db)
         return disambig, generator
@@ -83,22 +90,46 @@ def _init_backends() -> tuple:
         sys.exit(3)
 
 
-def _op_analyze(disambig, words: List[str]) -> List[List[Dict[str, str]]]:
+# Upper bound on candidates per word. A word rarely has more than ~30 raw
+# analyses; the disambiguator sorts them all anyway, so a large cap costs
+# nothing per se — only the JSON payload grows, which is why requests
+# default to top=1 and the peeler asks for more only on its residuals.
+MAX_TOP = 32
+
+
+def _op_analyze(disambig, words: List[str], top: int = 1) -> List[List[Dict[str, str]]]:
     """Disambiguate a batch of words. One sublist per word, top-scored first.
 
     Empty sublist means no analysis. We pass the full list to
     `disambiguate(...)` in one call — CAMeL handles batching internally.
+    ``top`` caps the candidates per word (1..MAX_TOP).
     """
     if not words:
         return []
+    top = max(1, min(int(top or 1), MAX_TOP))
     disambig_results = disambig.disambiguate(list(words))
     out: List[List[Dict[str, str]]] = []
     for dr in disambig_results:
         if not dr.analyses:
             out.append([])
             continue
-        out.append([_trim(scored.analysis) for scored in dr.analyses])
+        ranked = sorted(dr.analyses, key=_rank_key)
+        out.append([_trim(scored.analysis) for scored in ranked[:top]])
     return out
+
+
+# The MLE disambiguator sorts by score only. For a word its model has never
+# seen every reading scores 1.0, and the analyzer's candidate order behind
+# that tie follows Python string hashing — i.e. it differs from process to
+# process. Left alone, the same word could get a different top-1 reading
+# (and the clitic peeler a different residual reading) on every run. Break
+# ties on the analysis content so the order is a function of the word only.
+_TIE_FIELDS = ("diac", "bw", "pos", "prc3", "prc2", "prc1", "prc0", "enc0", "asp")
+
+
+def _rank_key(scored) -> tuple:
+    a = scored.analysis
+    return (-float(scored.score), tuple(str(a.get(k) or "") for k in _TIE_FIELDS))
 
 
 def _op_generate(disambig, root: str, pattern: str) -> Optional[str]:
@@ -339,7 +370,7 @@ def _serve(disambig, generator) -> int:  # noqa: ARG001 (generator unused for no
         op = req.get("op")
         try:
             if op == "analyze":
-                results = _op_analyze(disambig, req.get("words") or [])
+                results = _op_analyze(disambig, req.get("words") or [], req.get("top", 1))
                 _send({"id": req_id, "ok": True, "results": results})
             elif op == "generate":
                 result = _op_generate(

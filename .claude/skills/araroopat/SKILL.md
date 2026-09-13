@@ -247,6 +247,65 @@ How it works — the three things that must stay in sync:
 
 `man_rel` was added to `CAMEL_CLITIC_SURFACE` (→ `من`) and `_ENCLITIC_TAGS` for `ممن`/`عمن` — mirrored in the server table. Vocab metadata gains `"prepositions": {p: {id, freq}}` and `config.prepositions`; `config.json` persists the inventory and `load()` restores it (a pre-PREP saved tokenizer loads with an empty inventory and behaves as before). Tests: `tests/test_araroopat_prepositions.py` (stub analyzer, no CAMeL). Known non-particles by design: `لكي` (CAMeL reports no clitic, and we never invent one), `كيلا` (lemma `كيل`).
 
+### The clitic peeler — combinations the CAMeL database lacks (added 2026-09-13)
+
+`calima-msa-r13` is table-driven and three things are simply not in its tables: **no prefix row
+carries `prc3`** (the interrogative أ — `أتكتب` has zero analyses), **`enc1` is not a feature**
+(193 suffix keys, none with two pronouns — every double-object verb fails: `سلمتكها`,
+`أعطيتنيه`), and the classical lengthened `كمو`/`همو` are absent. Backoff invents unknown
+*stems*, never unknown clitic combinations, so `أنلزمكموها` (Qurʾān 11:28) went to `[LIT_*]`.
+`calima-msa-s31` is LDC-muddled and unusable here.
+
+`peel_candidates` / `peel_compatible` / `merge_peeled` in `araroopat_backend.py` fix the class.
+Fallback chain in `MorphAnalyzer`: **native → peeler → bare particle → None (LIT)**. Rules that
+must survive any refactor:
+
+* **Only on a native miss.** A word CAMeL reads is never re-sliced (`أستكتبه` keeps Form X).
+* **The peel must remove something CAMeL cannot represent** — أ, a second pronoun, or
+  كمو/همو. A candidate that only removes و/ب/ال/… or one pronoun is refused: CAMeL models those
+  natively, so its refusal of the whole word was informative (`المجتهدي` is a nisba). This
+  single rule took false peels from 5.8 % to 0.8 % of CAMeL-rejected corpus types (0.6 % with the
+  person-rank and root-quality rules; **1.2 % on a 10,000-type sample once bare `ا` is accepted**,
+  see below). Don't relax it to "rescue" more words.
+* **Second object pronoun is 3rd person** (Wright §187); the 1sg object is `ني`, never `ي`.
+* **`س` needs an imperfect residual** (CAMeL `asp == "i"`, now in the bridge's trimmed fields):
+  `سلمناهموها` is `سلّمنا + …`, never `س + لمّنا`.
+* **The interrogative is `أ` *or bare `ا`*** — the platform's default preprocessing rewrites
+  `أ → ا` before text reaches the tokenizer, so `انلزمكموها` must peel too. Guard that comes
+  with it: bare `ا` directly followed by a `ل` proclitic — peeled *or* CAMeL's own on the
+  residual — is the article `ال` and is refused (`الحيفي` → `ا + لحيفي` was the single biggest
+  false-peel shape, 150 of 10,000 before the rule).
+* **Least-peeled candidate first**; CAMeL's own inner clitics on the residual are kept.
+* **Surface guard**: `dediac(residual.surface) == slice` *modulo alef variants*. CAMeL normalises
+  ة/ه, hamza and ى/ي on lookup — `قرضة` comes back as `قرض+ه` and would decode as `قرضه`, so
+  ة/ه and ى/ي stay strict; hamza is compared normalised because the pipeline's own preprocessing
+  rewrites it and the native path already decodes to CAMeL's hamza spelling. (The native path has
+  the ة/ه problem today, 16.7 % of analysed types — handoff P8.)
+* **No surface is rewritten.** `كمو`/`همو` are their own enclitic tokens; every peeled piece is a
+  literal slice, so `proclitics + residual + enclitics == word` by construction.
+* `Analysis.enc1`, `Analysis.peeled`, `CorpusEntry.peeled`, `_CACHE_FORMAT = 4`,
+  `clitic_peeler` (YAML / `config.json` / cache key), `vocab_metadata["peeled"]` for audit.
+* `_emit_alpha` is all-or-nothing on clitic tokens on the ROOT+PAT path too — an OOV
+  `[CLITICE_كمو]` sends the whole word to LIT (reversible) instead of emitting a literal clitic.
+
+* **Residual readings are walked, not just the top one.** The server keeps `MAX_TOP = 32`
+  candidates and each `analyze` request carries `top` (default 1 — the native whole-word path
+  is unchanged); `_candidates_many` fetches every valid reading of a residual and
+  `_resolve_peel` takes the first that passes `residual_verdict`. Needed because an unseen word's
+  readings all score 1.0 and rank 1 is database order (`ألزمنا`: the PV + `SUBJ:1P` reading is
+  6th; `وسأعطي`: the active is 4th behind three passives).
+* **Tie order is sorted on the server** (`_rank_key`: score, then analysis content). Before this
+  the order behind an MLE tie followed string hashing and differed per process — same word,
+  different top-1 on different runs. Don't remove the sort; a live test pins it.
+* **`peel_bare_alef` (default off)** accepts a bare `ا` as the interrogative for alef-normalised
+  text. It doubled false peels when on (`المسا` → `ا + لمس`, `اعرفوني` → `ا + عرفون + ي`);
+  measure before enabling.
+
+Known residuals: أ-initial transliterations whose residual is a well-formed verb (`أوهارا` →
+`هارا`) are the irreducible false-peel class (0.7 % of CAMeL-rejected types). Tests:
+`tests/test_araroopat_clitic_peeler.py` (every valid CAMeL reading recorded in `tests/data/`,
+regeneration snippet in the handoff §6b, plus a live tier).
+
 ### NTWS detection
 
 CAMeL marks loanwords / non-Arabic-source words with `root='NTWS'` ("Non-Triliteral Word Source"). Always reject these as analyses (return None) so they route to the LIT fallback path. Otherwise `[ROOT_NTWS]` pollutes the vocab. The check:
