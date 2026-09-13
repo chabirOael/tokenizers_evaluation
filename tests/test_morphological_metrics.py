@@ -567,8 +567,25 @@ class TestCeilingDiagnostics:
         assert m["root_extractor_agreement"] == 0.5
 
     def test_alignment_ceiling_excludes_uncleanable_words(self):
-        """ى is not in ARABIC_LETTERS, so clean_token_string drops it and the
-        word cannot be aligned by any tokenizer — not even a whole-word one."""
+        """An embedded digit is dropped by clean_token_string, so the word
+        cannot be aligned by any tokenizer — not even a whole-word one.
+        (ى used to be the canonical example until it was added to
+        ARABIC_LETTERS; digits/Latin are the remaining uncleanable case.)"""
+        ctx = _patched_extractors({"كتاب2": "كتب", "كتاب": "كتب"})
+        try:
+            tok = _FakeTokenizer({"كتاب2": ["كتاب2"], "كتاب": ["كتاب"]})
+            m = compute_morphological_metrics(
+                tok, _texts_with_words(["كتاب2", "كتاب"]),
+                sample_size=10, use_farasa=False,
+            )
+        finally:
+            ctx.__exit__(None, None, None)
+        assert m["morph_alignment_ceiling"] == 0.5
+        assert m["morph_alignment_coverage"] <= m["morph_alignment_ceiling"]
+
+    def test_alef_maksura_word_is_alignable(self):
+        """Regression: ى is an Arabic letter. A whole-word tokenizer must be
+        able to align مستشفى (previously dropped by clean_token_string)."""
         ctx = _patched_extractors({"مستشفى": "شفي", "كتاب": "كتب"})
         try:
             tok = _FakeTokenizer({"مستشفى": ["مستشفى"], "كتاب": ["كتاب"]})
@@ -578,5 +595,5 @@ class TestCeilingDiagnostics:
             )
         finally:
             ctx.__exit__(None, None, None)
-        assert m["morph_alignment_ceiling"] == 0.5
-        assert m["morph_alignment_coverage"] <= m["morph_alignment_ceiling"]
+        assert m["morph_alignment_ceiling"] == 1.0
+        assert m["morph_alignment_coverage"] == 1.0

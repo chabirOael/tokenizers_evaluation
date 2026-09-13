@@ -1,0 +1,775 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AraRooPat Train Explorer</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Amiri:wght@400;700&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Sans+Arabic:wght@400;500;600&display=swap">
+<style>
+:root{
+  --paper:#F2F5F4; --surface:#FFFFFF; --sunken:#E8EDEB; --line:#D2DAD7; --line-2:#BCC7C3;
+  --ink:#101A16; --ink-2:#44534D; --ink-3:#6E7E78;
+  --accent:#1E5FBF; --accent-soft:#DEE8FA;
+  --root:#A63A22; --root-soft:#F7E4DF;
+  --pat:#26619C;  --pat-soft:#DEE8F3;
+  --clitic:#0F6E62; --clitic-soft:#D7EFEB;
+  --prep:#6B4FA3; --prep-soft:#E9E2F5;
+  --lit:#6E807A; --lit-soft:#E5EAE8;
+  --unk:#8A5D00; --unk-soft:#F6ECD6;
+  --special:#7C8496; --special-soft:#E9EBF0;
+  --digit:#5B4B8A; --digit-soft:#E9E4F5;
+  --punct:#8A5D00; --punct-soft:#F6ECD6;
+  --good:#0F6E3F; --good-soft:#DCF1E5; --warn:#8A5D00; --bad:#A63A22; --bad-soft:#F7E4DF;
+  --shadow:0 1px 2px rgba(16,26,22,.05), 0 8px 24px -12px rgba(16,26,22,.18);
+  --radius:10px;
+  --sans:"IBM Plex Sans","Helvetica Neue",Arial,sans-serif;
+  --mono:"IBM Plex Mono",ui-monospace,"SF Mono",Menlo,monospace;
+  --ar:"IBM Plex Sans Arabic","Segoe UI",Tahoma,sans-serif;
+  --naskh:"Amiri","Times New Roman",serif;
+}
+@media (prefers-color-scheme:dark){
+  :root:not([data-theme="light"]){
+    --paper:#0D1412; --surface:#141D19; --sunken:#101815; --line:#25322D; --line-2:#33443D;
+    --ink:#E7EFEB; --ink-2:#A6B6B0; --ink-3:#7B8C86;
+    --accent:#77A6FF; --accent-soft:#17263F;
+    --root:#EF8A6C; --root-soft:#341A13;
+    --pat:#84B4E8;  --pat-soft:#132436;
+    --clitic:#48CBB6; --clitic-soft:#0D2A26;
+    --prep:#B9A3E6; --prep-soft:#221A38;
+    --lit:#8CA098; --lit-soft:#1B2422;
+    --unk:#E0B35C; --unk-soft:#2E2413;
+    --special:#98A0B4; --special-soft:#1C1F28;
+    --digit:#B7A6E8; --digit-soft:#221B33;
+    --punct:#E0B35C; --punct-soft:#2E2413;
+    --good:#5BC98A; --good-soft:#10281B; --warn:#E0B35C; --bad:#EF8A6C; --bad-soft:#341A13;
+    --shadow:0 1px 2px rgba(0,0,0,.4), 0 10px 30px -14px rgba(0,0,0,.7);
+  }
+}
+:root[data-theme="dark"]{
+  --paper:#0D1412; --surface:#141D19; --sunken:#101815; --line:#25322D; --line-2:#33443D;
+  --ink:#E7EFEB; --ink-2:#A6B6B0; --ink-3:#7B8C86;
+  --accent:#77A6FF; --accent-soft:#17263F;
+  --root:#EF8A6C; --root-soft:#341A13;
+  --pat:#84B4E8;  --pat-soft:#132436;
+  --clitic:#48CBB6; --clitic-soft:#0D2A26;
+  --prep:#B9A3E6; --prep-soft:#221A38;
+  --lit:#8CA098; --lit-soft:#1B2422;
+  --unk:#E0B35C; --unk-soft:#2E2413;
+  --special:#98A0B4; --special-soft:#1C1F28;
+  --digit:#B7A6E8; --digit-soft:#221B33;
+  --punct:#E0B35C; --punct-soft:#2E2413;
+  --good:#5BC98A; --good-soft:#10281B; --warn:#E0B35C; --bad:#EF8A6C; --bad-soft:#341A13;
+  --shadow:0 1px 2px rgba(0,0,0,.4), 0 10px 30px -14px rgba(0,0,0,.7);
+}
+
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0;background:var(--paper);color:var(--ink);font-family:var(--sans);font-size:14.5px;line-height:1.55;-webkit-font-smoothing:antialiased}
+.wrap{max-width:1240px;margin:0 auto;padding:0 24px}
+h1,h2,h3,h4{text-wrap:balance;margin:0}
+.eyebrow{font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--ink-3);font-weight:600}
+.ar,bdi.ar{font-family:var(--ar);direction:rtl;unicode-bidi:isolate}
+.naskh{font-family:var(--naskh);direction:rtl;unicode-bidi:isolate;font-size:1.25em}
+.mono{font-family:var(--mono);font-variant-numeric:tabular-nums}
+.muted{color:var(--ink-3)}
+.small{font-size:12px}
+a{color:var(--accent)}
+
+/* masthead */
+.masthead{border-bottom:1px solid var(--line);background:var(--surface)}
+.masthead .wrap{padding-top:26px;padding-bottom:0}
+.brandline{display:flex;align-items:flex-start;justify-content:space-between;gap:24px;flex-wrap:wrap}
+h1{font-size:32px;font-weight:600;letter-spacing:-.022em;line-height:1.1}
+h1 .amp{color:var(--ink-3);font-weight:400}
+.lede{margin-top:8px;max-width:70ch;color:var(--ink-2)}
+.provenance{border:1px solid var(--line);border-radius:var(--radius);padding:10px 14px;background:var(--sunken);font-size:12px;color:var(--ink-2);max-width:360px;line-height:1.5}
+.provenance b{color:var(--ink);font-weight:600}
+.dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--warn);margin-right:6px;vertical-align:middle}
+.dot.ok{background:var(--good)} .dot.bad{background:var(--bad)}
+.themebtn,.btn{border:1px solid var(--line);background:var(--surface);color:var(--ink-2);border-radius:99px;padding:6px 14px;font:inherit;font-size:12.5px;cursor:pointer;transition:.15s}
+.themebtn:hover,.btn:hover{border-color:var(--line-2);color:var(--ink)}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:600}
+.btn.primary:hover{filter:brightness(1.08)}
+.btn:disabled{opacity:.5;cursor:not-allowed}
+
+/* tabs */
+.tabs{display:flex;gap:4px;margin-top:18px}
+.tab{border:1px solid var(--line);border-bottom:none;background:var(--sunken);color:var(--ink-2);padding:9px 18px;border-radius:10px 10px 0 0;font:inherit;font-weight:500;cursor:pointer}
+.tab[aria-selected="true"]{background:var(--paper);color:var(--ink);position:relative;top:1px}
+.tab .n{font-family:var(--mono);color:var(--ink-3);margin-right:8px;font-size:11px}
+.panel{display:none}.panel.active{display:block}
+#explainer-frame{width:100%;height:calc(100vh - 170px);border:1px solid var(--line);border-radius:var(--radius);background:#fff;margin:18px 0}
+
+/* input */
+.inputgrid{display:grid;grid-template-columns:minmax(0,1.6fr) minmax(280px,.9fr);gap:18px;margin-top:20px}
+@media (max-width:900px){.inputgrid{grid-template-columns:1fr}}
+.card{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow)}
+.card .body{padding:16px 18px}
+textarea{width:100%;min-height:150px;resize:vertical;border:1px solid var(--line);border-radius:8px;padding:12px 14px;background:var(--paper);color:var(--ink);font-family:var(--naskh);font-size:20px;line-height:1.7;direction:rtl}
+textarea:focus{outline:2px solid var(--accent-soft);border-color:var(--accent)}
+.chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px}
+.chip{border:1px solid var(--line);background:var(--sunken);border-radius:99px;padding:4px 11px;font-size:12px;cursor:pointer;color:var(--ink-2)}
+.chip:hover{border-color:var(--accent);color:var(--ink)}
+.params{display:grid;grid-template-columns:1fr 1fr;gap:10px 14px}
+.params label{display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--ink-2)}
+.params input[type=number]{border:1px solid var(--line);border-radius:6px;padding:6px 8px;font:inherit;font-family:var(--mono);background:var(--paper);color:var(--ink)}
+.params .real{color:var(--ink-3);font-size:11px}
+.checkrow{display:flex;align-items:center;gap:8px;font-size:12.5px;color:var(--ink-2);margin-top:8px}
+.runrow{display:flex;align-items:center;gap:10px;margin-top:14px;flex-wrap:wrap}
+.status{font-size:12.5px;color:var(--ink-2)}
+.badge{display:inline-block;border-radius:99px;padding:2px 9px;font-size:11px;font-weight:600;letter-spacing:.02em;border:1px solid transparent}
+.badge.ok{background:var(--good-soft);color:var(--good)} .badge.bad{background:var(--bad-soft);color:var(--bad)}
+.badge.warn{background:var(--unk-soft);color:var(--unk)} .badge.info{background:var(--accent-soft);color:var(--accent)}
+.badge.neutral{background:var(--sunken);color:var(--ink-2);border-color:var(--line)}
+.err{margin-top:12px;background:var(--bad-soft);color:var(--bad);border-radius:8px;padding:10px 14px;font-family:var(--mono);font-size:12.5px;white-space:pre-wrap}
+
+/* playback */
+.playbar{position:sticky;top:0;z-index:20;background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow);margin-top:20px;padding:10px 14px;display:none}
+.playbar.on{display:block}
+.playrow{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.playrow .sp{flex:1}
+select{border:1px solid var(--line);border-radius:6px;padding:5px 8px;font:inherit;font-size:12.5px;background:var(--paper);color:var(--ink)}
+.rail{display:flex;gap:4px;margin-top:10px;overflow-x:auto;padding-bottom:4px}
+.rail button{flex:0 0 auto;border:1px solid var(--line);background:var(--sunken);color:var(--ink-3);border-radius:6px;padding:4px 8px;font:inherit;font-size:11px;cursor:pointer;font-family:var(--mono);white-space:nowrap;transition:.15s}
+.rail button.done{background:var(--accent-soft);color:var(--accent);border-color:transparent}
+.rail button.cur{background:var(--accent);color:#fff;border-color:var(--accent)}
+
+/* steps */
+#steps{margin:22px 0 80px;display:flex;flex-direction:column;gap:16px}
+.step{opacity:0;transform:translateY(14px);transition:opacity .45s ease,transform .45s ease;pointer-events:none;max-height:0;overflow:hidden;margin:0}
+.step.shown{opacity:1;transform:none;pointer-events:auto;max-height:none;overflow:visible}
+.step.cur{outline:2px solid var(--accent);outline-offset:2px}
+.stephead{display:flex;align-items:center;gap:12px;padding:12px 18px;border-bottom:1px solid var(--line);flex-wrap:wrap}
+.stepnum{font-family:var(--mono);font-size:11px;color:var(--accent);background:var(--accent-soft);border-radius:6px;padding:3px 8px;font-weight:600}
+.stephead h3{font-size:16px;font-weight:600;flex:1;min-width:200px}
+.ref{font-family:var(--mono);font-size:11px;color:var(--ink-3);background:var(--sunken);border:1px solid var(--line);border-radius:6px;padding:2px 8px}
+.dur{font-family:var(--mono);font-size:11px;color:var(--ink-3)}
+.stepbody{padding:16px 18px}
+.notes{margin:0 0 14px;padding:10px 14px;background:var(--sunken);border-left:3px solid var(--accent);border-radius:0 8px 8px 0;font-size:13px;color:var(--ink-2)}
+.notes p{margin:4px 0}
+details{margin-top:10px}
+summary{cursor:pointer;color:var(--accent);font-size:12.5px;font-weight:500;user-select:none}
+pre.wire{margin:6px 0 0;background:var(--sunken);border:1px solid var(--line);border-radius:8px;padding:10px 12px;font-family:var(--mono);font-size:11.5px;white-space:pre-wrap;word-break:break-all;direction:ltr;text-align:left;max-height:320px;overflow:auto}
+.wiredir{font-family:var(--mono);font-size:11px;font-weight:600;color:var(--accent);margin-top:8px}
+.wiredir.in{color:var(--good)}
+
+/* sequenced children */
+.seq>*{opacity:0;transform:translateY(6px)}
+.step.shown .seq>*{animation:pop .35s ease forwards;animation-delay:calc(var(--i,0)*var(--stagger,60ms))}
+@keyframes pop{to{opacity:1;transform:none}}
+.pulse{animation:pulse 1.2s ease-in-out infinite}
+@keyframes pulse{0%,100%{opacity:.5}50%{opacity:1}}
+
+/* tables */
+table{border-collapse:collapse;width:100%;font-size:13px}
+th{text-align:left;font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-3);font-weight:600;padding:6px 10px;border-bottom:1px solid var(--line)}
+td{padding:6px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+tr:last-child td{border-bottom:none}
+td.ar,th.ar{text-align:right}
+.tblwrap{overflow-x:auto;border:1px solid var(--line);border-radius:8px}
+.bar{height:6px;background:var(--accent);border-radius:3px;display:inline-block;vertical-align:middle;margin-left:8px;transition:width .6s ease}
+
+/* tokens / chips */
+.tok{display:inline-flex;align-items:center;gap:6px;border-radius:7px;padding:3px 9px;font-family:var(--mono);font-size:12.5px;border:1px solid transparent;margin:2px;white-space:nowrap;background:var(--sunken);color:var(--ink-2)}
+.tok .id{font-size:10px;opacity:.7}
+.tok>bdi{font-family:var(--ar);font-size:13.5px;direction:ltr;unicode-bidi:isolate}
+.tok.root>bdi,.tok.pat>bdi{font-weight:500}
+.tok.root{background:var(--root-soft);color:var(--root)} .tok.pat{background:var(--pat-soft);color:var(--pat)}
+.tok.cliticp,.tok.clitice{background:var(--clitic-soft);color:var(--clitic)}
+.tok.prep{background:var(--prep-soft);color:var(--prep)}
+.tok.char,.tok.lit{background:var(--lit-soft);color:var(--lit)}
+.tok.digit{background:var(--digit-soft);color:var(--digit)} .tok.punct{background:var(--punct-soft);color:var(--punct)}
+.tok.special{background:var(--special-soft);color:var(--special)} .tok.unk{background:var(--unk-soft);color:var(--unk)}
+.tok.hl{outline:2px solid var(--accent)}
+.tokrow{display:flex;flex-wrap:wrap;gap:2px;direction:rtl}
+.tokrow.ltr{direction:ltr}
+
+/* char strip */
+.charstrip{display:inline-flex;direction:rtl;gap:2px;flex-wrap:wrap}
+.cbox{display:inline-flex;flex-direction:column;align-items:center;min-width:24px;padding:3px 4px 2px;border-radius:5px;font-family:var(--naskh);font-size:18px;line-height:1;border:1px solid var(--line)}
+.cbox small{font-family:var(--mono);font-size:8.5px;margin-top:3px;letter-spacing:.02em}
+.cls-alpha{background:var(--pat-soft);color:var(--pat)} .cls-digit{background:var(--digit-soft);color:var(--digit)}
+.cls-punct{background:var(--punct-soft);color:var(--punct)} .cls-other{background:var(--unk-soft);color:var(--unk)} .cls-space{background:var(--sunken)}
+.run{display:inline-block;border-radius:6px;padding:3px 9px;font-family:var(--naskh);font-size:17px;border:1px dashed var(--line-2);margin:2px}
+.run.kept{border-style:solid;border-color:var(--pat);background:var(--pat-soft);color:var(--pat)}
+.run.drop{opacity:.55;text-decoration:line-through}
+.arrow{color:var(--ink-3);padding:0 8px;font-size:15px}
+
+/* chain */
+.chain{display:flex;flex-wrap:wrap;align-items:center;gap:4px;direction:ltr}
+.chain .node{font-family:var(--naskh);font-size:18px;direction:rtl;unicode-bidi:isolate;background:var(--sunken);border:1px solid var(--line);border-radius:6px;padding:2px 10px}
+.chain .node.final{background:var(--pat-soft);border-color:var(--pat);color:var(--pat)}
+.chain .op{font-family:var(--mono);font-size:11px;color:var(--ink-3);display:inline-flex;flex-direction:column;align-items:center}
+.chain .op b{color:var(--clitic);font-family:var(--ar);font-size:13px}
+.chain .op.noop b{color:var(--ink-3);text-decoration:line-through}
+.chain .op.contr{color:var(--warn)}
+
+/* pattern slot view */
+.pv{display:inline-flex;direction:rtl;gap:3px;align-items:flex-end;vertical-align:middle}
+.pv span{display:inline-flex;align-items:center;justify-content:center;min-width:26px;height:30px;padding:0 6px;border-radius:6px;font-family:var(--naskh);font-size:18px;border:1px solid var(--line);background:var(--sunken)}
+.pv .slot{background:var(--root-soft);color:var(--root);border-color:var(--root);font-family:var(--mono);font-size:12px;font-weight:600}
+.pv .slot i{font-style:normal;font-family:var(--naskh);font-size:16px;margin-left:2px}
+.pvlab{font-size:11px;color:var(--ink-3);margin-right:6px}
+
+/* gates */
+.gates{display:flex;flex-direction:column;gap:6px}
+.gate{display:grid;grid-template-columns:22px 210px 1fr;gap:10px;align-items:start;padding:6px 10px;border-radius:7px;background:var(--sunken);font-size:12.5px}
+.gate .mark{font-weight:700} .gate.ok .mark{color:var(--good)} .gate.no .mark{color:var(--bad)}
+.gate.no{background:var(--bad-soft)}
+.gate .gname{font-weight:600;color:var(--ink)}
+.gate .gdet{color:var(--ink-2);word-break:break-word}
+.kv{display:grid;grid-template-columns:repeat(auto-fill,minmax(170px,1fr));gap:6px 12px;font-size:12.5px}
+.kv div{background:var(--sunken);border-radius:6px;padding:5px 8px}
+.kv .k{font-family:var(--mono);font-size:10.5px;color:var(--ink-3);display:block}
+.kv .v{font-family:var(--naskh);font-size:17px;direction:rtl;unicode-bidi:isolate;display:block}
+.kv .v.lat{font-family:var(--mono);font-size:12px;direction:ltr}
+
+/* word cards */
+.wordcard{border:1px solid var(--line);border-radius:8px;margin-bottom:10px;overflow:hidden}
+.wordcard>summary{padding:8px 12px;background:var(--sunken);display:flex;align-items:center;gap:12px;list-style:none}
+.wordcard>summary::-webkit-details-marker{display:none}
+.wordcard>summary .w{font-family:var(--naskh);font-size:21px;direction:rtl;unicode-bidi:isolate;min-width:110px}
+.wordcard .inner{padding:12px}
+.subh{font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--ink-3);font-weight:600;margin:12px 0 6px}
+.subh:first-child{margin-top:0}
+
+/* vocab layout */
+.rangebar{display:flex;height:34px;border-radius:8px;overflow:hidden;border:1px solid var(--line);margin-bottom:10px}
+.rangebar div{display:flex;align-items:center;justify-content:center;font-family:var(--mono);font-size:10.5px;color:#fff;min-width:14px;transition:flex .6s ease}
+.rangebar .f-special{background:var(--special)} .rangebar .f-lit{background:var(--lit)} .rangebar .f-cliticp,.rangebar .f-clitice{background:var(--clitic)} .rangebar .f-prep{background:var(--prep)}
+.rangebar .f-char{background:var(--lit);opacity:.75} .rangebar .f-digit{background:var(--digit)} .rangebar .f-punct{background:var(--punct)}
+.rangebar .f-root{background:var(--root)} .rangebar .f-pat{background:var(--pat)}
+.legend{display:flex;flex-wrap:wrap;gap:8px 14px;font-size:12px;color:var(--ink-2);margin-bottom:12px}
+.legend i{display:inline-block;width:10px;height:10px;border-radius:3px;margin-right:5px;vertical-align:middle}
+.vocabgrid{max-height:360px;overflow:auto;border:1px solid var(--line);border-radius:8px;padding:8px;display:flex;flex-wrap:wrap;gap:2px;direction:ltr}
+.cut{opacity:.5;text-decoration:line-through}
+.twocol{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+@media (max-width:900px){.twocol{grid-template-columns:1fr}}
+.tier{font-family:var(--mono);font-size:10.5px;border-radius:5px;padding:2px 7px;font-weight:600}
+.tier1{background:var(--good-soft);color:var(--good)} .tier2{background:var(--accent-soft);color:var(--accent)} .tier3{background:var(--unk-soft);color:var(--unk)}
+.diffw{display:inline-block;font-family:var(--naskh);font-size:19px;padding:2px 8px;border-radius:6px;margin:2px;direction:rtl;unicode-bidi:isolate}
+.diffw.same{background:var(--good-soft);color:var(--good)} .diffw.diff{background:var(--bad-soft);color:var(--bad)}
+.bigcheck{display:flex;gap:14px;flex-wrap:wrap}
+.bigcheck div{flex:1;min-width:200px;border-radius:10px;padding:14px 16px;font-weight:600;border:1px solid var(--line)}
+.bigcheck .ok{background:var(--good-soft);color:var(--good)} .bigcheck .bad{background:var(--bad-soft);color:var(--bad)}
+.stat{display:inline-flex;flex-direction:column;background:var(--sunken);border-radius:8px;padding:8px 14px;margin:0 8px 10px 0}
+.stat b{font-size:20px;font-family:var(--mono);font-weight:600}
+.stat span{font-size:11px;color:var(--ink-3);letter-spacing:.06em;text-transform:uppercase}
+.snapbanner{display:none;margin-top:18px;border:1px solid var(--accent);background:var(--accent-soft);color:var(--ink);border-radius:var(--radius);padding:12px 16px;font-size:13px}
+.snapbanner.on{display:block}
+.snapbanner b{color:var(--accent)}
+textarea[readonly]{opacity:.85}
+footer{border-top:1px solid var(--line);padding:18px 0 40px;color:var(--ink-3);font-size:12px}
+</style>
+</head>
+<body>
+
+<header class="masthead"><div class="wrap">
+  <div class="brandline">
+    <div>
+      <div class="eyebrow">Arabic Roots &amp; Patterns tokenizer</div>
+      <h1>AraRooPat <span class="amp">·</span> Train Explorer</h1>
+      <p class="lede">Type any Arabic text and watch <code class="mono">AraRooPatTokenizer.train()</code> run on it, step by step —
+        the real code, the real CAMeL subprocess, every intermediate value. Nothing here is a paraphrase:
+        each card names the function it came from and the trace is cross-checked against an un-instrumented <code class="mono">train()</code> at the end.</p>
+    </div>
+    <div style="display:flex;flex-direction:column;gap:8px;align-items:flex-end">
+      <button class="themebtn" id="themebtn">Theme: system</button>
+      <div class="provenance" id="prov"><span class="dot pulse"></span>Connecting to local server…</div>
+    </div>
+  </div>
+  <div class="tabs" role="tablist">
+    <button class="tab" role="tab" aria-selected="true" data-panel="p-train"><span class="n">01</span>Training trace (live)</button>
+    <button class="tab" role="tab" aria-selected="false" data-panel="p-explainer"><span class="n">02</span>Encode explainer (existing)</button>
+  </div>
+</div></header>
+
+<main class="wrap">
+
+<!-- ===================== TAB 1: live training trace ===================== -->
+<section class="panel active" id="p-train">
+  <div class="snapbanner" id="snapbanner"></div>
+  <div class="inputgrid">
+    <div class="card"><div class="body">
+      <div class="eyebrow">Corpus — one line = one text</div>
+      <textarea id="text" spellcheck="false" placeholder="اكتب نصاً عربياً هنا…"></textarea>
+      <div class="chips" id="examples"></div>
+    </div></div>
+    <div class="card"><div class="body">
+      <div class="eyebrow">Vocab budget (araroopat.yaml params)</div>
+      <div class="params" style="margin-top:10px">
+        <label>max_roots <input type="number" id="p-max_roots" value="10000" min="0"><span class="real">real default 10000</span></label>
+        <label>max_patterns <input type="number" id="p-max_patterns" value="500" min="0"><span class="real">real default 500</span></label>
+        <label>min_root_freq <input type="number" id="p-min_root_freq" value="1" min="0"><span class="real">real default 2 — explorer uses 1</span></label>
+        <label>min_pattern_freq <input type="number" id="p-min_pattern_freq" value="1" min="0"><span class="real">real default 2 — explorer uses 1</span></label>
+      </div>
+      <label class="checkrow"><input type="checkbox" id="p-use_diacritized_surface"> use_diacritized_surface (keep tashkeel in reconstruction values)</label>
+      <div class="runrow">
+        <button class="btn primary" id="run">Run trace</button>
+        <button class="btn" id="save" disabled title="Download this trace as a single self-contained HTML file (results embedded, no server needed)">⤓ Save as standalone HTML</button>
+        <label class="small muted">Reveal <select id="speed"><option value="0">all at once</option><option value="900" selected>step by step</option><option value="1800">slow</option></select></label>
+        <span class="status" id="status"></span>
+      </div>
+      <div id="error" class="err" hidden></div>
+    </div></div>
+  </div>
+
+  <div class="playbar" id="playbar">
+    <div class="playrow">
+      <button class="btn" id="b-prev">◀ Prev</button>
+      <button class="btn" id="b-play">▶ Play</button>
+      <button class="btn" id="b-next">Next ▶</button>
+      <button class="btn" id="b-all">Show all</button>
+      <span class="sp"></span>
+      <span class="status" id="playstatus"></span>
+    </div>
+    <div class="rail" id="rail"></div>
+  </div>
+
+  <div id="steps"></div>
+</section>
+
+<!-- ===================== TAB 2: existing explainer ===================== -->
+<section class="panel" id="p-explainer">
+  <p class="small muted" style="margin:14px 0 0">The original static explainer (<code class="mono">docs/araroopat_explainer.html</code>), unchanged, served from the same local server. It walks the <em>encode</em> path on pre-baked sentences.</p>
+  <iframe id="explainer-frame" title="AraRooPat encode explainer" loading="lazy"></iframe>
+</section>
+
+</main>
+<footer><div class="wrap">Served by <code class="mono">debugger/serve_araroopat_explorer.py</code> · trace produced by <code class="mono">src/arabic_eval/tokenizers/araroopat_trace.py</code></div></footer>
+
+<!-- @@SNAPSHOT_INJECT@@ -->
+<script>
+/* ------------------------------------------------------------------ */
+/* utilities                                                           */
+/* ------------------------------------------------------------------ */
+const $ = (s, el=document) => el.querySelector(s);
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+function h(tag, attrs={}, ...kids){
+  const el = document.createElement(tag);
+  for (const [k,v] of Object.entries(attrs||{})){
+    if (k==='class') el.className = v;
+    else if (k==='html') el.innerHTML = v;
+    else if (k.startsWith('on')) el.addEventListener(k.slice(2), v);
+    else if (v!==null && v!==undefined) el.setAttribute(k, v);
+  }
+  for (const k of kids.flat()){
+    if (k===null||k===undefined) continue;
+    el.append(k instanceof Node ? k : document.createTextNode(String(k)));
+  }
+  return el;
+}
+const ar = (s, cls='') => h('bdi', {class:'naskh '+cls}, s ?? '');
+const mono = s => h('span', {class:'mono'}, s ?? '');
+const badge = (txt, kind='neutral') => h('span', {class:'badge '+kind}, txt);
+const tok = (t, fam, id, extra) => h('span', {class:'tok '+(fam||''), title: extra||''}, h('bdi', {}, t), id!==undefined ? h('span',{class:'id'},'#'+id) : null);
+const seq = (cls, ...kids) => { const el = h('div', {class:'seq '+(cls||'')}, ...kids); [...el.children].forEach((c,i)=>c.style.setProperty('--i', i)); return el; };
+const nz = v => v===null||v===undefined ? '∅' : v;
+const DIAC = new Set('\u064B\u064C\u064D\u064E\u064F\u0650\u0651\u0652\u0670\u0655\u0653\u0654');
+function patView(pat){
+  const c = h('span', {class:'pv', title:'slot view: digits are root-letter positions, everything else is literal template material'});
+  let last = null;
+  for (const ch of pat){
+    if (DIAC.has(ch) && last){ last.append(h('i',{}, ch)); continue; }
+    if ('1234'.includes(ch)){ last = h('span',{class:'slot'}, ch); }
+    else { last = h('span',{}, ch); }
+    c.append(last);
+  }
+  return c;
+}
+const famOfTok = t => t.startsWith('[ROOT_')?'root':t.startsWith('[PAT_')?'pat':t.startsWith('[CLITICP_')?'cliticp':t.startsWith('[CLITICE_')?'clitice':t.startsWith('[PREP_')?'prep':t.startsWith('[CHAR_')?'char':t.startsWith('[DIGIT_')?'digit':t.startsWith('[PUNCT_')?'punct':t.startsWith('[LIT')?'lit':t==='<unk>'?'unk':'special';
+
+function table(cols, rows){
+  const t = h('table', {}, h('thead', {}, h('tr', {}, ...cols.map(c => h('th', {class: c.ar?'ar':''}, c.label)))));
+  const tb = h('tbody');
+  for (const r of rows) tb.append(h('tr', {}, ...cols.map(c => { const v = c.render ? c.render(r) : r[c.key]; return h('td', {class:c.ar?'ar':''}, v instanceof Node ? v : String(nz(v))); })));
+  t.append(tb);
+  return h('div', {class:'tblwrap'}, t);
+}
+function wirePane(lines, title='NDJSON on the subprocess pipe'){
+  if (!lines || !lines.length) return null;
+  const d = h('details', {}, h('summary', {}, `${title} (${lines.length} line${lines.length>1?'s':''})`));
+  for (const l of lines){
+    d.append(h('div', {class:'wiredir '+(l.dir.startsWith('←')?'in':'')}, l.dir), h('pre', {class:'wire'}, l.line));
+  }
+  return d;
+}
+function chain(input, ops, finalCls='final'){
+  const c = h('div', {class:'chain'});
+  c.append(h('span', {class:'node'}, input));
+  ops.forEach(op => {
+    const o = h('span', {class:'op'+(op.stripped?'':' noop')+(op.contraction?' contr':'')},
+      h('span', {}, op.contraction ? 'لِ+الـ contraction' : (op.stripped ? 'strip' : 'no match')), h('b', {}, op.clitic), h('span', {}, '→'));
+    if (op.note) o.title = op.note;
+    c.append(o, h('span', {class:'node'}, op.after));
+  });
+  if (c.lastElementChild) c.lastElementChild.classList.add(finalCls);
+  return c;
+}
+function gatesView(g){
+  const wrap = seq('gates');
+  wrap.style.setProperty('--stagger','120ms');
+  for (const gate of g){
+    let det;
+    switch (gate.name){
+      case 'has root & pattern': det = h('span', {}, 'root=', ar(gate.root), ' pattern=', ar(gate.pattern)); break;
+      case "split radicals (keep '#')":
+        det = h('span', {}, ar(gate.root_raw), ' → [', ...gate.radicals.flatMap((r,i)=>[i?', ':'', r==='#'?h('b',{class:'mono'},'#'):ar(r)]), '] → ', ar(gate.root),
+          gate.weak_radicals.length ? h('span', {}, ' ', badge(`weak radical in slot ${gate.weak_radicals.join(',')} — kept as '#'`, 'warn')) : null,
+          gate.unseparated_fallback ? badge('unseparated root string — split char by char','warn') : null); break;
+      case '≥ 3 radicals': det = h('span', {}, `${gate.count} radicals`); break;
+      case 'not NTWS / FOREIGN': det = h('span', {}, gate.ok ? 'no loanword marker' : h('span', {}, 'CAMeL marks it ', mono('NTWS'), ' — "Non-Triliteral Word Source" (loanword / proper noun)')); break;
+      case 'Arabic-letter root guard': det = h('span', {}, ar(gate.root), ' ', mono(gate.codepoints.join(' '))); break;
+      case 'clitic tag → surface':
+        det = h('div', {class:'kv'}, ...Object.entries(gate.slots).map(([slot,s]) => h('div', {}, h('span',{class:'k'}, `${slot}: ${nz(s.tag)} → ${nz(s.normalized)}`), h('span',{class:'v'}, s.surface ?? '—')))); break;
+      case 'normalize_pattern → bare-stem template':
+        det = h('div', {}, chain(gate.pattern_raw, gate.proclitic_strip.ops),
+          gate.enclitic_strip ? h('div', {style:'margin-top:6px'}, h('span',{class:'small muted'},'then enclitic from the end: '), chain(gate.enclitic_strip.before, [gate.enclitic_strip])) : null,
+          h('div', {style:'margin-top:6px;display:flex;align-items:center;gap:8px;flex-wrap:wrap'}, 'bare pattern = ', ar(gate.pattern_bare), h('span',{class:'pvlab'},'slot view'), patView(gate.pattern_bare), ' ', gate.matches_real ? badge('== normalize_pattern()','ok') : badge('MISMATCH vs normalize_pattern()','bad'))); break;
+      case 'stem': det = h('span', {}, ar(gate.stem), ' ', gate.from_db ? badge('from CAMeL stem field','info') : badge('naive_pattern_fill fallback','warn')); break;
+      default: det = h('span', {}, JSON.stringify(gate));
+    }
+    wrap.append(h('div', {class:'gate '+(gate.ok?'ok':'no')}, h('span',{class:'mark'}, gate.ok?'✓':'✗'), h('span',{class:'gname'}, gate.name), h('div',{class:'gdet'}, det)));
+  }
+  return wrap;
+}
+function candidateDict(d){
+  return h('div', {class:'kv'}, ...Object.entries(d).map(([k,v]) => h('div', {}, h('span',{class:'k'},k), h('span',{class:'v '+(/^[\x00-\x7F]*$/.test(v)?'lat':'')}, v===''?'""':v))));
+}
+
+/* ------------------------------------------------------------------ */
+/* per-step renderers                                                  */
+/* ------------------------------------------------------------------ */
+const R = {};
+
+R.config = d => {
+  const rows = Object.entries(d.effective).map(([k,v]) => ({k, v:String(v), real:String(d.real_defaults[k]), ov: d.overridden.includes(k)}));
+  return h('div', {},
+    h('div', {}, h('span',{class:'stat'}, h('b',{},d.num_texts), h('span',{},'texts (lines)')), h('span',{class:'stat'}, h('b',{},'.venv-camel'), h('span',{},'CAMeL interpreter'))),
+    table([{label:'param', render:r=>mono(r.k)}, {label:'in effect', render:r=>h('span',{}, mono(r.v), ' ', r.ov?badge('overridden','warn'):null)}, {label:'real default', render:r=>mono(r.real)}], rows),
+    h('p', {class:'small muted', style:'margin:8px 0 0'}, 'CAMeL python: ', mono(d.camel_python)));
+};
+
+R.nfkc = d => seq('', ...d.rows.map(r => h('div', {style:'margin-bottom:8px'},
+  h('div', {}, h('span',{class:'small muted mono'}, `text[${r.i}] `), r.changed ? badge('changed','warn') : badge('unchanged','ok')),
+  h('div', {}, ar(r.after)),
+  r.changed ? h('div', {class:'small'}, ...r.changes.map(c => h('div',{}, ar(c.before), ' ', mono(c.before_cp+' '+c.before_name), ' → ', ar(c.after)))) : null)));
+
+R.split = d => h('div', {}, h('div',{}, h('span',{class:'stat'}, h('b',{},d.total_words), h('span',{},'words'))),
+  ...d.rows.map(r => h('div', {style:'margin-bottom:6px'}, h('span',{class:'small muted mono'}, `text[${r.i}] `), seq('tokrow', ...r.words.map(w => h('span',{class:'run kept', style:'border-style:solid;background:var(--sunken);color:var(--ink);border-color:var(--line)'}, w))))));
+
+R.chunks = d => {
+  const legend = h('div', {class:'legend'}, ...Object.entries(d.class_legend).map(([k,v]) => h('span', {title:v}, h('i',{class:'cbox cls-'+k, style:'width:10px;height:10px;min-width:0;padding:0'}), k)));
+  const rows = d.words.map(w => h('div', {style:'display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:6px 0;border-bottom:1px dashed var(--line)'},
+    h('span', {class:'charstrip'}, ...w.chars.map(c => h('span',{class:'cbox cls-'+c.cls, title:c.cp+' '+c.cls}, c.ch, h('small',{}, c.cls[0])))),
+    h('span',{class:'arrow'},'runs →'),
+    h('span', {style:'direction:rtl'}, ...w.runs.map(r => h('span', {class:'run '+(r.kept?'kept':'drop'), title: r.kept?'alpha run → analyzer':`${r.cls} run — never sent to the analyzer`}, r.text))),
+    h('span',{class:'arrow'},'chunks →'),
+    h('span', {}, w.chunks.length ? w.chunks.map(c => tok(c,'pat')) : badge('none','neutral'))));
+  const s = seq('', ...rows); s.style.setProperty('--stagger','90ms');
+  return h('div', {}, legend, s);
+};
+
+R.dedup = d => {
+  const max = Math.max(...d.word_counts.map(w=>w.count), 1);
+  return h('div', {}, h('div',{}, h('span',{class:'stat'}, h('b',{},d.unique), h('span',{},'unique chunks')), h('span',{class:'stat'}, h('b',{},d.occurrences), h('span',{},'occurrences'))),
+    table([{label:'chunk', ar:true, render:r=>ar(r.word)}, {label:'count', render:r=>h('span',{}, mono(r.count), h('span',{class:'bar', style:`width:${Math.round(120*r.count/max)}px`}))}], d.word_counts));
+};
+
+R.cache = d => h('div', {class:'kv'},
+  h('div',{}, h('span',{class:'k'},'cache_corpus_analysis'), h('span',{class:'v lat'}, String(d.cache_corpus_analysis))),
+  h('div',{}, h('span',{class:'k'},'default cache file'), h('span',{class:'v lat'}, d.default_cache_file)),
+  h('div',{}, h('span',{class:'k'},'exists on disk'), h('span',{class:'v lat'}, String(d.default_cache_exists))),
+  h('div',{style:'grid-column:1/-1'}, h('span',{class:'k'},'rule'), h('span',{class:'v lat'}, d.rule)));
+
+R.ipc = d => {
+  const out = h('div', {});
+  out.append(h('div',{}, h('span',{class:'stat'}, h('b',{},d.batches.length), h('span',{},'batch(es)')), h('span',{class:'stat'}, h('b',{},d.batch_size), h('span',{},'batch size'))));
+  out.append(h('div',{class:'subh'},'What the server does with each line'), h('ol', {class:'small', style:'margin:0 0 10px;padding-left:20px'}, ...d.server_pipeline.map(s => h('li',{},s))), h('p',{class:'small muted'}, 'server: ', mono(d.server_module)));
+  for (const b of d.batches){
+    const det = h('details', {open:true}, h('summary', {}, `batch ${b.index}: ${b.size} words · ${b.duration_ms} ms · candidates per word [${b.candidates_per_word.join(', ')}]`));
+    det.append(h('div',{class:'wiredir'},'→ server  (stdin)'), h('pre',{class:'wire'}, b.request), h('div',{class:'wiredir in'},'← server  (stdout)'), h('pre',{class:'wire'}, b.response));
+    out.append(det);
+  }
+  return out;
+};
+
+R.validate = d => {
+  const out = h('div', {});
+  out.append(h('div',{}, h('span',{class:'stat'}, h('b',{},d.analyzed), h('span',{},'analyzed → ROOT+PAT')), h('span',{class:'stat'}, h('b',{},d.total-d.analyzed), h('span',{},'rejected → LIT fallback'))));
+  const list = seq(''); list.style.setProperty('--stagger','80ms');
+  for (const w of d.words){
+    const det = h('details', {class:'wordcard'}, h('summary', {}, h('span',{class:'w'}, w.word),
+      w.analyzed ? badge('ROOT+PAT','ok') : badge('LIT fallback','warn'),
+      h('span',{class:'small muted'}, `${w.num_candidates} candidate${w.num_candidates===1?'':'s'}` + (w.accepted_index!==null ? ` · accepted #${w.accepted_index}` : ' · none accepted')),
+      w.matches_real ? null : badge('trace ≠ real','bad')));
+    const inner = h('div', {class:'inner'});
+    if (!w.candidates.length) inner.append(h('p',{class:'muted'}, 'CAMeL returned an empty candidate list — the word is not in the morphology DB at all.'));
+    for (const c of w.candidates){
+      inner.append(h('div',{class:'subh'}, `candidate #${c.index} — raw dict from the server (11 trimmed fields)`), candidateDict(c.candidate));
+      inner.append(h('div',{class:'subh'}, '_dict_to_analysis gates, in order'), gatesView(c.gates));
+      if (c.accepted){
+        inner.append(h('div',{class:'subh'},'→ Analysis (emission order)'), h('div',{class:'tokrow ltr'}, ...[c.analysis.prc3,c.analysis.prc2,c.analysis.prc1,c.analysis.prc0].filter(Boolean).map(x=>tok('[CLITICP_'+x+']','cliticp')), ...(c.analysis.particle ? [tok('[PREP_'+c.analysis.particle+']','prep')] : [tok('[ROOT_'+c.analysis.root+']','root'), tok('[PAT_'+c.analysis.pattern+']','pat')]), c.analysis.fem?tok('[CLITICE_'+c.analysis.fem+']','clitice'):null, c.analysis.enc0?tok('[CLITICE_'+c.analysis.enc0+']','clitice'):null),
+          h('div',{class:'kv',style:'margin-top:8px'}, ...['stem','surface','lemma','pos'].map(k => h('div',{}, h('span',{class:'k'},k), h('span',{class:'v'+(k==='pos'?' lat':'')}, c.analysis[k])))));
+      } else {
+        inner.append(h('div',{style:'margin-top:8px'}, badge('rejected: '+c.reject_reason,'bad')));
+      }
+    }
+    det.append(inner); list.append(det);
+  }
+  out.append(list);
+  return out;
+};
+
+R.entries = d => table([
+  {label:'word', ar:true, render:r=>ar(r.word)}, {label:'analyzed', render:r=>r.analyzed?badge('true','ok'):badge('false','warn')},
+  {label:'root', ar:true, render:r=>r.root?ar(r.root):'—'}, {label:'pattern (bare)', ar:true, render:r=>r.pattern?ar(r.pattern):'—'},
+  {label:'pattern_raw', ar:true, render:r=>r.pattern_raw?ar(r.pattern_raw):'—'}, {label:'stem', ar:true, render:r=>r.stem?ar(r.stem):'—'},
+  {label:'surface (diac)', ar:true, render:r=>r.surface?ar(r.surface):'—'},
+  {label:'proclitics', render:r=>h('span',{}, ...(r.proclitics||[]).map(c=>tok(c,'cliticp')))}, {label:'enclitics', render:r=>h('span',{}, ...(r.enclitics||[]).map(c=>tok(c,'clitice')))},
+], d.entries);
+
+R.freq = d => {
+  const ft = (rows, fam, label) => {
+    const max = Math.max(...rows.map(r=>r.freq),1);
+    return h('div', {}, h('div',{class:'subh'}, label + ` (${rows.length})`), rows.length ? table([
+      {label:'key', render:r=>tok(r.key, fam)}, {label:'freq', render:r=>h('span',{}, mono(r.freq), h('span',{class:'bar', style:`width:${Math.round(100*r.freq/max)}px`}))},
+      {label:'from words', ar:true, render:r=>h('span',{class:'tokrow'}, ...r.words.map(w=>h('span',{class:'run',style:'font-size:15px'},w)))}], rows) : h('p',{class:'muted small'},'empty'));
+  };
+  return h('div', {class:'twocol'}, ft(d.root_freq,'root','root_freq'), ft(d.pat_freq,'pat','pat_freq'), ft(d.proclitic_freq,'cliticp','proclitic_freq'), ft(d.enclitic_freq,'clitice','enclitic_freq'), ft(d.preposition_freq||[],'prep','preposition_freq'));
+};
+
+R.vocab = d => {
+  const total = d.vocab_size;
+  const bar = h('div', {class:'rangebar'}, ...d.ranges.map(r => h('div', {class:'f-'+r.family, style:`flex:${r.count} 1 0`, title:`${r.family}: ids ${r.start}–${r.end} (${r.count})`}, r.count>=Math.max(3,total/25) ? `${r.family} ${r.start}–${r.end}` : '')));
+  const legend = h('div', {class:'legend'}, ...d.ranges.map(r => h('span',{}, h('i',{class:'f-'+r.family, style:`background:var(--${r.family==='cliticp'||r.family==='clitice'?'clitic':r.family==='char'?'lit':r.family})`}), `${r.family} · ids ${r.start}–${r.end} · ${r.count}`)));
+  const layout = table([{label:'#', render:(r)=>mono(d.layout.indexOf(r)+1)}, {label:'family', render:r=>badge(r.family,'neutral')}, {label:'source', render:r=>mono(r.source)},
+    {label:'items', render:r=> r.items ? h('span',{class:'tokrow ltr'}, ...r.items.slice(0,80).map(x=>tok(x, r.family)), r.items.length>80?h('span',{class:'small muted'},` … +${r.items.length-80}`):null) : h('span',{class:'small muted'},'see budget below')}], d.layout);
+  const bud = (rows, fam, label, maxk, minf) => h('div', {}, h('div',{class:'subh'}, label), table([
+    {label:'candidate', render:r=>h('span',{class:r.kept?'':'cut'}, tok(r.key, fam), fam==='pat'?patView(r.key):null)}, {label:'freq', render:r=>mono(r.freq)},
+    {label:'decision', render:r=>r.kept?badge('kept','ok'):badge(r.reason,'bad')}], rows));
+  const grid = h('div', {class:'vocabgrid'}, ...d.vocab.map(v => tok(v.token, v.family, v.id)));
+  return h('div', {}, h('div',{}, h('span',{class:'stat'}, h('b',{},total), h('span',{},'vocab_size')), h('span',{class:'stat'}, h('b',{},d.root_budget.filter(r=>r.kept).length), h('span',{},'roots kept')), h('span',{class:'stat'}, h('b',{},d.pattern_budget.filter(r=>r.kept).length), h('span',{},'patterns kept'))),
+    bar, legend, h('div',{class:'subh'},'ID order — the add() calls in _build_vocab'), layout,
+    h('div',{class:'twocol', style:'margin-top:10px'}, bud(d.root_budget,'root','root budget','',''), bud(d.pattern_budget,'pat','pattern budget','','')),
+    h('div',{class:'subh'},'special_token_map'), h('div',{class:'kv'}, ...Object.entries(d.special_token_map).map(([k,v])=>h('div',{}, h('span',{class:'k'},k), h('span',{class:'v lat'},v)))),
+    h('div',{class:'subh'},`full vocab (${total} tokens, id order)`), grid);
+};
+
+R.reconstruction = d => {
+  const p1 = table([
+    {label:'word', ar:true, render:r=>ar(r.word)},
+    {label:'pass 1', render:r=> r.skipped ? badge('skipped: '+r.skipped,'neutral') : h('div',{},
+        h('div',{class:'small muted'}, 'surface (diac) → strip proclitics → strip enclitics = inflected stem'),
+        chain(r.surface, [...r.proclitic_strip.ops, ...r.enclitic_strip], 'final'),
+        h('div',{class:'small', style:'margin-top:4px'}, 'CAMeL stem field would have been ', ar(r.camel_stem), ' — ', h('span',{class:'muted'},'not used: it drops inflectional prefixes'), ' ', r.matches_real?null:badge('trace ≠ real','bad')))},
+    {label:'pair', render:r=> r.skipped ? '' : h('span',{}, tok(r.root,'root'), tok(r.pattern,'pat'))},
+  ], d.pass1);
+  const p2 = table([
+    {label:'(root_id, pat_id)', render:r=>h('span',{}, tok(r.root,'root',r.root_id), tok(r.pattern,'pat',r.pat_id))},
+    {label:'corpus realizations', render:r=>h('span',{}, ...r.realizations.map(x=>h('span',{class:'run',style:'font-size:15px'}, x.form, h('span',{class:'mono small'},' ×'+x.count))))},
+    {label:'chosen (most_common)', ar:true, render:r=>ar(r.chosen)}, {label:'stored value', render:r=>h('span',{}, ar(r.value), ' ', h('span',{class:'tier tier1'},'tier 1'), ' ', r.matches_real?badge('== real table','ok'):badge('≠ real','bad'))},
+  ], d.pass2);
+  const p3 = d.pass3.length ? table([
+    {label:'pair', render:r=>h('span',{}, tok(r.root,'root',r.root_id), tok(r.pattern,'pat',r.pat_id))},
+    {label:'generator', ar:true, render:r=>r.generator_result?ar(r.generator_result):'∅'}, {label:'naive fill', ar:true, render:r=>ar(r.naive_fill)},
+    {label:'stored', render:r=>h('span',{}, r.value?ar(r.value):'—', ' ', r.tier?h('span',{class:'tier tier'+r.tier},'tier '+r.tier):null)},
+  ], d.pass3) : h('p',{class:'muted small'},'no unresolved pairs — every (root, pattern) had a usable corpus surface, so the CAMeL generator was not called.');
+  const final = table([{label:'root_id', render:r=>mono(r.root_id)}, {label:'pat_id', render:r=>mono(r.pat_id)}, {label:'root', render:r=>tok(r.root,'root')}, {label:'pattern', render:r=>tok(r.pattern,'pat')}, {label:'→ inflected stem', ar:true, render:r=>ar(r.value)}], d.table);
+  return h('div', {}, h('div',{}, h('span',{class:'stat'}, h('b',{},d.size), h('span',{},'entries'))),
+    h('div',{class:'subh'},'pass 1 — inflected stem per entry'), p1, h('div',{class:'subh'},'pass 2 — most frequent realization per pair, diacritics stripped'), p2,
+    h('div',{class:'subh'},'pass 3 — generator / naive fill for pairs without a surface'), p3, h('div',{class:'subh'},'resulting _reconstruction table'), final);
+};
+
+R.metadata = d => h('div', {class:'twocol'},
+  h('div', {}, h('div',{class:'subh'},'roots'), table([{label:'root', render:r=>tok(r[0],'root',r[1].id)}, {label:'freq', render:r=>mono(r[1].freq)}, {label:'source', render:r=>badge(r[1].source,'neutral')}, {label:'example_words', ar:true, render:r=>h('span',{class:'tokrow'}, ...r[1].example_words.map(w=>h('span',{class:'run',style:'font-size:15px'},w)))}], Object.entries(d.roots))),
+  h('div', {}, h('div',{class:'subh'},'patterns'), table([{label:'pattern', render:r=>tok(r[0],'pat',r[1].id)}, {label:'freq', render:r=>mono(r[1].freq)}, {label:'examples (root, surface)', ar:true, render:r=>h('span',{class:'tokrow'}, ...r[1].examples.map(e=>h('span',{class:'run',style:'font-size:15px'}, e[0]+' · '+e[1])))}], Object.entries(d.patterns))),
+  h('div', {style:'grid-column:1/-1'}, h('div',{class:'subh'},'config recorded in vocab_metadata.json'), h('div',{class:'kv'}, ...Object.entries(d.config).map(([k,v])=>h('div',{}, h('span',{class:'k'},k), h('span',{class:'v lat'},String(v)))))));
+
+R.encode = d => {
+  const stream = seq('tokrow ltr', ...d.stream.map(s => tok(s.token, s.family==='special'&&s.token==='<unk>'?'unk':s.family, s.id, `pos ${s.pos} · metric_string="${s.metric_string}"`)));
+  stream.style.setProperty('--stagger','35ms');
+  return h('div', {}, h('div',{}, h('span',{class:'stat'}, h('b',{},d.num_tokens), h('span',{},'tokens')), h('span',{class:'stat'}, h('b',{},d.ipc_calls), h('span',{},'IPC calls (expect 0)'))),
+    h('div',{class:'subh'},'input'), h('div',{}, ar(d.input)), h('div',{class:'subh'},'token stream (hover for metric_string)'), stream,
+    h('div',{class:'subh'},'path per chunk'), table([{label:'chunk', ar:true, render:r=>ar(r.chunk)}, {label:'path', render:r=>r.path==='ROOT+PAT'?badge('ROOT+PAT','ok'):badge('LIT','warn')}, {label:'why', render:r=>r.why||''}], d.chunk_paths));
+};
+
+R.decode = d => h('div', {},
+  h('div',{}, h('span',{class:'stat'}, h('b',{},d.match_ignoring_spacing?'✓':'✗'), h('span',{},'round-trip (ignoring tashkeel + spacing)')), h('span',{class:'stat'}, h('b',{},d.match_ignoring_diacritics?'✓':'✗'), h('span',{},'ignoring tashkeel only')), h('span',{class:'stat'}, h('b',{},d.exact_match?'✓':'✗'), h('span',{},'exact match')), h('span',{class:'stat'}, h('b',{},d.tiers.length), h('span',{},'ROOT+PAT reconstructions'))),
+  h('div',{class:'subh'},'decoded'), h('div',{}, ar(d.decoded)),
+  h('div',{class:'subh'},'per-pair tier'), d.tiers.length ? table([{label:'root', render:r=>tok(r.root,'root')}, {label:'pattern', render:r=>tok(r.pattern,'pat')}, {label:'tier', render:r=>h('span',{class:'tier tier'+r.tier},'tier '+r.tier+(r.tier===1?' · lookup':r.tier===2?' · generator':' · naive fill'))}, {label:'→', ar:true, render:r=>ar(r.value)}], d.tiers) : h('p',{class:'muted small'},'no ROOT+PAT pairs in the stream'),
+  h('div',{class:'subh'},'aligned word diff (source vs decoded, tashkeel ignored — difflib alignment)'), h('div',{style:'direction:rtl'}, ...d.word_diff.flatMap(o => {
+    if (o.op==='equal') return o.dec.map(w => h('span',{class:'diffw same'}, w));
+    if (o.op==='insert') return o.dec.map(w => h('span',{class:'diffw', style:'background:var(--sunken);color:var(--ink-3)', title:'emitted by decode only (punctuation / digit split)'}, w));
+    if (o.op==='delete') return o.src.map(w => h('span',{class:'diffw diff', title:'missing in decoded'}, w+' ≠ ∅'));
+    return [h('span',{class:'diffw diff', title:`src: ${o.src.join(' ')} · dec: ${o.dec.join(' ')}`}, `${o.src.join(' ')} ≠ ${o.dec.join(' ')}`)];
+  })),
+  d.length_mismatch ? h('p',{class:'small muted'}, `word counts differ (${d.source_words.length} source vs ${d.decoded_words.length} decoded) — decode emits punctuation and digits as separate whitespace-joined units.`) : null);
+
+R.verify = d => h('div', {class:'bigcheck'},
+  h('div', {class:d.vocab_equal?'ok':'bad'}, (d.vocab_equal?'✓ ':'✗ ')+`vocab identical (${d.traced_vocab_size} vs ${d.fresh_vocab_size} tokens)`),
+  h('div', {class:d.reconstruction_equal?'ok':'bad'}, (d.reconstruction_equal?'✓ ':'✗ ')+'reconstruction table identical'));
+
+/* ------------------------------------------------------------------ */
+/* step card + playback                                                */
+/* ------------------------------------------------------------------ */
+const GROUP = {config:'setup', nfkc:'1 · pre-pass', split:'1 · pre-pass', chunks:'1 · pre-pass', dedup:'1 · pre-pass', cache:'1 · pre-pass', ipc:'1 · pre-pass', validate:'1 · pre-pass', entries:'1 · pre-pass', freq:'2 · counts', vocab:'3 · vocab', reconstruction:'4 · reconstruction', metadata:'5 · provenance', encode:'6 · proof', decode:'6 · proof', verify:'check'};
+
+function stepCard(s){
+  const card = h('section', {class:'card step', id:'step-'+s.id});
+  card.append(h('div', {class:'stephead'}, h('span',{class:'stepnum'}, String(s.num).padStart(2,'0')), h('h3',{}, s.title), h('span',{class:'badge neutral'}, GROUP[s.id]||''), h('span',{class:'ref', title:'source location'}, s.ref), h('span',{class:'dur'}, s.duration_ms+' ms')));
+  const body = h('div', {class:'stepbody'});
+  if (s.notes.length) body.append(h('div',{class:'notes'}, ...s.notes.map(n=>h('p',{},n))));
+  try { body.append((R[s.id]||(d=>h('pre',{class:'wire'},JSON.stringify(d,null,1))))(s.data)); }
+  catch(e){ body.append(h('div',{class:'err'}, 'renderer error: '+e.message)); console.error(e); }
+  const w = wirePane(s.wire); if (w) body.append(w);
+  card.append(body);
+  return card;
+}
+
+const P = {steps:[], cur:-1, timer:null, playing:false};
+function renderTrace(t){
+  P.steps = t.steps; P.cur = -1; stopPlay();
+  const cont = $('#steps'); cont.innerHTML = '';
+  const rail = $('#rail'); rail.innerHTML = '';
+  t.steps.forEach(s => { cont.append(stepCard(s)); rail.append(h('button', {onclick:()=>goTo(s.num)}, `${String(s.num).padStart(2,'0')} ${s.id}`)); });
+  $('#playbar').classList.add('on');
+  const speed = +$('#speed').value;
+  if (speed===0) showAll(); else { goTo(0); startPlay(speed); }
+}
+function paint(){
+  [...$('#steps').children].forEach((c,i)=>{ c.classList.toggle('shown', i<=P.cur); c.classList.toggle('cur', i===P.cur); });
+  [...$('#rail').children].forEach((b,i)=>{ b.classList.toggle('done', i<P.cur); b.classList.toggle('cur', i===P.cur); });
+  $('#playstatus').textContent = P.cur>=0 ? `step ${P.cur+1} / ${P.steps.length}` : '';
+  $('#b-play').textContent = P.playing ? '⏸ Pause' : '▶ Play';
+}
+function goTo(i){
+  P.cur = Math.max(0, Math.min(P.steps.length-1, i)); paint();
+  const el = $('#steps').children[P.cur];
+  if (el) setTimeout(()=>el.scrollIntoView({behavior:'smooth', block:'start'}), 30);
+}
+function showAll(){ stopPlay(); P.cur = P.steps.length-1; paint(); }
+function startPlay(ms){
+  stopPlay(); P.playing = true; paint();
+  P.timer = setInterval(()=>{ if (P.cur>=P.steps.length-1) { stopPlay(); return; } goTo(P.cur+1); }, ms || Math.max(600, +$('#speed').value||900));
+}
+function stopPlay(){ if (P.timer) clearInterval(P.timer); P.timer=null; P.playing=false; paint(); }
+$('#b-prev').onclick = ()=>{ stopPlay(); goTo(P.cur-1); };
+$('#b-next').onclick = ()=>{ stopPlay(); goTo(P.cur+1); };
+$('#b-all').onclick = showAll;
+$('#b-play').onclick = ()=>{ if (P.playing) stopPlay(); else { if (P.cur>=P.steps.length-1) goTo(0); startPlay(); } };
+
+/* ------------------------------------------------------------------ */
+/* run                                                                 */
+/* ------------------------------------------------------------------ */
+const EXAMPLES = [
+  ['clitics + weak root + لِلـ', 'والكتاب مفيد جداً، للولد الصغير.\nقال المعلم: الكتاب جديد وسيدرسه الطلاب في 2024!'],
+  ['enclitics', 'كتابهم على الطاولة وكتابك في الحقيبة، فهل رأيتهما؟'],
+  ['loanword → LIT', 'تعمل شركة مايكروسوفت مع جوجل على الذكاء الاصطناعي.'],
+  ['repeated root', 'درس الطالب الدرس، والمدرس يدرّس في المدرسة، والدروس مفيدة.'],
+  ['digits, punctuation, ى', 'وصل إلى المستشفى الساعة ٣:٤٥ صباحاً — ثم عاد إلى منزله.'],
+];
+$('#examples').append(...EXAMPLES.map(([lab, txt]) => h('button', {class:'chip', onclick:()=>{ $('#text').value = txt; }}, lab)));
+$('#text').value = EXAMPLES[0][1];
+
+async function run(){
+  const btn = $('#run'); btn.disabled = true; $('#error').hidden = true;
+  $('#status').innerHTML = ''; $('#status').append(h('span',{class:'dot pulse'}), 'running the real train() through CAMeL…');
+  const params = {};
+  for (const k of ['max_roots','max_patterns','min_root_freq','min_pattern_freq']) params[k] = +$('#p-'+k).value;
+  params.use_diacritized_surface = $('#p-use_diacritized_surface').checked;
+  try {
+    const r = await fetch('/api/trace', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({text: $('#text').value, params})});
+    const t = await r.json();
+    if (!r.ok || t.error) throw new Error(t.error || ('HTTP '+r.status));
+    $('#status').innerHTML = '';
+    $('#status').append(`${t.steps.length} steps · trace ${t.total_ms} ms · server ${t.server_ms} ms · `, t.all_ok ? badge('trace == real code ✓','ok') : badge('trace mismatch — see red badges','bad'));
+    renderTrace(t);
+    window.__trace = t;
+    $('#save').disabled = false;
+  } catch(e){
+    $('#status').textContent = ''; $('#error').hidden = false; $('#error').textContent = e.message;
+  } finally { btn.disabled = false; }
+}
+$('#run').onclick = run;
+$('#text').addEventListener('keydown', e => { if ((e.ctrlKey||e.metaKey) && e.key==='Enter') run(); });
+
+/* ------------------------------------------------------------------ */
+/* snapshot: save / restore a standalone HTML with the results embedded  */
+/* ------------------------------------------------------------------ */
+const SNAP = window.__EMBEDDED_TRACE || null;
+
+async function saveSnapshot(){
+  const t = window.__trace; if (!t) return;
+  const btn = $('#save'); btn.disabled = true; const label = btn.textContent; btn.textContent = 'building…';
+  try {
+    const r = await fetch('/', {cache:'no-store'});
+    if (!r.ok) throw new Error('could not fetch page source (HTTP '+r.status+')');
+    let src = await r.text();
+    const saved_at = new Date();
+    const payload = {...t, snapshot: {saved_at: saved_at.toISOString(), speed: $('#speed').value, params_ui: currentParams()}};
+    // Escape sequences that would terminate the <script> block or open a comment.
+    const json = JSON.stringify(payload).replace(/<\//g, '<\\/').replace(/<!--/g, '<\\!--').replace(/\u2028/g,'\\u2028').replace(/\u2029/g,'\\u2029');
+    const inject = '<script>window.__EMBEDDED_TRACE = ' + json + ';<\/script>';
+    if (!src.includes('<!-- @@SNAPSHOT_INJECT@@ -->')) throw new Error('injection anchor missing from page source');
+    src = src.replace('<!-- @@SNAPSHOT_INJECT@@ -->', inject);
+    const stamp = saved_at.toISOString().slice(0,19).replace(/[:T]/g,'-');
+    src = src.replace('<title>AraRooPat Train Explorer</title>', `<title>AraRooPat Trace ${stamp}</title>`);
+    const blob = new Blob([src], {type:'text/html;charset=utf-8'});
+    const a = h('a', {href: URL.createObjectURL(blob), download: `araroopat_trace_${stamp}.html`});
+    document.body.append(a); a.click(); a.remove(); setTimeout(()=>URL.revokeObjectURL(a.href), 5000);
+    $('#status').append(' ', badge('saved '+a.download, 'info'));
+  } catch(e){
+    $('#error').hidden = false; $('#error').textContent = 'save failed: ' + e.message;
+  } finally { btn.disabled = false; btn.textContent = label; }
+}
+function currentParams(){
+  const p = {};
+  for (const k of ['max_roots','max_patterns','min_root_freq','min_pattern_freq']) p[k] = +$('#p-'+k).value;
+  p.use_diacritized_surface = $('#p-use_diacritized_surface').checked;
+  return p;
+}
+$('#save').onclick = saveSnapshot;
+
+function enterSnapshotMode(t){
+  const when = new Date(t.snapshot.saved_at);
+  $('#text').value = t.input; $('#text').readOnly = true;
+  for (const [k,v] of Object.entries(t.params)){ const el = $('#p-'+k); if (!el) continue; if (el.type==='checkbox') el.checked = !!v; else el.value = v; el.disabled = true; }
+  $('#run').hidden = true; $('#save').hidden = true; $('#examples').style.display = 'none';
+  $('.tab[data-panel=p-train]').innerHTML = '<span class="n">01</span>Training trace (snapshot)';
+  if (t.snapshot.speed !== undefined) $('#speed').value = t.snapshot.speed;
+  const b = $('#snapbanner'); b.classList.add('on');
+  b.append(h('b',{},'Snapshot'), ` — results captured on ${when.toLocaleString()} and embedded in this file. No server or CAMeL needed; input and parameters are frozen. `,
+    h('span',{class:'small muted'}, 'Playback still works. Fonts load from Google Fonts when online and fall back to system fonts otherwise.'));
+  const p = $('#prov'); p.innerHTML = '';
+  p.append(h('span',{class:'dot ok'}), h('b',{},'standalone snapshot'), h('br'), `CAMeL was: `, h('span',{class:'mono'}, (t.steps[0].data.camel_python||'').split('/').slice(-3).join('/')), h('br'), `trace ${t.total_ms} ms · ${t.steps.length} steps`);
+  // The second tab needs the server; replace the iframe with a note.
+  const f = $('#explainer-frame'); f.replaceWith(h('p', {class:'notes'}, 'The encode explainer is not embedded in a snapshot — open it from the running server (', h('span',{class:'mono'},'debugger/serve_araroopat_explorer.py'), ').'));
+  $('#status').innerHTML = ''; $('#status').append(`${t.steps.length} steps · trace ${t.total_ms} ms · `, t.all_ok ? badge('trace == real code ✓','ok') : badge('trace mismatch — see red badges','bad'));
+  window.__trace = t;
+  renderTrace(t);
+}
+
+/* ------------------------------------------------------------------ */
+/* health, tabs, theme                                                 */
+/* ------------------------------------------------------------------ */
+if (!SNAP) fetch('/api/health').then(r=>r.json()).then(hh => {
+  const p = $('#prov'); p.innerHTML = '';
+  p.append(h('span',{class:'dot ok'}), h('b',{},'CAMeL bridge ready'), ` · warmed in ${hh.warm_ms ?? '?'} ms`, h('br'), h('span',{class:'mono'}, hh.camel_python || '.venv-camel'), h('br'), 'analyzer: MLEDisambiguator.pretrained() · generator: MorphologyDB.builtin_db("g")');
+}).catch(()=>{ const p = $('#prov'); p.innerHTML=''; p.append(h('span',{class:'dot bad'}), h('b',{},'server not reachable'), h('br'), 'start it with ', h('span',{class:'mono'}, '.venv/bin/python debugger/serve_araroopat_explorer.py --open')); });
+
+document.querySelectorAll('.tab').forEach(b => b.onclick = () => {
+  document.querySelectorAll('.tab').forEach(x=>x.setAttribute('aria-selected', x===b));
+  document.querySelectorAll('.panel').forEach(p=>p.classList.toggle('active', p.id===b.dataset.panel));
+  if (b.dataset.panel==='p-explainer'){ const f = $('#explainer-frame'); if (f && !f.src) f.src = '/explainer'; }
+});
+const root = document.documentElement, tb = $('#themebtn');
+const applyTheme = t => { if (t==='system') root.removeAttribute('data-theme'); else root.setAttribute('data-theme', t); tb.textContent = 'Theme: '+t; try{localStorage.setItem('arp-theme', t);}catch(_){} };
+tb.onclick = () => { const cur = root.getAttribute('data-theme')||'system'; applyTheme(cur==='system'?'dark':cur==='dark'?'light':'system'); };
+try { applyTheme(localStorage.getItem('arp-theme')||'system'); } catch(_){}
+if (SNAP) enterSnapshotMode(SNAP);
+</script>
+</body>
+</html>

@@ -137,6 +137,12 @@ def _op_generate(disambig, root: str, pattern: str) -> Optional[str]:
             a.get("prc3"), a.get("prc2"), a.get("prc1"), a.get("prc0"),
             a.get("enc0"),
         )
+        a_pat_bare = _strip_fem(
+            a_pat_bare,
+            [_surface(a.get(k)) for k in ("prc3", "prc2", "prc1", "prc0")],
+            _surface(a.get("enc0")),
+            a.get("stem") or "", a.get("pos") or "", a.get("diac") or "",
+        )
         if a_root == root and a_pat_bare == pattern:
             return a.get("stem") or naive
     return naive
@@ -168,6 +174,7 @@ _CLITIC_SURFACE: Dict[str, str] = {
     "lA_neg": "لا",
     "mA_neg": "ما", "mA_part": "ما", "mA_rel": "ما", "ma_rel": "ما",
     "mA_sub": "ما",
+    "man_rel": "من",
     "1s_dobj": "ي", "1s_poss": "ي", "1s_pron": "ي",
     "2ms_dobj": "ك", "2ms_poss": "ك", "2ms_pron": "ك",
     "2fs_dobj": "ك", "2fs_poss": "ك", "2fs_pron": "ك",
@@ -253,6 +260,41 @@ def _normalize_pattern(
     enc_s = _surface(enc0_tag)
     if enc_s:
         pat = _strip_end(pat, enc_s)
+    return pat
+
+
+def _strip_diac(s: str) -> str:
+    return "".join(c for c in s if c not in _PATTERN_DIACRITICS)
+
+
+def _strip_fem(pat: str, prc_s: List[str], enc_s: Optional[str],
+               stem: str, pos: str, diac: str) -> str:
+    """Mirror of ``strip_fem_from_pattern`` in araroopat_backend.py — the ة
+    suffix is factored out of client-side bare patterns, so the server-side
+    pattern must lose it too or tier-2 generation never matches. Keep in sync."""
+    idx = -1
+    for i in range(len(pat) - 1, -1, -1):
+        if pat[i] not in _PATTERN_DIACRITICS:
+            idx = i
+            break
+    if idx < 0:
+        return pat
+    last = pat[idx]
+    if last == "ة":
+        return pat[:idx]
+    if last == "ت" and enc_s and pos.startswith(("noun", "adj")) and _strip_diac(stem):
+        core = diac
+        prev = None
+        for sfc in prc_s:
+            if not sfc:
+                continue
+            out = _strip_start(core, sfc)
+            if out == core and sfc == "ال" and prev == "ل":
+                out = _strip_start(core, "ل")
+            prev, core = sfc, out
+        core = _strip_diac(_strip_end(core, enc_s))
+        if core == _strip_diac(stem) + "ت":
+            return pat[:idx]
     return pat
 
 

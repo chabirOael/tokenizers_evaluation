@@ -46,4 +46,27 @@ tokenizer:
     # Wrap encode() output with <s>...</s>. Standard for the platform.
     add_bos_eos: true
 
+    # Closed-class prepositions / particles emitted as ONE [PREP_*] token
+    # each (clitics still ride outside: [CLITICP_و] [PREP_إلى] [CLITICE_ه]).
+    # Matched on CAMeL's lemma, so عليه / منهم / وإلى all resolve to their
+    # base. Without this, من/عن/في fail the 3-radical gate and cost four
+    # [LIT_*]/[CHAR_*] tokens each, while إلى/على/حتى get a bogus root+wazn.
+    # Order = vocab ID order; omit the key to use this same default list.
+    prepositions:
+      - من
+      - إلى
+      - عن
+      - على
+      - في
+      - حتى
+      - منذ
+      - مذ
+      - خلا
+      - عدا
+      - حاشا
+      - متى
+      - لعل
+      - كي
+      - لولا
+
   save_path: "outputs/tokenizers/araroopat_balanced"

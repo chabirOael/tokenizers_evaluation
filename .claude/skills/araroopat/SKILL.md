@@ -28,8 +28,9 @@ The architectural commitment: **roots carry semantic content, patterns carry mor
 0–3:    specials              <pad> <s> </s> <unk>
 4–5:    literal markers       [LIT_BEGIN] [LIT_END]
 6+:     proclitics            [CLITICP_ال] [CLITICP_و] ...     (sorted by corpus freq)
-        enclitics             [CLITICE_ه] [CLITICE_ها] ...
-        chars                 [CHAR_ا]...[CHAR_ي] + diacritics
+        enclitics             [CLITICE_ة] (fixed first slot) [CLITICE_ه] [CLITICE_ها] ...
+        prepositions          [PREP_من] [PREP_إلى] ... (fixed inventory order, corpus-independent)
+        chars                 [CHAR_ا]...[CHAR_ي] + diacritics   (no [CHAR_ة] — see below)
         digits                [DIGIT_0]...[DIGIT_9] [DIGIT_٠]...[DIGIT_٩]
         punctuation           [PUNCT_.] [PUNCT_،] ...
         roots                 [ROOT_كتب] ... (top-K by freq, freq ≥ min_root_freq)
@@ -217,13 +218,34 @@ Both must use `_extract_alpha_chunks(word)` to get the contiguous Arabic-alpha r
 
 ### Cache invalidation across schema changes
 
-The `corpus_analysis.pkl` cache holds `CorpusEntry` instances. Adding/removing fields on `CorpusEntry` makes old caches mismatch silently (pickle restores old shape, then field accesses fail or return garbage). Always:
+The `corpus_analysis.pkl` cache holds *post-processed* `CorpusEntry` instances. Since 2026-09-13 the pickle is `{"key": (_CACHE_FORMAT, prepositions), "entries": [...]}` and `_corpus_prepass` re-runs the pre-pass on any key mismatch (a bare pre-versioned list also mismatches). **Bump `AraRooPatTokenizer._CACHE_FORMAT` whenever `_dict_to_analysis`, `normalize_pattern`, `strip_proclitics_from_start`, or `CorpusEntry` changes shape** — that is what makes the stale-cache trap a loud re-analysis instead of silent garbage. Changing the preposition inventory invalidates automatically. When in doubt:
 
 ```bash
 rm -rf outputs/tokenizers/araroopat_*_cache outputs/tokenizers/araroopat_smoke
 ```
 
-before re-running smoke tests after schema changes.
+### Closed-class prepositions → one `[PREP_*]` token (added 2026-09-13)
+
+A function word has no root or wazn to preserve, so `من إلى عن على في حتى منذ مذ خلا عدا حاشا متى لعل كي لولا` (`PREPOSITION_INVENTORY` in the backend; overridable via `prepositions:` in the YAML; `رب` deliberately excluded — it is overwhelmingly the noun *Lord*) are each **one fixed token**. Before this they were handled three inconsistent ways: the 2-radical ones failed the ≥3-radical gate and cost four `[LIT_*]`/`[CHAR_*]` tokens (`من`, the most frequent word in Arabic); `منذ` was NTWS; and the rest got a *bogus* decomposition (`إلى` → `[ROOT_#ل#][PAT_إِ2َى]`, `حتى` → `[ROOT_حتت]`, `لعل` → `[CLITICP_ل][ROOT_علل]…` with CAMeL misreading its first letter as the emphatic lam).
+
+How it works — the three things that must stay in sync:
+
+* **Intercept** (`_particle_analysis`, called first thing in `_dict_to_analysis`): candidate = CAMeL's lemma (`lex`, diacritics stripped — stable across clitics and the ى/ي alternation: `عليه` → lex `عَلَى`), then the whole inventory as a surface fallback (`حاشا` lemmatizes to `حاش`). Acceptance is **the exact inverse of the decoder**: the input chunk must equal `proclitics + join_particle_enclitic(p, enc0)`. Matching on the *input* (not CAMeL's normalized `diac`) is what keeps ي-spelled bare forms out — `علي` is also the name Ali and must decode verbatim, so it falls through to the ordinary root+pattern path. CAMeL's claimed proclitic stack is trimmed innermost-first until the surface agrees (the `لعل` case). Guards: `prc0=Al_det` or a `*_poss` enclitic ⇒ noun reading, skip. If CAMeL returns *nothing* but the bare chunk is in the inventory, `_first_valid` still emits the particle.
+* **Encode** (`_emit_alpha`): `[CLITICP_*]… [PREP_p] [CLITICE_*]`. All-or-nothing on vocab coverage — an OOV clitic token sends the whole chunk to LIT rather than emitting a half-tokenized word that decodes with a space in it. Metric string = the clitic-stripped *surface* (`علي` for `عليه`), so `aligned_token_offsets` still reconstructs the word.
+* **Decode** (`join_particle_enclitic`, applied only when `out[-1]` is a `[PREP_*]` — tracked by `last_particle`, so nouns are untouched): ى-final + pronoun → ي (`إليه`, `عليهم`); `من/عن` + `ما/من` assimilate (`مما ممن عما عمن`, table `_PARTICLE_ASSIMILATION`; the fused lemmas map back via its inverse); 1sg `ي` on a ي-final base merges (`إلي`, `في`).
+
+### The tāʾ marbūṭa ة is an enclitic, never a character (added 2026-09-13)
+
+`ة` is word-final by definition and is never a root letter; CAMeL's own `stem` field already excludes it (`مَدْرَسَة` → stem `مَدْرَس`, `قُضاة` → `قُضا`). AraRooPat therefore gives it its own character class (`_classify_char` → `"fem"`), removes it from `CHAR_INVENTORY` (**there is no `[CHAR_ة]`**), and emits it as **`[CLITICE_ة]` on every path**:
+
+* **ROOT+PAT** — `strip_fem_from_pattern` (backend) factors it out of the bare pattern: a pattern-final `ة` (+ case vowel) always; a pattern-final `ت` only when a pronoun follows, the POS is nominal, and `surface − proclitics − pronoun == stem + ت` (`مدرسته`, `حياته`, `ومدرستها`; rejects the radical ت of `بيته` and the verbal subject ت of `كتبته`). `مَ1ْ2َ3َةِ` and `مَ1ْ2َ3َت…` therefore collapse to **one** `[PAT_مَ1ْ2َ3َ]`. Emission `[ROOT] [PAT] [CLITICE_ة] [CLITICE_ه]`; `Analysis.fem` / `Analysis.enclitics` (emission order, innermost first) carry it; the reconstruction stem loses the ة (`strip_enclitics_from_end` accepts ة *or* ت for it).
+* **LIT** — `[LIT_BEGIN] …chars… [LIT_END] [CLITICE_ة]`; `[CLITICE_ة]` is a fixed first slot in the enclitic range so this never depends on corpus frequency. A lone `ة` is an empty literal + the token (`LIT_END` now always flushes, so it cannot glue onto the previous word).
+* **Chunking** — `_split_runs` (the one splitter shared by pre-pass and encode) lets an alpha run absorb a directly following ة and **end there**: `مدرسةكبيرة` → two chunks, decoded `مدرسة كبيرة`. A ة can never sit mid-chunk.
+* **Decode** — an enclitic attaching to a word ending in ة rewrites ة→ت first (general orthography, all words). Metric string of the token is its surface realisation (`ت` before a pronoun) so tokens still concatenate to the word.
+
+**Deliberately not done:** ة is *not* removed from the shared `arabic_text.ARABIC_LETTERS` and *not* added to `CAMEL_CLITIC_SURFACE` / `ENCLITIC_SURFACES`. Both feed the cross-tokenizer morphological metrics (`clean_token_string`, `aligned_token_offsets`, CSA); changing them would break alignment for every ة-final word on all nine tokenizers — the `ى` bug reintroduced for a far more frequent letter. The "ة is an enclitic" rule lives entirely inside AraRooPat. Server mirror: `_strip_fem` in `araroopat_camel_server.py` (tier-2 generator match must see the same bare pattern). Tests: `tests/test_araroopat_taa_marbuta.py`.
+
+`man_rel` was added to `CAMEL_CLITIC_SURFACE` (→ `من`) and `_ENCLITIC_TAGS` for `ممن`/`عمن` — mirrored in the server table. Vocab metadata gains `"prepositions": {p: {id, freq}}` and `config.prepositions`; `config.json` persists the inventory and `load()` restores it (a pre-PREP saved tokenizer loads with an empty inventory and behaves as before). Tests: `tests/test_araroopat_prepositions.py` (stub analyzer, no CAMeL). Known non-particles by design: `لكي` (CAMeL reports no clitic, and we never invent one), `كيلا` (lemma `كيل`).
 
 ### NTWS detection
 

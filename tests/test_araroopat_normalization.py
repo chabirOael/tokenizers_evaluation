@@ -36,7 +36,9 @@ class TestWeakRadicalPlaceholder:
         assert roots == {"ق#ل"}
 
     def test_sub_trilateral_still_rejected(self):
-        assert _dict_to_analysis({"root": "ف.#", "pattern": "1ِي", "diac": "فِي"}) is None
+        # هل is 2-radical and NOT a listed preposition (في would be — see
+        # tests/test_araroopat_prepositions.py for the particle path).
+        assert _dict_to_analysis({"root": "ه.ل", "pattern": "1َ2", "diac": "هَل"}) is None
         assert _dict_to_analysis({"root": "#.#", "pattern": "أَيّ", "diac": "أَيّ"}) is None
 
     def test_database_markers_still_rejected(self):

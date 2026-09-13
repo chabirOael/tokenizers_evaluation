@@ -31,12 +31,14 @@ from tqdm import tqdm
 
 from arabic_eval.registry import tokenizer_registry
 from arabic_eval.tokenizers.araroopat_backend import (
+    PREPOSITION_INVENTORY,
+    TAA_MARBUTA,
     Analysis,
     CorpusEntry,
     MorphAnalyzer,
-    _strip_clitic_from_end,
-    _strip_clitic_from_start,
+    join_particle_enclitic,
     naive_pattern_fill,
+    strip_enclitics_from_end,
     strip_proclitics_from_start,
 )
 from arabic_eval.tokenizers.base import BaseTokenizer, EmbeddingType, TokenizerOutput
@@ -59,6 +61,7 @@ PFX_ROOT = "[ROOT_"
 PFX_PAT = "[PAT_"
 PFX_CLITICP = "[CLITICP_"  # proclitic (article, conjunction, preposition, ...)
 PFX_CLITICE = "[CLITICE_"  # enclitic (object/possessive pronouns)
+PFX_PREP = "[PREP_"        # closed-class preposition/particle, one token each
 PFX_CHAR = "[CHAR_"
 PFX_PUNCT = "[PUNCT_"
 PFX_DIGIT = "[DIGIT_"
@@ -83,8 +86,10 @@ PUNCT_INVENTORY = (
 DIGIT_INVENTORY = list("0123456789") + list("٠١٢٣٤٥٦٧٨٩")
 
 # Arabic character inventory for the CHAR fallback. We include letters and
-# diacritics; long vowels are already in ``ARABIC_LETTERS``.
-CHAR_INVENTORY = sorted(ARABIC_LETTERS) + sorted(ARABIC_DIACRITICS)
+# diacritics; long vowels are already in ``ARABIC_LETTERS``. The tāʾ marbūṭa
+# is NOT a char here: it is always word-final and always emitted as the
+# enclitic [CLITICE_ة] (on every path, LIT included), never as [CHAR_ة].
+CHAR_INVENTORY = sorted(ARABIC_LETTERS - {TAA_MARBUTA}) + sorted(ARABIC_DIACRITICS)
 
 
 def _clean_arabic(text: str) -> str:
@@ -97,7 +102,13 @@ def _is_arabic_alpha(ch: str) -> bool:
 
 
 def _classify_char(ch: str) -> str:
-    """Return one of {'alpha', 'digit', 'punct', 'space', 'other'}."""
+    """Return one of {'alpha', 'fem', 'digit', 'punct', 'space', 'other'}.
+
+    'fem' is the tāʾ marbūṭa: it closes the alpha run it follows (see
+    ``_split_runs``) so it can never sit in the middle of a chunk.
+    """
+    if ch == TAA_MARBUTA:
+        return "fem"
     if _is_arabic_alpha(ch):
         return "alpha"
     if ch in DIGIT_INVENTORY:
@@ -127,6 +138,11 @@ class AraRooPatTokenizer(BaseTokenizer):
         self.use_diacritized_surface: bool = bool(kwargs.get("use_diacritized_surface", False))
         self.cache_corpus_analysis: bool = bool(kwargs.get("cache_corpus_analysis", True))
         self.add_bos_eos: bool = bool(kwargs.get("add_bos_eos", True))
+        # Closed-class words emitted as a single [PREP_*] token. Order is
+        # the vocab ID order. See PREPOSITION_INVENTORY in the backend.
+        self.prepositions: Tuple[str, ...] = tuple(
+            kwargs.get("prepositions") or PREPOSITION_INVENTORY
+        )
 
         # State.
         self._backend: Optional[MorphAnalyzer] = None
@@ -144,7 +160,10 @@ class AraRooPatTokenizer(BaseTokenizer):
 
     def _ensure_backend(self) -> MorphAnalyzer:
         if self._backend is None:
-            self._backend = MorphAnalyzer(generator_timeout_ms=self.generator_timeout_ms)
+            self._backend = MorphAnalyzer(
+                generator_timeout_ms=self.generator_timeout_ms,
+                particles=frozenset(self.prepositions),
+            )
         return self._backend
 
     # ------------------------------------------------------------------
@@ -200,19 +219,26 @@ class AraRooPatTokenizer(BaseTokenizer):
         pat_freq: Counter = Counter()
         proclitic_freq: Counter = Counter()
         enclitic_freq: Counter = Counter()
+        particle_freq: Counter = Counter()
         for e in entries:
-            if e.analyzed and e.root and e.pattern:
+            if not e.analyzed:
+                continue
+            if e.particle:
+                particle_freq[e.particle] += 1
+            elif e.root and e.pattern:
                 root_freq[e.root] += 1
                 pat_freq[e.pattern] += 1
-                for c in e.proclitics:
-                    proclitic_freq[c] += 1
-                for c in e.enclitics:
-                    enclitic_freq[c] += 1
+            else:
+                continue
+            for c in e.proclitics:
+                proclitic_freq[c] += 1
+            for c in e.enclitics:
+                enclitic_freq[c] += 1
 
         logger.info(
-            "Pre-pass stats: %d analyzed words, %d unique roots, %d unique patterns, "
-            "%d proclitic surfaces, %d enclitic surfaces.",
-            sum(1 for e in entries if e.analyzed),
+            "Pre-pass stats: %d analyzed words (%d prepositions), %d unique roots, "
+            "%d unique patterns, %d proclitic surfaces, %d enclitic surfaces.",
+            sum(1 for e in entries if e.analyzed), sum(particle_freq.values()),
             len(root_freq), len(pat_freq),
             len(proclitic_freq), len(enclitic_freq),
         )
@@ -224,7 +250,8 @@ class AraRooPatTokenizer(BaseTokenizer):
         self._build_reconstruction(entries)
 
         # ---- Step 5: provenance metadata ----
-        self._build_metadata(root_freq, pat_freq, proclitic_freq, enclitic_freq, entries)
+        self._build_metadata(root_freq, pat_freq, proclitic_freq, enclitic_freq,
+                             entries, particle_freq)
 
         logger.info("AraRooPat trained — vocab size: %d", self.vocab_size)
         logger.info(
@@ -235,9 +262,16 @@ class AraRooPatTokenizer(BaseTokenizer):
             sum(1 for t in self._vocab if t.startswith(PFX_CLITICP)),
             sum(1 for t in self._vocab if t.startswith(PFX_CLITICE)),
             sum(1 for t in self._vocab
-                if t.startswith((PFX_CHAR, PFX_PUNCT, PFX_DIGIT, "<", "[L"))),
+                if t.startswith((PFX_PREP, PFX_CHAR, PFX_PUNCT, PFX_DIGIT, "<", "[L"))),
             len(self._reconstruction),
         )
+
+    # Bump when the post-processing in araroopat_backend changes shape
+    # (_dict_to_analysis, normalize_pattern, strip_proclitics_from_start, ...).
+    _CACHE_FORMAT = 3
+
+    def _cache_key(self) -> Tuple[Any, ...]:
+        return (self._CACHE_FORMAT, tuple(self.prepositions))
 
     def _corpus_prepass(self, texts: List[str], cache_dir: Path) -> List[CorpusEntry]:
         """Analyze every distinct *alpha chunk* in the corpus once. Cache to disk.
@@ -260,7 +294,14 @@ class AraRooPatTokenizer(BaseTokenizer):
         if self.cache_corpus_analysis and cache_file.exists():
             try:
                 with cache_file.open("rb") as f:
-                    cached = pickle.load(f)
+                    payload = pickle.load(f)
+                # The cache stores *post-processed* entries, so it is only
+                # valid for the analysis logic + preposition inventory that
+                # produced it. Anything else re-runs the pre-pass rather
+                # than silently training on stale analyses.
+                if not isinstance(payload, dict) or payload.get("key") != self._cache_key():
+                    raise ValueError("cache format/key mismatch")
+                cached = payload["entries"]
                 cached_words = {e.word for e in cached}
                 if cached_words >= set(unique_words):
                     logger.info("Loaded cached corpus analysis (%d entries) from %s",
@@ -293,7 +334,7 @@ class AraRooPatTokenizer(BaseTokenizer):
         if self.cache_corpus_analysis:
             cache_dir.mkdir(parents=True, exist_ok=True)
             with cache_file.open("wb") as f:
-                pickle.dump(entries, f)
+                pickle.dump({"key": self._cache_key(), "entries": entries}, f)
             # JSON view for quick inspection.
             with (cache_dir / "corpus_analysis.json").open("w", encoding="utf-8") as f:
                 json.dump([e.to_dict() for e in entries[:10000]], f,
@@ -329,10 +370,17 @@ class AraRooPatTokenizer(BaseTokenizer):
             if freq < 1 or not clitic:
                 continue
             add(f"{PFX_CLITICP}{clitic}{SFX}")
+        # [CLITICE_ة] is a fixed slot at the head of the enclitic range: the
+        # LIT path relies on it for every ة-final word, corpus or not.
+        add(f"{PFX_CLITICE}{TAA_MARBUTA}{SFX}")
         for clitic, freq in sorted(enclitic_freq.items(), key=lambda kv: (-kv[1], kv[0])):
             if freq < 1 or not clitic:
                 continue
             add(f"{PFX_CLITICE}{clitic}{SFX}")
+        # Then: prepositions / particles, in the configured (fixed) order —
+        # not frequency-sorted, so IDs don't depend on the corpus.
+        for prep in self.prepositions:
+            add(f"{PFX_PREP}{prep}{SFX}")
         # Then: chars (Arabic letters + diacritics), in fixed order.
         for ch in CHAR_INVENTORY:
             add(f"{PFX_CHAR}{ch}{SFX}")
@@ -436,8 +484,10 @@ class AraRooPatTokenizer(BaseTokenizer):
         proclitic_freq: Counter,
         enclitic_freq: Counter,
         entries: List[CorpusEntry],
+        particle_freq: Optional[Counter] = None,
     ) -> None:
         """Provenance: which roots/patterns came from which words, with examples."""
+        particle_freq = particle_freq or Counter()
         # Build root → example words map (up to 5 each).
         # Hoist the two vocab-derived sets out of the loop: they were being
         # rebuilt per entry, which is O(entries x vocab). At 506k analyzed
@@ -485,7 +535,13 @@ class AraRooPatTokenizer(BaseTokenizer):
             "patterns": patterns_meta,
             "proclitic_freq": dict(proclitic_freq),
             "enclitic_freq": dict(enclitic_freq),
+            "prepositions": {
+                prep: {"id": self._vocab[f"{PFX_PREP}{prep}{SFX}"],
+                       "freq": particle_freq.get(prep, 0)}
+                for prep in self.prepositions
+            },
             "config": {
+                "prepositions": list(self.prepositions),
                 "max_roots": self.max_roots,
                 "max_patterns": self.max_patterns,
                 "min_root_freq": self.min_root_freq,
@@ -549,15 +605,8 @@ class AraRooPatTokenizer(BaseTokenizer):
         """Walk a whitespace word, emitting tokens for runs of alpha/digit/punct."""
         if not word:
             return
-        # Split into runs by character class.
-        i = 0
-        n = len(word)
-        while i < n:
-            cls = _classify_char(word[i])
-            j = i + 1
-            while j < n and _classify_char(word[j]) == cls:
-                j += 1
-            chunk = word[i:j]
+        # Split into runs by character class (shared with the pre-pass).
+        for cls, chunk in _split_runs(word):
             if cls == "alpha":
                 self._emit_alpha(chunk, ids, toks)
             elif cls == "digit":
@@ -572,12 +621,35 @@ class AraRooPatTokenizer(BaseTokenizer):
                 # Unknown char (Latin letter, emoji, ...) — UNK.
                 ids.append(self._special_token_map["unk_token"])
                 toks.append("")
-            i = j
 
     def _emit_alpha(self, chunk: str, ids: List[int], toks: List[str]) -> None:
         """Emit tokens for an Arabic alphabetic chunk: try analyzer, fall back to LIT."""
         backend = self._ensure_backend()
         a: Optional[Analysis] = backend.analyze(chunk)
+
+        if a is not None and a.particle:
+            prep_tok = f"{PFX_PREP}{a.particle}{SFX}"
+            proc = tuple(c for c in (a.prc3, a.prc2, a.prc1, a.prc0) if c)
+            enc = tuple(c for c in (a.enc0,) if c)
+            # Commit to the PREP path only if every token it needs exists;
+            # a half-tokenized word (LIT clitic + PREP) would decode with a
+            # space in it, so an OOV clitic sends the whole chunk to LIT.
+            needed = [prep_tok] + [f"{PFX_CLITICP}{c}{SFX}" for c in proc] \
+                + [f"{PFX_CLITICE}{c}{SFX}" for c in enc]
+            if all(t in self._vocab for t in needed):
+                for c in proc:
+                    self._emit_clitic(c, ids, toks, kind="p")
+                ids.append(self._vocab[prep_tok])
+                # Metric string = the clitic-stripped *surface* (علي for
+                # عليه, not the lemma على) so the cleaned tokens still
+                # concatenate back into the word for aligned_token_offsets.
+                core = _strip_clitic_surfaces(strip_diacritics(a.surface or chunk), proc, enc)
+                toks.append(_clean_arabic(core) or _clean_arabic(a.particle))
+                if a.enc0:
+                    self._emit_clitic(a.enc0, ids, toks, kind="e")
+                return
+            self._emit_lit(chunk, ids, toks)
+            return
 
         if a is not None and a.root and a.pattern:
             root_tok = f"{PFX_ROOT}{a.root}{SFX}"
@@ -595,9 +667,14 @@ class AraRooPatTokenizer(BaseTokenizer):
                 # (e.g. ي of present-tense verbs). Needed for
                 # pattern_conservation_rate.
                 proc = tuple(c for c in (a.prc3, a.prc2, a.prc1, a.prc0) if c)
-                enc = tuple(c for c in (a.enc0,) if c)
+                enc = a.enclitics
                 inflected = _strip_clitic_surfaces(a.surface or chunk, proc, enc)
                 toks.append(_clean_arabic(strip_diacritics(inflected or chunk)))
+                if a.fem:
+                    # Metric string = the surface realization (ت before a
+                    # pronoun) so the tokens still concatenate to the word.
+                    self._emit_clitic(a.fem, ids, toks, kind="e",
+                                      metric="ت" if a.enc0 else TAA_MARBUTA)
                 if a.enc0:
                     self._emit_clitic(a.enc0, ids, toks, kind="e")
                 return
@@ -606,19 +683,25 @@ class AraRooPatTokenizer(BaseTokenizer):
         self._emit_lit(chunk, ids, toks)
 
     def _emit_clitic(self, clitic: str, ids: List[int], toks: List[str],
-                     kind: str) -> None:
+                     kind: str, metric: Optional[str] = None) -> None:
         """Emit a clitic with explicit kind ('p'=proclitic, 'e'=enclitic)."""
         prefix = PFX_CLITICP if kind == "p" else PFX_CLITICE
         tok = f"{prefix}{clitic}{SFX}"
         if tok in self._vocab:
             ids.append(self._vocab[tok])
-            toks.append(_clean_arabic(clitic))
+            toks.append(_clean_arabic(metric if metric is not None else clitic))
         else:
             # Unknown clitic surface for that kind — emit as literal chars.
             self._emit_lit(clitic, ids, toks)
 
     def _emit_lit(self, chunk: str, ids: List[int], toks: List[str]) -> None:
-        """Emit chunk as [LIT_BEGIN] CHAR... [LIT_END]."""
+        """Emit chunk as [LIT_BEGIN] CHAR... [LIT_END], then [CLITICE_ة] if it ends in ة.
+
+        There is no [CHAR_ة]: the tāʾ marbūṭa is the enclitic on every path.
+        """
+        fem = chunk.endswith(TAA_MARBUTA)
+        if fem:
+            chunk = chunk[:-1]
         ids.append(self._vocab[TOK_LIT_BEGIN])
         toks.append("")
         for ch in chunk:
@@ -631,6 +714,8 @@ class AraRooPatTokenizer(BaseTokenizer):
                 toks.append("")
         ids.append(self._vocab[TOK_LIT_END])
         toks.append("")
+        if fem:
+            self._emit_clitic(TAA_MARBUTA, ids, toks, kind="e")
 
     def _emit_atom(self, tok: str, ch: str, ids: List[int], toks: List[str],
                    arabic: bool) -> None:
@@ -663,18 +748,33 @@ class AraRooPatTokenizer(BaseTokenizer):
         pending_root_id: Optional[int] = None
         in_lit = False
         lit_buffer: List[str] = []
+        # Bare surface of the [PREP_*] just flushed as out[-1] (None once
+        # anything else is emitted). Enclitics attach to prepositions with
+        # orthographic adjustments (إلى+ه → إليه, من+ما → مما) that must
+        # not fire on nouns (مستشفى+ه → مستشفاه, a different rule).
+        last_particle: Optional[str] = None
 
         def attach_enclitic(s: str) -> None:
             """Append enclitic surface to the just-emitted word, or drop it."""
-            if out:
+            nonlocal last_particle
+            if out and last_particle is not None:
+                prefix = out[-1][: len(out[-1]) - len(last_particle)]
+                out[-1] = prefix + join_particle_enclitic(last_particle, s)
+            elif out:
+                # A ة-final word takes a pronoun with ة → ت (مدرسة + ه → مدرسته).
+                if out[-1].endswith(TAA_MARBUTA) and s != TAA_MARBUTA:
+                    out[-1] = out[-1][:-1] + "ت"
                 out[-1] = out[-1] + s
             else:
                 out.append(s)
+            last_particle = None
 
         def flush_word(word: str) -> None:
             """Emit a content-bearing word, prepending any buffered proclitics."""
+            nonlocal last_particle
             out.append(join_proclitics(clitic_prefix) + word)
             clitic_prefix.clear()
+            last_particle = None
 
         def dump_orphan_root() -> None:
             nonlocal pending_root, pending_root_id
@@ -696,9 +796,11 @@ class AraRooPatTokenizer(BaseTokenizer):
                 continue
 
             if tok == TOK_LIT_END:
-                lit_str = "".join(lit_buffer)
-                if clitic_prefix or lit_str:
-                    flush_word(lit_str)
+                # Always flush, even when empty: a lone ة encodes as an empty
+                # literal + [CLITICE_ة], and the enclitic must attach to it
+                # rather than to the previous word. Empty entries are dropped
+                # at the join below.
+                flush_word("".join(lit_buffer))
                 in_lit = False
                 lit_buffer.clear()
                 continue
@@ -714,6 +816,13 @@ class AraRooPatTokenizer(BaseTokenizer):
 
             if tok.startswith(PFX_CLITICE):
                 attach_enclitic(tok[len(PFX_CLITICE):-len(SFX)])
+                continue
+
+            if tok.startswith(PFX_PREP):
+                dump_orphan_root()
+                prep = tok[len(PFX_PREP):-len(SFX)]
+                flush_word(prep)
+                last_particle = prep
                 continue
 
             if tok.startswith(PFX_ROOT):
@@ -841,7 +950,8 @@ class AraRooPatTokenizer(BaseTokenizer):
                 "generator_timeout_ms": self.generator_timeout_ms,
                 "use_diacritized_surface": self.use_diacritized_surface,
                 "add_bos_eos": self.add_bos_eos,
-            }, f, indent=2)
+                "prepositions": list(self.prepositions),
+            }, f, ensure_ascii=False, indent=2)
 
     def load(self, path: Path | str) -> None:
         path = Path(path)
@@ -855,6 +965,11 @@ class AraRooPatTokenizer(BaseTokenizer):
         self.generator_timeout_ms = cfg.get("generator_timeout_ms", self.generator_timeout_ms)
         self.use_diacritized_surface = cfg.get("use_diacritized_surface", self.use_diacritized_surface)
         self.add_bos_eos = cfg.get("add_bos_eos", self.add_bos_eos)
+        # Tokenizers saved before the [PREP_*] range have no inventory and
+        # no such tokens in vocab.json; keep them decodable/encodable as
+        # they were (encode falls through to LIT when the token is absent).
+        self.prepositions = tuple(cfg.get("prepositions") or ())
+        self._backend = None  # rebuilt lazily with the loaded inventory
 
         with (path / "vocab.json").open("r", encoding="utf-8") as f:
             self._vocab = json.load(f)
@@ -926,27 +1041,38 @@ def _strip_clitic_surfaces(
     stem) from CAMeL's full ``diac`` field.
     """
     s = strip_proclitics_from_start(surface, proclitics)
-    for c in enclitics:
-        s = _strip_clitic_from_end(s, c)
-    return s
+    return strip_enclitics_from_end(s, enclitics)
+
+
+def _split_runs(word: str) -> List[Tuple[str, str]]:
+    """Split a whitespace word into ``(class, chunk)`` runs.
+
+    The single chunking convention shared by the corpus pre-pass and
+    ``_encode_word`` (so analyzer cache keys agree). An alpha run absorbs a
+    directly following ة and ends there: ة is word-final by definition, so
+    a ة followed by more letters starts a new chunk (مدرسةكبيرة → مدرسة |
+    كبيرة). A ة with no letters before it is a chunk of its own.
+    """
+    runs: List[Tuple[str, str]] = []
+    i, n = 0, len(word)
+    while i < n:
+        cls = _classify_char(word[i])
+        j = i + 1
+        if cls == "alpha":
+            while j < n and _classify_char(word[j]) == "alpha":
+                j += 1
+            if j < n and _classify_char(word[j]) == "fem":
+                j += 1
+        elif cls == "fem":
+            cls = "alpha"  # a lone ة still goes down the alpha path
+        else:
+            while j < n and _classify_char(word[j]) == cls:
+                j += 1
+        runs.append((cls, word[i:j]))
+        i = j
+    return runs
 
 
 def _extract_alpha_chunks(word: str) -> List[str]:
-    """Return contiguous Arabic-alpha runs from a whitespace word.
-
-    Matches what ``_encode_word`` does at runtime — used during the corpus
-    pre-pass so the analyzer cache keys agree with the analyze() calls
-    made during encoding.
-    """
-    out: List[str] = []
-    i, n = 0, len(word)
-    while i < n:
-        if _classify_char(word[i]) == "alpha":
-            j = i + 1
-            while j < n and _classify_char(word[j]) == "alpha":
-                j += 1
-            out.append(word[i:j])
-            i = j
-        else:
-            i += 1
-    return out
+    """Return the Arabic-alpha chunks of a whitespace word (see ``_split_runs``)."""
+    return [chunk for cls, chunk in _split_runs(word) if cls == "alpha"]

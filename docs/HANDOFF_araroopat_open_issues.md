@@ -292,7 +292,9 @@ generated text no longer collapsing to `''`.
 log-likelihood — so no recorded benchmark number changes. This matters the moment anyone
 generates text.
 
-### P2 — `ى` and `ٱ` are missing from `ARABIC_LETTERS`
+### P2 — `ى` and `ٱ` are missing from `ARABIC_LETTERS` — **FIXED 2026-09-12**
+
+> Both letters were added to `ARABIC_LETTERS`; the ceiling test in `tests/test_morphological_metrics.py` was retargeted to an embedded-digit word and a regression test pins `مستشفى` as alignable. The smoke roundtrip (`ذهب الطفل إلى المدرسة`) now passes 9/9. **Still outstanding from the risk list below:** the araroopat retrain (`araroopat_hashfix` and the pre-pass cache predate the fix) and the re-baseline of all nine tokenizers. Original write-up kept for the record:
 
 **Location:** `src/arabic_eval/tokenizers/utils/arabic_text.py`, ~line 40:
 

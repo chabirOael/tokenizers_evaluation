@@ -50,6 +50,16 @@ class Analysis:
 
     Clitic fields are translated to Arabic surface strings (via
     ``clitic_surface``) at construction; empty/``"0"`` values are None.
+
+    ``particle`` is set (and ``root`` / ``pattern`` are empty) when the
+    word is a closed-class preposition/particle from
+    ``PREPOSITION_INVENTORY`` — those get one ``[PREP_*]`` token instead
+    of a root+pattern decomposition. See ``_particle_analysis``.
+
+    ``fem`` is ``"ة"`` when the word carries the tāʾ marbūṭa suffix —
+    written ة word-finally, ت before a pronoun (مدرسة / مدرسته). It is
+    stripped from ``pattern`` and emitted as ``[CLITICE_ة]``; see
+    ``strip_fem_from_pattern``.
     """
     root: str
     pattern: str       # clitic-stripped (bare-stem) template
@@ -63,6 +73,13 @@ class Analysis:
     prc1: Optional[str] = None
     prc0: Optional[str] = None
     enc0: Optional[str] = None
+    particle: Optional[str] = None  # bare preposition surface, e.g. "من"
+    fem: Optional[str] = None       # TAA_MARBUTA when the ة suffix was factored out
+
+    @property
+    def enclitics(self) -> Tuple[str, ...]:
+        """Enclitic surfaces in emission order, innermost first: (ة, pronoun)."""
+        return tuple(c for c in (self.fem, self.enc0) if c)
 
 
 def _norm_clitic(value: Optional[str]) -> Optional[str]:
@@ -110,6 +127,11 @@ CAMEL_CLITIC_SURFACE: Dict[str, str] = {
     "mA_neg": "ما", "mA_part": "ما", "mA_rel": "ما", "ma_rel": "ما",
     # enc0 — subordinating mA rides the suffix slot (عند + ما)
     "mA_sub": "ما",
+    # enc0 — relative "man" fused onto a preposition: مِمَّن = مِن + مَن,
+    # عَمَّن = عَن + مَن. CAMeL also puts the relative mA there for مِمّا /
+    # عَمّا (tag mA_rel, mapped above). The assimilated spelling is
+    # restored at decode by ``join_particle_enclitic``.
+    "man_rel": "من",
     # enc0 — pronominal enclitics (object / possessive / pronoun)
     "1s_dobj": "ي", "1s_poss": "ي", "1s_pron": "ي",
     "2ms_dobj": "ك", "2ms_poss": "ك", "2ms_pron": "ك",
@@ -152,7 +174,7 @@ _PROCLITIC_TAGS: frozenset = frozenset({
 })
 
 _ENCLITIC_TAGS: frozenset = frozenset({
-    "mA_sub",
+    "mA_sub", "man_rel",
     "1s_dobj", "1s_poss", "1s_pron",
     "2ms_dobj", "2ms_poss", "2ms_pron",
     "2fs_dobj", "2fs_poss", "2fs_pron",
@@ -202,6 +224,85 @@ def clitic_surface(tag: Optional[str]) -> Optional[str]:
 # here (rather than imported) so this module has no dependency on
 # morphological_utils — keeps the backend slim.
 _PATTERN_DIACRITICS = set("ًٌٍَُِّْٰٕٓٔ")
+
+# The tāʾ marbūṭa suffix. Always word-final (ت before a pronoun), never a
+# root letter, and CAMeL's own ``stem`` field already excludes it — so the
+# tokenizer treats it as an enclitic: stripped from the pattern, emitted as
+# [CLITICE_ة], never as a [CHAR_*]. Not a CAMeL clitic *tag*, so it is
+# deliberately absent from CAMEL_CLITIC_SURFACE / ENCLITIC_SURFACES (those
+# feed the cross-tokenizer CSA metric).
+TAA_MARBUTA = "ة"
+_TAA = "ت"
+# POS prefixes under which a stem-final ت before a pronoun is the ة suffix
+# (مدرسته, حياته). On verbs the same ت is a subject suffix (كتبته).
+_NOMINAL_POS_PREFIXES = ("noun", "adj")
+
+
+def _last_letter(s: str) -> Tuple[int, str]:
+    """(index, char) of the last non-diacritic char of ``s``; (-1, '') if none."""
+    for i in range(len(s) - 1, -1, -1):
+        if s[i] not in _PATTERN_DIACRITICS:
+            return i, s[i]
+    return -1, ""
+
+
+def strip_fem_from_pattern(
+    pattern_bare: str,
+    proclitics: Tuple[Optional[str], ...],
+    enc0: Optional[str],
+    stem: str,
+    pos: str,
+    diac: str,
+) -> Tuple[str, Optional[str]]:
+    """Factor the ة suffix out of a clitic-stripped pattern.
+
+    Returns ``(pattern, fem)`` where ``fem`` is ``TAA_MARBUTA`` or None.
+
+    * Pattern ends in ة (plus an optional case vowel): always the suffix —
+      ة is orthographically unambiguous. Applies to every ة-final word,
+      broken plurals and numerals included (قضاة, ثلاثة); CAMeL's ``stem``
+      excludes the ة there too.
+    * Pattern ends in ت, a pronoun enclitic follows, the POS is nominal,
+      and ``surface − proclitics − pronoun == stem + ت``: the ت is a ة
+      realized before the pronoun (مدرسته, حياته, ومدرستها). The stem
+      check rejects a radical ت (بيته: stem بَيْت) and the POS check a
+      verbal subject ت (كتبته).
+    """
+    idx, last = _last_letter(pattern_bare)
+    if idx < 0:
+        return pattern_bare, None
+    if last == TAA_MARBUTA:
+        return pattern_bare[:idx], TAA_MARBUTA
+    if (
+        last == _TAA and enc0 and pos.startswith(_NOMINAL_POS_PREFIXES)
+        and _strip_diac(stem)
+    ):
+        core = strip_proclitics_from_start(diac, proclitics)
+        core = _strip_diac(_strip_clitic_from_end(core, enc0))
+        if core == _strip_diac(stem) + _TAA:
+            return pattern_bare[:idx], TAA_MARBUTA
+    return pattern_bare, None
+
+
+def strip_enclitics_from_end(text: str, enclitics: Tuple[str, ...]) -> str:
+    """Strip an enclitic stack from the end, outermost first.
+
+    ``enclitics`` is in emission order (innermost first: ``(ة, ه)``), the
+    inverse of the order they peel off. The ة suffix surfaces as ت before
+    a pronoun, so it strips as either.
+    """
+    for clitic in reversed(enclitics):
+        if not clitic:
+            continue
+        if clitic == TAA_MARBUTA:
+            out = _strip_clitic_from_end(text, TAA_MARBUTA)
+            if out == text:
+                out = _strip_clitic_from_end(text, _TAA)
+            text = out
+        else:
+            text = _strip_clitic_from_end(text, clitic)
+    return text
+
 
 # Arabic letter block used to validate roots. CAMeL occasionally emits
 # database markers ("FOREIGN") or Buckwalter/ASCII fragments ("Uٌٍ" for
@@ -322,17 +423,152 @@ def normalize_pattern(
 
 
 # ---------------------------------------------------------------------------
+# Closed-class prepositions / particles → one [PREP_*] token
+# ---------------------------------------------------------------------------
+#
+# Before this intercept these words were handled three inconsistent ways:
+# the 2-radical ones (من عن في مذ كي لولا) failed the ≥3-radical gate and
+# spilled into [LIT_BEGIN] [CHAR_*]... [LIT_END] — four tokens for من, the
+# most frequent word in Arabic; منذ is NTWS; and the rest got a bogus
+# root+pattern decomposition (إلى → [ROOT_#ل#][PAT_إِ2َى], حتى → [ROOT_حتت],
+# لعل → [CLITICP_ل][ROOT_علل][PAT_1َ2َّ] with CAMeL misreading its ل as the
+# emphatic lam). A function word has no root/wazn to preserve, so each one
+# is a single fixed token; clitics still ride outside it ([CLITICP_و]
+# [PREP_إلى] [CLITICE_ه] for وإليه).
+#
+# Match key: CAMeL's lemma (``lex``) with diacritics stripped — it stays
+# stable across clitics and the ى/ي alternation (عليه → lex عَلَى). The
+# clitic-stripped surface is checked too (حاشا lemmatizes to حاش).
+# ---------------------------------------------------------------------------
+
+PREPOSITION_INVENTORY: Tuple[str, ...] = (
+    "من", "إلى", "عن", "على", "في", "حتى", "منذ", "مذ",
+    "خلا", "عدا", "حاشا", "متى", "لعل", "كي", "لولا",
+)
+
+# Preposition + enclitic spellings that are not plain concatenation.
+# Decode-side inverse of the enc0 split CAMeL makes at analysis time.
+_PARTICLE_ASSIMILATION: Dict[Tuple[str, str], str] = {
+    ("من", "ما"): "مما", ("من", "من"): "ممن",
+    ("عن", "ما"): "عما", ("عن", "من"): "عمن",
+}
+
+_ALEF_MAKSURA, _YEH = "ى", "ي"
+
+
+def _strip_diac(s: str) -> str:
+    return "".join(c for c in s if c not in _PATTERN_DIACRITICS)
+
+
+def join_particle_enclitic(particle: str, enclitic: str) -> str:
+    """Attach an enclitic to a preposition with the orthographic adjustments.
+
+    * ى-final prepositions turn the ى into ي before a pronoun
+      (إلى + ه → إليه, على + هم → عليهم).
+    * من / عن assimilate with the relative ما / من (مما, ممن, عما, عمن).
+    * The 1sg ي merges with a ي-final base (إلى + ي → إلي, في + ي → في):
+      the doubled letter is written with shadda, which undiacritized text
+      does not carry.
+
+    Must stay the inverse of the enc0 split CAMeL makes at encode time.
+    """
+    if (particle, enclitic) in _PARTICLE_ASSIMILATION:
+        return _PARTICLE_ASSIMILATION[(particle, enclitic)]
+    base = particle[:-1] + _YEH if particle.endswith(_ALEF_MAKSURA) else particle
+    if enclitic == _YEH and base.endswith(_YEH):
+        return base
+    return base + enclitic
+
+
+_PARTICLE_ASSIMILATION_INVERSE: Dict[str, str] = {
+    fused: base for (base, _enc), fused in _PARTICLE_ASSIMILATION.items()
+}
+
+
+def _particle_analysis(
+    d: Dict[str, str],
+    particles: frozenset,
+    word: Optional[str] = None,
+) -> Optional[Analysis]:
+    """Return a particle ``Analysis`` if ``d`` is a listed preposition, else None.
+
+    Acceptance is the exact inverse of the decoder: the (diacritic-free)
+    input must equal ``proclitics + join_particle_enclitic(p, enc0)`` for
+    some listed ``p``. Matching on the *input* rather than on CAMeL's
+    normalized surface keeps ي-spelled bare forms (علي — also the name
+    Ali; إلي) out of the particle path, so they decode back verbatim.
+
+    Guards: a definite article or a *possessive* enclitic marks a noun
+    reading (CAMeL tags pronouns on prepositions as ``*_pron``), so those
+    are left to the normal root+pattern path.
+    """
+    surface = _strip_diac(word if word else (d.get("diac") or ""))
+    if not surface:
+        return None
+    prc = tuple(clitic_surface(_norm_clitic(d.get(k))) for k in ("prc3", "prc2", "prc1", "prc0"))
+    enc_tag = _norm_clitic(d.get("enc0"))
+    enc0 = clitic_surface(enc_tag)
+    if prc[3] == _AL_DET or (enc_tag and enc_tag.endswith("_poss")):
+        return None
+
+    # Candidate particles: the lemma first (حاشا lemmatizes to حاش, and the
+    # fused مِمَّن / عَمَّن carry the fused form as lemma), then the whole
+    # inventory as a surface fallback.
+    lemma_bare = _strip_diac(d.get("lex") or "")
+    ordered: List[str] = []
+    for cand in (lemma_bare, _PARTICLE_ASSIMILATION_INVERSE.get(lemma_bare), *particles):
+        if cand and cand in particles and cand not in ordered:
+            ordered.append(cand)
+
+    # CAMeL sometimes reports a proclitic that is really the first letter of
+    # the particle (لعل → prc1=la_emph + lemma لَعَلَّ), so try the claimed
+    # stack first and drop the innermost proclitic until the surface agrees.
+    prc_list = [c for c in prc if c]
+    for particle in ordered:
+        expected_tail = join_particle_enclitic(particle, enc0) if enc0 else particle
+        for keep in range(len(prc_list), -1, -1):
+            if "".join(prc_list[:keep]) + expected_tail == surface:
+                kept = set(prc_list[:keep])
+                return Analysis(
+                    root="",
+                    pattern="",
+                    pattern_raw=d.get("pattern") or "",
+                    stem="",
+                    surface=word or d.get("diac") or "",
+                    lemma=d.get("lex", ""),
+                    pos=d.get("pos", ""),
+                    prc3=prc[0] if prc[0] in kept else None,
+                    prc2=prc[1] if prc[1] in kept else None,
+                    prc1=prc[2] if prc[2] in kept else None,
+                    prc0=prc[3] if prc[3] in kept else None,
+                    enc0=enc0,
+                    particle=particle,
+                )
+    return None
+
+
+# ---------------------------------------------------------------------------
 # Analysis dict → Analysis dataclass
 # ---------------------------------------------------------------------------
 
-def _dict_to_analysis(d: Dict[str, str]) -> Optional[Analysis]:
+def _dict_to_analysis(
+    d: Dict[str, str],
+    particles: frozenset = frozenset(PREPOSITION_INVENTORY),
+    word: Optional[str] = None,
+) -> Optional[Analysis]:
     """Apply post-processing to a trimmed analysis dict from the bridge.
 
-    Returns None for analyses we reject: NTWS/FOREIGN database markers,
-    missing root/pattern, roots with fewer than 3 radicals, and roots
-    carrying characters that are neither Arabic letters nor CAMeL's
-    masked-radical placeholder.
+    Listed prepositions short-circuit to a particle ``Analysis`` before
+    any gate (they have no root to validate). Otherwise returns None for
+    analyses we reject: NTWS/FOREIGN database markers, missing
+    root/pattern, roots with fewer than 3 radicals, and roots carrying
+    characters that are neither Arabic letters nor CAMeL's masked-radical
+    placeholder.
     """
+    particle = _particle_analysis(d, particles, word)
+    if particle is not None:
+        return particle
+
     root = d.get("root") or ""
     pattern_raw = d.get("pattern") or ""
     if not root or not pattern_raw:
@@ -379,6 +615,10 @@ def _dict_to_analysis(d: Dict[str, str]) -> Optional[Analysis]:
     enc0 = clitic_surface(_norm_clitic(d.get("enc0")))
 
     pattern_bare = normalize_pattern(pattern_raw, prc3, prc2, prc1, prc0, enc0)
+    pattern_bare, fem = strip_fem_from_pattern(
+        pattern_bare, (prc3, prc2, prc1, prc0), enc0,
+        d.get("stem") or "", d.get("pos") or "", d.get("diac") or "",
+    )
 
     return Analysis(
         root=root,
@@ -389,6 +629,7 @@ def _dict_to_analysis(d: Dict[str, str]) -> Optional[Analysis]:
         lemma=d.get("lex", ""),
         pos=d.get("pos", ""),
         prc3=prc3, prc2=prc2, prc1=prc1, prc0=prc0, enc0=enc0,
+        fem=fem,
     )
 
 
@@ -408,6 +649,7 @@ class MorphAnalyzer:
         self,
         generator_timeout_ms: int = 50,  # kept for backwards-compat; unused now
         bridge: Optional[CamelBridge] = None,
+        particles: Optional[frozenset] = None,
     ) -> None:
         # `generator_timeout_ms` used to drive a SIGALRM-based timeout
         # around per-call CAMeL generation. The bridge now bounds calls
@@ -415,6 +657,12 @@ class MorphAnalyzer:
         # but not wired to anything (per-request timeout is bridge-level).
         self.generator_timeout_ms = generator_timeout_ms
         self._bridge = bridge if bridge is not None else get_shared_bridge()
+        # Closed-class words that become one [PREP_*] token (see
+        # PREPOSITION_INVENTORY). Configurable per tokenizer instance.
+        self.particles: frozenset = (
+            frozenset(particles) if particles is not None
+            else frozenset(PREPOSITION_INVENTORY)
+        )
         self._analyze_cache: Dict[str, Optional[Analysis]] = {}
         self._generate_cache: Dict[Tuple[str, str], Optional[str]] = {}
 
@@ -429,7 +677,7 @@ class MorphAnalyzer:
         if word in self._analyze_cache:
             return self._analyze_cache[word]
         results = self._bridge.analyze([word])
-        analysis = self._first_valid(results[0]) if results else None
+        analysis = self._first_valid(results[0] if results else [], word, self.particles)
         self._analyze_cache[word] = analysis
         return analysis
 
@@ -464,24 +712,39 @@ class MorphAnalyzer:
             for offset, raw_candidates in enumerate(results):
                 pos = uncached_positions[start + offset]
                 word = uncached_words[start + offset]
-                analysis = self._first_valid(raw_candidates)
+                analysis = self._first_valid(raw_candidates, word, self.particles)
                 self._analyze_cache[word] = analysis
                 out[pos] = analysis
 
         return out
 
     @staticmethod
-    def _first_valid(candidates: List[Dict[str, str]]) -> Optional[Analysis]:
+    def _first_valid(
+        candidates: List[Dict[str, str]],
+        word: Optional[str] = None,
+        particles: frozenset = frozenset(PREPOSITION_INVENTORY),
+    ) -> Optional[Analysis]:
         """Walk top-scored candidates and return the first that survives validation.
 
         Most words yield a valid analysis at index 0. Falling through to
         index 1+ matters for words where the top MLE pick is e.g. an
         NTWS loanword analysis but a lower-scored "real" one exists.
+
+        If no candidate survives but the bare surface itself is a listed
+        preposition, return a particle analysis anyway — the token must
+        not depend on CAMeL's database having an entry for it.
         """
         for cand in candidates:
-            a = _dict_to_analysis(cand)
+            a = _dict_to_analysis(cand, particles, word)
             if a is not None:
                 return a
+        if word:
+            bare = _strip_diac(word)
+            if bare in particles:
+                return Analysis(
+                    root="", pattern="", pattern_raw="", stem="",
+                    surface=word, lemma=word, pos="", particle=bare,
+                )
         return None
 
     # ------------------------------------------------------------------
@@ -550,13 +813,19 @@ class CorpusEntry:
     surface: Optional[str] = None
     proclitics: Tuple[str, ...] = ()
     enclitics: Tuple[str, ...] = ()
+    particle: Optional[str] = None       # set for [PREP_*] words; root/pattern None
 
     @classmethod
     def from_analysis(cls, word: str, a: Optional[Analysis]) -> "CorpusEntry":
         if a is None:
             return cls(word=word, analyzed=False)
         proclitics = tuple(c for c in (a.prc3, a.prc2, a.prc1, a.prc0) if c)
-        enclitics = tuple(c for c in (a.enc0,) if c)
+        enclitics = a.enclitics
+        if a.particle:
+            return cls(
+                word=word, analyzed=True, surface=a.surface,
+                proclitics=proclitics, enclitics=enclitics, particle=a.particle,
+            )
         return cls(
             word=word,
             analyzed=True,
@@ -580,6 +849,7 @@ class CorpusEntry:
             "surface": self.surface,
             "proclitics": list(self.proclitics),
             "enclitics": list(self.enclitics),
+            "particle": self.particle,
         }
 
     @classmethod
@@ -594,4 +864,5 @@ class CorpusEntry:
             surface=d.get("surface"),
             proclitics=tuple(d.get("proclitics") or ()),
             enclitics=tuple(d.get("enclitics") or ()),
+            particle=d.get("particle"),
         )

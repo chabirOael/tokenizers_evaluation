@@ -37,8 +37,13 @@ ARABIC_DIACRITICS = set(
 ARABIC_LONG_VOWELS = set("اوي")
 
 # All Arabic letters considered by the heuristic (excludes punctuation/digits).
+# Includes alef maksura (ى, U+0649) and alef wasla (ٱ, U+0671) — both were
+# missing before 2026-09-12, which made ``_classify_char`` treat them as
+# non-Arabic: ى-final words (إلى / على / مصطفى) were truncated before CAMeL
+# saw them and the ى itself became <unk> in araroopat, and the alignment
+# ceiling of the morphological metrics was capped at ~0.62 for every tokenizer.
 ARABIC_LETTERS = set(
-    "ابتثجحخدذرزسشصضطظعغفقكلمنهويءأإآؤئة"
+    "ابتثجحخدذرزسشصضطظعغفقكلمنهويءأإآؤئةىٱ"
 )
 
 # ---------------------------------------------------------------------------
