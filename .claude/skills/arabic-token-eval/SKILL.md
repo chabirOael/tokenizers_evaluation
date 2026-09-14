@@ -28,6 +28,15 @@ After training, eval runs on **every task in `sweep.tasks`** (default ACVA + Alg
 - `configs/experiments/native_llama_3phase_no_sft.yaml` — Phase 1 + 2 only (sets `sft.enabled: false`)
 - `configs/experiments/sample_full.yaml` — fully-documented template
 
+### Phases 1–2 may train on the packed pretraining mix instead of Arabic-SQuAD
+
+`datasets: ["pretraining_mix"]` (sole entry, `full_sequence`, `max_length == block_size`) switches a phase to the packed raw-text mix (70 % FineWeb-2 / 20 % Wikipedia / 10 % ArabicWeb24 by default). Two stages: a tokenizer-independent **pool** (streamed, quality-filtered, dialect-gated, cross-source deduped, cached by fingerprint of the Stage A config) and a per-cell **pack** (token-budget fill under the *active* tokenizer, so shares hold in tokens; every cell's docs are a prefix of one fixed order). Phase 2 continues after Phase 1's last block. Things to keep straight:
+
+- The dialect gate is a closed marker list with a count floor (`min_markers`) *and* a density cap; CAMeL DID is opt-in because `DIDModel26` mislabels encyclopedic MSA. Don't "fix" the gate by adding tokens that are also MSA words after alef/ة/ى folding (`إلى`→`الي`, `آية`→`ايه`, `بدو`, `هول`, `لكان`, `كيما`, `تبع`) — a test pins the exclusions.
+- MinHash runs *before* paragraph stripping (whole-document judgement), exact-paragraph dedup after (boilerplate + verbatim copies). LSH is probabilistic near its threshold; test fixtures use 0.7.
+- Always `close()` an abandoned HF streaming iterator — otherwise the interpreter aborts at exit.
+- `build_pretraining_mix.py --calibrate N` is how thresholds get justified: it writes the drop-reason table + `dropped_dialect.csv` without touching the real pool.
+
 ### The 8 tokenizers split into 4 architectural families
 
 | Family | Members | Embedding type | Unit |

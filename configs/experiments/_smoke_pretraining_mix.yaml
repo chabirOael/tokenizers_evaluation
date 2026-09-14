@@ -1,0 +1,66 @@
+# Smoke-scale check of the pretraining-mix path on real data + real model:
+# tiny pool (200 K words), 30 steps per phase, 30 eval rows. Validates
+# streaming → filters → dedup → pack → Phase 1/2 consumption → eval wiring.
+# NOT for results. Needs HF_TOKEN (ArabicWeb24 + Llama).
+
+experiment:
+  name: "_smoke_pretraining_mix"
+  output_dir: "outputs/experiments/_smoke_pretraining_mix"
+  seed: 42
+
+tokenizer:
+  type: "bpe"
+  vocab_size: 8000
+  load_path: null
+  save_path: "outputs/tokenizers/_smoke_bpe_8k"
+
+model:
+  type: "llama"
+  name_or_path: "meta-llama/Llama-3.2-1B"
+  dtype: "bfloat16"
+  device: "auto"
+
+data:
+  max_train_samples: 2000
+  max_eval_samples: 100
+
+training:
+  pretraining_mix:
+    cache_dir: "outputs/data_cache/pretraining_mix_smoke"   # separate cache: don't pollute the real pool
+    pool: {total_words: 200000, stream_shuffle_buffer: 2000}
+  phases:
+    embedding_alignment:
+      datasets: ["pretraining_mix"]
+      loss_target: "full_sequence"
+      steps: 30
+      batch_size: 4
+    warmup:
+      datasets: ["pretraining_mix"]
+      loss_target: "full_sequence"
+      steps: 30
+      batch_size: 2
+      gradient_accumulation_steps: 2
+    sft:
+      steps: 30
+      batch_size: 2
+      gradient_accumulation_steps: 2
+      early_stopping: {eval_every_n_steps: 15, min_steps_before_stop: 10, patience: 3}
+
+evaluation:
+  intrinsic_metrics: true
+  morphological_metrics: false
+  downstream_metrics: true
+  num_eval_samples: 30
+  failure_reports: false
+  score_normalization: "char"
+
+sweep:
+  tokenizers:
+    - type: "bpe"
+      vocab_sizes: [8000]
+    - type: "character_bert"
+      vocab_sizes: [null]
+      params: {max_char_len: 50, max_word_vocab: 20000}
+  tasks:
+    - type: "acva"
+      params: {}

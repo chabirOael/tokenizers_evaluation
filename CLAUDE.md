@@ -30,7 +30,9 @@ src/arabic_eval/          # Main package
   utils/                  # reproducibility.py, logging.py, io.py
   data/                   # loader.py (main corpus), preprocessing.py, collation.py,
                           #   answer_only_masking.py (LCP helper),
-                          #   finetune_corpora.py (Arabic-SQuAD + TyDiQA + ARCD)
+                          #   finetune_corpora.py (Arabic-SQuAD + TyDiQA + ARCD),
+                          #   pretraining_mix/ (packed raw-text mix for Phase 1/2: sources,
+                          #     filters, dedup, dialect_id, pool [Stage A], packing [Stage B])
   tokenizers/             # base.py + 8 implementations + native_llama wrapper
   models/                 # base.py, llama_adapter.py, embeddings/{standard,character_cnn,char_jaber_embed,charformer_embed}.py
   tasks/                  # base.py + lighteval/ (abstract base + 4 dataset files +
@@ -138,7 +140,7 @@ Every training run executes the same three phases regardless of tokenizer / mode
 | 2 — Warmup | `warmup` | all params | unfrozen | `arabic_squad` | answer-only | 2000 steps, LR=2e-4, BS=4×4, cosine + 100 warmup |
 | 3 — SFT | `sft` | all params | unfrozen | `tydiqa_arabic + arcd` | answer-only | 2000 steps, LR=2e-4, BS=4×4, cosine + 100 warmup, early-stop |
 
-Each phase is independently toggleable via its own `enabled` flag. Phase 3 additionally runs periodic eval on TyDiQA-val + ARCD-val for stagnation early-stop (patience=5, min_delta=5e-4, min_steps_before_stop=500, restore-best-at-end=true).
+Each phase is independently toggleable via its own `enabled` flag. Phase 3 additionally runs periodic eval on TyDiQA-val + ARCD-val for stagnation early-stop (patience=5, min_delta=5e-4, min_steps_before_stop=500, restore-best-at-end=true). Phases 1 and 2 can instead train on the packed raw-text **pretraining mix** (`datasets: ["pretraining_mix"]`, full-sequence loss) — see *Pretraining Mix* below.
 
 **Per-phase params (all adjustable):** `enabled`, `datasets` (registry keys: `arabic_squad`, `tydiqa_arabic`, `arcd`), `trainable_parameters` (substring list; `["*"]` = all), `steps`, `learning_rate`, `batch_size`, `gradient_accumulation_steps`, `optimizer`, `weight_decay`, `max_length`, `loss_target` (`"full_sequence"` | `"answer_only"`), `lr_scheduler` (`"cosine"` | `"constant"` | `"linear"`), `warmup_steps`, `max_grad_norm`, `save_checkpoint`. Phase 3 also has `early_stopping`. Defaults in `configs/base.yaml`.
 
@@ -149,6 +151,18 @@ Each phase is independently toggleable via its own `enabled` flag. Phase 3 addit
 **Answer-only loss masking** uses an LCP (longest common prefix) helper at [src/arabic_eval/data/answer_only_masking.py](src/arabic_eval/data/answer_only_masking.py) — necessary because Llama auto-appends `</s>` to standalone encodings, so naive `labels[:len(prompt)] = -100` would eat the first answer token.
 
 **Tied embeddings on Llama-3.2-1B** — `lm_head.weight is model.embed_tokens.weight`, so `lm_head` is absent from `named_parameters()`. The freezing helper ([src/arabic_eval/training/freezing.py](src/arabic_eval/training/freezing.py)) warns when a substring matches no parameter while others do (the tied-weight case) and continues — training `embed_tokens` IS training `lm_head`.
+
+## Pretraining Mix — packed raw-text corpus for Phase 1 / Phase 2 (`src/arabic_eval/data/pretraining_mix/`)
+
+Any phase can train on a packed raw-text mix instead of QA records by setting `datasets: ["pretraining_mix"]` (must be the phase's sole dataset, `loss_target: full_sequence`, `max_length == pretraining_mix.block_size` — validated in `TrainingConfig`). The reference config is [configs/experiments/all_tokenizers_sweep_pretrain_mix.yaml](configs/experiments/all_tokenizers_sweep_pretrain_mix.yaml): Phase 1 + Phase 2 on **70 % FineWeb-2 `arb_Arab` / 20 % Arabic Wikipedia (`20231101.ar`) / 10 % ArabicWeb24**; Phase 3 unchanged. The `warmup.datasets` line is the ablation switch — set it back to `["arabic_squad"]` + `answer_only` to change only Phase 1. All knobs default in `configs/base.yaml` under `training.pretraining_mix`; the block is inert until a phase references it.
+
+**Two stages.**
+- **Stage A — pool** (`pool.py`, tokenizer-independent, cached under `cache_dir/<fingerprint>/`, shared by every cell and experiment; the fingerprint hashes only the Stage A fields, so `block_size` / `token_budget` changes never invalidate it). Sources are streamed with a seeded *shard + buffer* shuffle (without the shard shuffle FineWeb-2 yields a 2013 snapshot) in `dedup.priority` order and each document goes through, cheapest first: `normalize_document` (NFKC + tatweel + whitespace, paragraph = line; alef/diacritic folding opt-in) → Wikipedia tail sections cut (`المراجع`, `وصلات خارجية`, …) → `(بالإنجليزية: …)` Latin glosses stripped → quality rules (`min_words` 50, Latin-letter ratio ≤ 5 %, Arabic-script ratio ≥ 70 %, short-line / duplicate-line / symbol ratios) → dialect-marker gate → opt-in CAMeL dialect ID → MinHash LSH near-dup (datasketch, 5-word shingles, 128 perms, Jaccard 0.8; the higher-priority source's copy survives) → exact-paragraph dedup (repeated normalized paragraphs removed *from* the doc — boilerplate and verbatim copies; re-checked against `min_words`) → truncate to `max_words` 3000 at a paragraph boundary. Stops per source at `share × pool.total_words` kept words (20 M default; sufficient for any tokenizer since every panel member has fertility ≥ 1). Artifacts: `manifest.json` (per-source counts per drop reason, pinned dataset revisions, source prefilter skips), `<source>.parquet`, `dropped_dialect.csv` (every dialect drop with its markers), `dropped_samples.jsonl` (≤30 per reason). `--calibrate N` runs the same pipeline on N raw docs per source without stopping or caching.
+- **Stage B — pack** (`packing.py`, per cell, written to `{output_dir}/data/pretraining_mix/`). For each source, walk the pool in a fixed seeded order (`source_doc_order`), tokenize with the *active* tokenizer, take docs until `share × token_budget` tokens; shuffle the selected docs, concatenate with an EOS separator, chunk into `block_size` blocks (CharBERT `char_ids` are packed alongside as `int16`). `token_budget: null` = Σ(steps × batch_size) × block_size over the enabled mix phases (micro-steps — `run_phase` draws one batch per step; defaults give 8.19 M tokens). **Shares hold in tokens under each cell's tokenizer, so the doc set differs per cell** — but each cell's selection is a *prefix of the same order*, so a low-fertility tokenizer sees a superset of a high-fertility one's docs (same distribution, nested cutoffs). `packed_manifest.json` records achieved shares, per-source fertility and doc counts. Blocks are pre-shuffled and the phase loader runs `shuffle=False`; with `consume_sequentially: true` Phase 2 starts at the block after Phase 1's last one (wrap-around is logged as a warning with the epoch count). `all_metrics.json["training"][<phase>]["data"]` records the consumed block range; `["training"]["pretraining_mix"]` carries the packed manifest.
+
+**MSA filter — scope, honestly.** The default gate is a closed list of high-precision dialect function words / particles (`DIALECT_MARKERS` in `filters.py`, Egyptian / Levantine / Gulf-Iraqi / Maghrebi / pan-dialect), matched on whole tokens after diacritic-strip + alef/ة/ى folding with an optional و/ف proclitic peeled; a doc is dropped when it has ≥ `min_markers` (3) markers **and** > `max_markers_per_1k_words` (5). It catches documents *written in* dialect; it does not catch dialect that avoids every listed marker, or light code-switching. Entries that collide with MSA after folding are deliberately excluded (إلى→الي, آية→ايه, بدو, هول, لكان, كيما, تبع, توًّا, هلّا, هون, بس, ما, ليه, عم, زين, …) — a test pins that. CAMeL `DIDModel26` is wired as an **opt-in** second signal (`msa_filter.camel_did.enabled`, new `dialect_id` op on the araroopat bridge, lazy-loaded in `.venv-camel`): it is MADAR-trained and mislabels encyclopedic MSA (`تعتبر مدينة القاهرة من أكبر المدن…` → KHA 0.32, MSA outside the top-3), so it aggregates ≤ 8 sampled sentences per doc and flags only when the MSA share is < 0.30. `DIDModel6` has no pretrained weights for Python 3.10.
+
+**Gotchas.** ArabicWeb24 is gated (auto-approve) — export `HF_TOKEN`; `arabic_101b` (`ClusterlabAi/101_billion_arabic_words_dataset`) is the ungated alternative in `SOURCE_REGISTRY`. FineWeb-2 rows below `min_language_score` 0.90 are skipped at the source (~44 % of rows in a 300-doc probe — supply is not a constraint). A HF streaming iterator that is abandoned on `break` without `close()` aborts the interpreter at exit (`PyGILState_Release`); `build_pool` closes it in its `finally`. Stage B tokenization costs about what tokenizing Arabic-SQuAD costs today (~7 M words). Tests: `tests/test_pretraining_mix_pool.py` (filters, dedup, builder with injected sources, config validators) and `tests/test_pretraining_mix_packing.py` (token-share invariance under different fertilities, nested-prefix property, packing, cursor, cache, and a mini 3-phase run on the packed mix for the standard and CharCNN branches).
 
 ## CLI Commands
 
@@ -173,6 +187,12 @@ Each phase is independently toggleable via its own `enabled` flag. Phase 3 addit
 
 # Compare results across experiments
 python scripts/compare_results.py outputs/experiments/*/
+
+# Pretraining mix (Phase 1/2 raw-text corpus): calibrate filters on N raw docs per
+# source, build the cached pool, or print its manifest. Needs HF_TOKEN (ArabicWeb24).
+.venv/bin/python scripts/build_pretraining_mix.py --config configs/experiments/all_tokenizers_sweep_pretrain_mix.yaml --calibrate 2000
+.venv/bin/python scripts/build_pretraining_mix.py --config configs/experiments/all_tokenizers_sweep_pretrain_mix.yaml
+.venv/bin/python scripts/build_pretraining_mix.py --config configs/experiments/all_tokenizers_sweep_pretrain_mix.yaml --report
 ```
 
 ```bash
@@ -624,6 +644,8 @@ outputs/experiments/<name>/
   config.json               # Full resolved config
   intrinsic_metrics.json    # Fertility, compression, UNK rate, coverage, morphological metrics
   all_metrics.json          # Combined: config + intrinsic + training (per-phase) + downstream (per-task) + mei (per-task)
+  data/pretraining_mix/     # Only when a phase uses the packed mix: packed_input_ids.npy
+                            #   (+ packed_char_ids.npy for CharBERT) + packed_manifest.json
   training/
     embedding_alignment/    # Phase 1 checkpoint
       model.pt
@@ -661,7 +683,7 @@ Helper module: [src/arabic_eval/evaluation/unk_reports.py](src/arabic_eval/evalu
 
 ## Dependencies
 
-Core: `torch`, `transformers`, `tokenizers`, `datasets`, `accelerate`, `farasapy`, `pydantic`, `pyyaml`, `numpy`, `tqdm`, `wandb`, `tabulate`, `matplotlib`, `lighteval>=0.6.0`
+Core: `torch`, `transformers`, `tokenizers`, `datasets`, `accelerate`, `farasapy`, `pydantic`, `pyyaml`, `numpy`, `tqdm`, `wandb`, `tabulate`, `matplotlib`, `lighteval>=0.6.0`, `datasketch` (MinHash LSH for the pretraining-mix dedup)
 
 Tokenizer-only workflows (no GPU): `pydantic`, `pyyaml`, `tokenizers`, `tabulate`, `numpy`, `tqdm`
 

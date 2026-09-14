@@ -1,0 +1,127 @@
+# ALL-TOKENIZERS SWEEP on the PRETRAINING MIX — same 9 cells and same eval
+# benchmarks as all_tokenizers_sweep.yaml, but Phase 1 (embedding alignment)
+# and Phase 2 (warmup) train on the packed raw-text mix
+#
+#     70 % FineWeb-2 arb_Arab  |  20 % Arabic Wikipedia  |  10 % ArabicWeb24
+#
+# instead of Arabic-SQuAD. Shares hold *in tokens under each cell's
+# tokenizer* (Stage B); the filtered pool (dedup → MSA gate → length /
+# boilerplate rules) is built once and cached (Stage A). Phase 2 continues
+# from the block where Phase 1 stopped (consume_sequentially), so both phases
+# see the same distribution with no repetition.
+#
+# Only deltas from configs/base.yaml are listed; the mix's own knobs
+# (sources, filters, dedup, thresholds) live in base.yaml under
+# training.pretraining_mix and can be overridden here.
+#
+# Build / inspect the pool before the sweep (needs HF_TOKEN for ArabicWeb24):
+#   .venv/bin/python scripts/build_pretraining_mix.py --config \
+#       configs/experiments/all_tokenizers_sweep_pretrain_mix.yaml --calibrate 2000
+#   .venv/bin/python scripts/build_pretraining_mix.py --config \
+#       configs/experiments/all_tokenizers_sweep_pretrain_mix.yaml
+# Run:
+#   .venv/bin/python scripts/run_experiment.py \
+#       --config configs/experiments/all_tokenizers_sweep_pretrain_mix.yaml --sweep
+#
+# ABLATION SWITCH — Phase 2 on the mix drops the QA-format warmup (Phase 3
+# then carries all QA/MCQ-format exposure). To keep the QA warmup and change
+# only Phase 1, set:
+#   training.phases.warmup.datasets: ["arabic_squad"]
+#   training.phases.warmup.loss_target: "answer_only"
+
+experiment:
+  name: "all_tokenizers_sweep_pretrain_mix"
+  output_dir: "outputs/experiments/all_tokenizers_sweep_pretrain_mix"
+  description: "All tokenizers; Phase 1 + Phase 2 on the FineWeb-2 / Wikipedia / ArabicWeb24 packed mix."
+  seed: 42
+  deterministic: true
+
+data:
+  max_eval_samples: 10000
+
+tokenizer:
+  type: "native_llama"
+  vocab_size: null
+  load_path: null
+  save_path: "outputs/tokenizers/native_llama"
+  params: {}
+
+model:
+  type: "llama"
+  name_or_path: "meta-llama/Llama-3.2-1B"
+  dtype: "bfloat16"
+  device: "auto"
+
+training:
+  pretraining_mix:
+    block_size: 512
+    token_budget: null              # auto: (1000×8 + 2000×4) × 512 = 8.19 M tokens per cell
+    consume_sequentially: true
+    # sources / pool / dedup / msa_filter / quality: inherited from base.yaml
+
+  phases:
+    embedding_alignment:
+      datasets: ["pretraining_mix"]
+      loss_target: "full_sequence"
+      max_length: 512               # must equal pretraining_mix.block_size
+    warmup:
+      datasets: ["pretraining_mix"] # ← the flag; see ABLATION SWITCH above
+      loss_target: "full_sequence"
+      max_length: 512
+
+evaluation:
+  intrinsic_metrics: true
+  morphological_metrics: true
+  morph_sample_size: 500
+  downstream_metrics: true
+  num_eval_samples: null
+  failure_reports: true
+  intrinsic_unk_report: true
+  downstream_unk_report: true
+  score_normalization: "char+pmi"
+
+sweep:
+  tokenizers:
+    - type: "bpe"
+      vocab_sizes: [32000]
+      params: {min_frequency: 2}
+    - type: "wordpiece"
+      vocab_sizes: [32000]
+      params: {min_frequency: 2}
+    - type: "morpho_bpe"
+      vocab_sizes: [32000]
+      params: {min_frequency: 2}
+    - type: "character_bert"
+      vocab_sizes: [null]
+      params: {max_char_len: 50, max_word_vocab: 50000}
+    - type: "char_jaber"
+      vocab_sizes: [null]
+      params: {}
+    - type: "farasa_character_bert"
+      vocab_sizes: [null]
+      params: {max_char_len: 25, max_word_vocab: 50000}
+    - type: "charformer"
+      vocab_sizes: [null]
+      params: {max_block_size: 4, downsample_rate: 2, conv_kernel_size: 5, block_attention: false}
+    - type: "araroopat"
+      vocab_sizes: [null]
+      params:
+        max_roots: 10000
+        max_patterns: 4000
+        min_root_freq: 2
+        min_pattern_freq: 2
+        generator_timeout_ms: 50
+        use_diacritized_surface: false
+        cache_corpus_analysis: true
+    - type: "native_llama"
+      vocab_sizes: [null]
+      params: {}
+  tasks:
+    - type: "acva"
+      params: {max_length: 512, seed: 42, clean_latin_rows: true}
+    - type: "alghafa"
+      params: {max_length: 512, seed: 42, clean_latin_rows: true}
+    - type: "arabic_exam"
+      params: {max_length: 512, seed: 42, clean_latin_rows: true}
+    - type: "culture_arabic_mmlu"
+      params: {max_length: 512, seed: 42, clean_latin_rows: true}

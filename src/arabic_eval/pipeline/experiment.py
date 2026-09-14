@@ -24,7 +24,10 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from torch.utils.data import DataLoader
+
 from arabic_eval.config import ExperimentConfig, PhaseConfig
+from arabic_eval.data.collation import get_collator
 from arabic_eval.data.finetune_corpora import build_qa_dataloader, filter_latin_records, load_corpora
 from arabic_eval.data.loader import extract_texts, load_arabic_dataset
 from arabic_eval.evaluation.evaluator import Evaluator
@@ -78,15 +81,57 @@ def _phase_eval_loader(
     )
 
 
+def _packed_mix_loader(
+    phase_name: str,
+    phase_cfg: PhaseConfig,
+    packed,
+    tokenizer,
+) -> "tuple[DataLoader, Dict[str, Any]]":  # noqa: UP037
+    """Train loader over the phase's slice of the packed pretraining mix.
+
+    Blocks were shuffled at pack time, so the loader runs ``shuffle=False``
+    and consumes ``steps × batch_size`` blocks in on-disk order — that is
+    what makes ``consume_sequentially`` (Phase 2 continues after Phase 1's
+    last block) meaningful. The collator is dispatched on
+    ``embedding_type`` exactly like ``build_qa_dataloader``; a packed
+    block carries ``input_ids`` (+ ``char_ids`` for character_cnn) and the
+    collator derives full-sequence causal-LM labels from it.
+    """
+    dataset, info = packed.take(phase_name, phase_cfg.steps * phase_cfg.batch_size)
+    collator = get_collator(
+        tokenizer.embedding_type,
+        pad_token_id=getattr(tokenizer, "pad_token_id", 0),
+        max_length=phase_cfg.max_length,
+    )
+    loader = DataLoader(dataset, batch_size=phase_cfg.batch_size, shuffle=False, collate_fn=collator)
+    logger.info(
+        "[%s] pretraining_mix: blocks [%d, %d) of %d (%d tokens, %.2f epochs%s)",
+        phase_name, info["block_start"], info["block_end"], info["corpus_blocks"],
+        info["n_tokens"], info["epochs"], ", WRAPPED" if info["wrapped"] else "",
+    )
+    return loader, info
+
+
 def _run_all_phases(
     adapter,
     tokenizer,
     training_cfg,
     output_dir: Path,
+    tokenizer_type: str = "",
+    data_dir: Optional[Path] = None,
 ) -> Dict[str, Any]:
     """Run the three phases in sequence. Skipped phases produce a
-    ``{"status": "skipped"}`` record."""
+    ``{"status": "skipped"}`` record.
+
+    A phase whose ``datasets`` is ``["pretraining_mix"]`` trains on the
+    packed raw-text corpus (built once per cell into ``data_dir``, default
+    ``{output_dir}/../data/pretraining_mix``) instead of QA records; the
+    other phases keep the QA path. ``history[phase]["data"]`` records which
+    blocks each mix phase consumed.
+    """
     history: Dict[str, Any] = {}
+    packed = None
+    data_dir = Path(data_dir) if data_dir is not None else Path(output_dir).parent / "data" / "pretraining_mix"
     for phase_name in _PHASE_NAMES:
         phase_cfg: PhaseConfig = getattr(training_cfg.phases, phase_name)
         if not phase_cfg.enabled:
@@ -94,28 +139,41 @@ def _run_all_phases(
             history[phase_name] = {"status": "skipped"}
             continue
 
-        # Build the train loader from the phase's own corpus list.
-        train_records = load_corpora(phase_cfg.datasets, splits="train")
-        if phase_cfg.clean_latin_rows:
-            n_before = len(train_records)
-            train_records = filter_latin_records(train_records)
-            n_after = len(train_records)
-            if n_after == 0:
-                raise ValueError(
-                    f"[{phase_name}] clean_latin_rows dropped every record (was {n_before})"
+        data_info: Dict[str, Any]
+        if phase_cfg.datasets == ["pretraining_mix"]:
+            if packed is None:
+                from arabic_eval.data.pretraining_mix.packing import build_packed_corpus
+                packed = build_packed_corpus(training_cfg, tokenizer, tokenizer_type, data_dir)
+            if phase_cfg.clean_latin_rows:
+                logger.info(
+                    "[%s] clean_latin_rows ignored for pretraining_mix (the pool's "
+                    "Latin-letter-ratio rule already applied)", phase_name,
                 )
-            logger.info(
-                "[%s] clean_latin_rows: dropped %d/%d records (%.1f%% removed)",
-                phase_name, n_before - n_after, n_before,
-                100.0 * (n_before - n_after) / n_before,
+            train_loader, data_info = _packed_mix_loader(phase_name, phase_cfg, packed, tokenizer)
+        else:
+            # Build the train loader from the phase's own corpus list.
+            train_records = load_corpora(phase_cfg.datasets, splits="train")
+            if phase_cfg.clean_latin_rows:
+                n_before = len(train_records)
+                train_records = filter_latin_records(train_records)
+                n_after = len(train_records)
+                if n_after == 0:
+                    raise ValueError(
+                        f"[{phase_name}] clean_latin_rows dropped every record (was {n_before})"
+                    )
+                logger.info(
+                    "[%s] clean_latin_rows: dropped %d/%d records (%.1f%% removed)",
+                    phase_name, n_before - n_after, n_before,
+                    100.0 * (n_before - n_after) / n_before,
+                )
+            train_loader = build_qa_dataloader(
+                train_records, tokenizer,
+                batch_size=phase_cfg.batch_size,
+                max_length=phase_cfg.max_length,
+                loss_target=phase_cfg.loss_target,
+                shuffle=True,
             )
-        train_loader = build_qa_dataloader(
-            train_records, tokenizer,
-            batch_size=phase_cfg.batch_size,
-            max_length=phase_cfg.max_length,
-            loss_target=phase_cfg.loss_target,
-            shuffle=True,
-        )
+            data_info = {"datasets": list(phase_cfg.datasets), "n_records": len(train_records)}
 
         eval_loader = _phase_eval_loader(phase_cfg, tokenizer)
 
@@ -143,6 +201,12 @@ def _run_all_phases(
             # the JSON stays human-readable.
             "train_losses_tail": result.train_losses[-200:],
             "eval_losses": result.eval_losses,
+            "data": data_info,
+        }
+    if packed is not None:
+        history["pretraining_mix"] = {
+            "packed_manifest": packed.manifest,
+            "consumption": packed.consumption,
         }
     return history
 
@@ -248,7 +312,9 @@ def run_experiment(config: ExperimentConfig) -> Dict[str, Any]:
     training_dir = output_dir / "training"
     ensure_dir(training_dir)
     results["training"] = _run_all_phases(
-        adapter, tokenizer, config.training, training_dir
+        adapter, tokenizer, config.training, training_dir,
+        tokenizer_type=config.tokenizer.type,
+        data_dir=output_dir / "data" / "pretraining_mix",
     )
 
     # 6+7) Evaluate on each benchmark + compute MEI
