@@ -265,7 +265,9 @@ def build_pool(
                 reason = quality_reason(text, quality)
                 if reason is None and heur.enabled:
                     score = dialect_marker_score(text)
-                    if score.n_markers >= heur.min_markers and score.per_1k_words > heur.max_markers_per_1k_words:
+                    if (score.n_markers >= heur.min_markers
+                            and len(score.matched) >= heur.min_distinct_markers
+                            and score.per_1k_words > heur.max_markers_per_1k_words):
                         reason = "dialect_markers"
                         top = " ".join(f"{m}×{c}" for m, c in score.top(5))
                         dialect_writer.writerow({

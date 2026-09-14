@@ -241,12 +241,18 @@ class MixDedupConfig(BaseModel):
 
 class MixHeuristicMsaConfig(BaseModel):
     """Closed-list dialect-marker gate (data/pretraining_mix/filters.py).
-    Drop a document whose marker density exceeds ``max_markers_per_1k_words``
-    **and** whose marker count reaches ``min_markers`` — the count floor
-    stops one stray token from sinking a 50-word document (1/50 = 20/1k)."""
+    Drop a document only when all three hold: marker density exceeds
+    ``max_markers_per_1k_words``, at least ``min_markers`` markers, and at
+    least ``min_distinct_markers`` *different* marker types. The count floor
+    stops one stray token from sinking a 50-word document; the distinct
+    floor stops a single repeated token — calibration on 2 000 docs/source
+    showed every false positive was one type repeated (``شو`` as the
+    Japanese name Shū ×22, ``مش`` in a quoted song title ×4, ``وش`` as the
+    product word "wash" ×3) while every true positive mixed several."""
     enabled: bool = True
-    max_markers_per_1k_words: float = 5.0
+    max_markers_per_1k_words: float = 8.0
     min_markers: int = 3
+    min_distinct_markers: int = 2
 
 
 class MixCamelDidConfig(BaseModel):

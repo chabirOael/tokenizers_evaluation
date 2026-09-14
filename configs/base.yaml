@@ -43,7 +43,7 @@ training:
     sources:
       - name: "fineweb2_arb"        # HuggingFaceFW/fineweb-2, arb_Arab (streamed, shard-shuffled)
         share: 0.70
-        params: {config: "arb_Arab", min_language_score: 0.90}
+        params: {config: "arb_Arab", min_language_score: 0.80}   # 0.7–0.9 rows measured indistinguishable from ≥0.9; 0.90 skipped 39 % of the stream for nothing
       - name: "wikipedia_ar"        # wikimedia/wikipedia 20231101.ar
         share: 0.20
         params: {dump: "20231101.ar", skip_title_prefixes: ["قائمة"]}
@@ -59,8 +59,8 @@ training:
       minhash: {enabled: true, num_perm: 128, shingle_words: 5, threshold: 0.80}
       priority: ["wikipedia_ar", "fineweb2_arb", "arabicweb24"]   # surviving copy of a cross-source duplicate
     msa_filter:
-      heuristic: {enabled: true, max_markers_per_1k_words: 5.0, min_markers: 3}
-      camel_did: {enabled: false, sentences_per_doc: 8, min_sentence_words: 5, min_msa_share: 0.30}  # opt-in; MADAR-trained, lenient by design
+      heuristic: {enabled: true, max_markers_per_1k_words: 8.0, min_markers: 3, min_distinct_markers: 2}   # calibrated 2026-09-14 (see CLAUDE.md)
+      camel_did: {enabled: false, sentences_per_doc: 8, min_sentence_words: 5, min_msa_share: 0.30}  # opt-in; measured to flag 16 % of *MSA* Wikipedia — keep off
     quality:
       min_words: 50
       max_words: 3000               # truncated at a paragraph boundary, not dropped

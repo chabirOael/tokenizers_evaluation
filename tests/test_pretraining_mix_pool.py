@@ -256,6 +256,20 @@ def test_build_pool_drop_reasons_and_cross_source_dedup(tmp_path):
     assert {s["reason"] for s in samples} >= {"near_duplicate", "dialect_markers", "too_short", "latin_heavy"}
 
 
+def test_build_pool_dialect_gate_needs_distinct_marker_types(tmp_path):
+    """One repeated marker type never trips the gate (Japanese name شو,
+    a quoted song title مش …); several distinct types at density do."""
+    cfg = mix_cfg(tmp_path, [("web", 1.0)], total_words=2000)
+    shu = msa_doc(3, salt=5) + "\n" + " ".join(["شو"] * 12)          # 12 × one type
+    real = msa_doc(1, salt=6) + "\n" + EGYPTIAN + "\n" + LEVANTINE   # many types
+    docs = [SourceDoc(id="shu", text=shu, kind="web"), SourceDoc(id="real", text=real, kind="web"),
+            *_docs("d", 10, salt0=60)]
+    out = build_pool(cfg, sources_override={"web": ListSource("web", docs)})
+    kept = [i for i, _ in iter_pool_docs(out, "web")]
+    assert "shu" in kept and "real" not in kept
+    assert load_pool_manifest(out)["sources"][0]["stats"]["dropped"]["dialect_markers"] == 1
+
+
 def test_build_pool_paragraph_dedup_strips_boilerplate_from_docs(tmp_path):
     boiler = "جميع الحقوق محفوظة لموقعنا الإلكتروني الرسمي هذا العام"
     cfg = mix_cfg(tmp_path, [("web", 1.0)], total_words=300)

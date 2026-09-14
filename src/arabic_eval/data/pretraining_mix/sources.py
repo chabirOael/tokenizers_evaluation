@@ -154,9 +154,11 @@ class ArabicWeb24Source(BaseSource):
             ) from e
 
     def _to_doc(self, row):
+        meta = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
+        url = row.get("url") or meta.get("url")
         return SourceDoc(
-            id=str(row.get("id") or row.get("url") or ""), text=self._text_of(row),
-            kind=self.kind, meta={"url": row.get("url")},
+            id=str(row.get("id") or url or ""), text=self._text_of(row),
+            kind=self.kind, meta={"url": url},
         )
 
 
