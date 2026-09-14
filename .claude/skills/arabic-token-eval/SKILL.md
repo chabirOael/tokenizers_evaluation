@@ -41,6 +41,8 @@ Every dispatch in the platform branches on **`embedding_type`**, not on tokenize
 
 `native_llama` is a 9th wrapper that uses Llama-3.2-1B's pretrained tokenizer — `embedding_type=standard`, `train()` is a no-op, vocab=128256. Treat it as a normal tokenizer under the 3-phase pipeline (the previous "baseline-only" carve-out is gone — under the new pipeline every tokenizer runs the same phases).
 
+`native_qwen3` is the same idea for Qwen3-4B-Base (subclass of `NativeLlamaTokenizer`; pairs with `model.type: qwen3`). Three Qwen facts to keep in mind: no BOS is ever inserted, there is no `unk_token` key in `special_tokens` (UNK rate 0 / header-only UNK CSVs are correct, not a bug), and `vocab_size` reports the model's *padded* row count (151936, not `len(tokenizer)` = 151669) so the resize is a true no-op. Use the Base checkpoint, never the post-trained `Qwen/Qwen3-4B`.
+
 **Pre-segmentation and embedding family are orthogonal.** `farasa_character_bert` shows this: Farasa pre-segmentation (the front-end of MorphoBPE) can be paired with the CharCNN embedding (the back-end of CharacterBERT) by subclassing `CharacterBERTTokenizer` and overriding `train`/`encode` to apply `segment_with_farasa()` before delegating to `super()`. When the only thing you're changing is the pre-step, **subclass — don't copy the encoding logic**. The CharCNN dispatch and `CharacterCNNCollator` are reused unchanged.
 
 **Where the work happens differs across families.** For the first three families the tokenizer *file* does most of the work (vocab building, segmentation, char-id encoding). **For Charformer the tokenizer file is essentially a no-op** — `train()` literally returns immediately, the vocab is a fixed 260 ids (256 bytes + 4 specials), and all the actual "subword learning" lives in `models/embeddings/charformer_embed.py` (the `GBSTEmbedding` module). When debugging or extending Charformer, look in the embedding module first; the tokenizer file has nothing interesting to change.
@@ -108,9 +110,11 @@ This distinction is wired up via a `raw_token_count` counter that runs in parall
 
 ## Critical implementation gotchas
 
-### Llama-3.2-1B has tied embeddings
+### Llama-3.2-1B has tied embeddings (so does Qwen3-4B-Base)
 
 `lm_head.weight is model.embed_tokens.weight` — they are literally the same tensor. So `lm_head` does **not** appear in `model.named_parameters()`; only `model.embed_tokens.weight` does. The Phase 1 freeze list `["embed_tokens", "lm_head"]` is still correct (the freezing helper warns when `lm_head` matches no parameter and continues, recognizing the tied-weight case) — training `embed_tokens` IS training `lm_head`. Don't try to "fix" the warning by dropping `lm_head` from the YAML; if a future model with untied weights is used, `lm_head` will then match a real parameter and we want it trainable.
+
+Qwen3-0.6B/1.7B/4B are tied too (`tie_word_embeddings: true`), so the same warning fires under `model.type: qwen3`; Qwen3-8B+ are untied and would take the other branch.
 
 ### Phase runner uses substring-match freezing with a wildcard
 
@@ -202,6 +206,8 @@ Each character is one token → sequences are 4–6× longer than subword. Defau
 Charformer's tokenizer file (`tokenizers/charformer.py`) is a no-op byte encoder with a fixed 260-id vocab — `train()` literally returns immediately. The actual learning lives in `models/embeddings/charformer_embed.py` as `GBSTEmbedding`. When debugging or extending Charformer, that's the file to open.
 
 Things that bite when working with it:
+
+- **Odd byte lengths must be padded to a multiple of `d_s` before GBST.** `CharformerOutputHead` upsamples to `ceil(L/d_s)·d_s` positions, so with `L` odd HF's loss sees `L+1` logits vs `L` labels and raises. `_forward_charformer` pads `input_ids`/mask/labels first (fixed 2026-09-14 — the `all_tokenizers_sweep` charformer cell had been dying on this). Don't move that padding into the collator: `_compute_loglikelihood` builds its own batch without one.
 
 - **GBST is non-causal within the block window.** A block of size `b` at position `i` pools `X[i:i+b]`, so position `i` sees up to position `i+M-1` where M is `max_block_size` (default 4). This is harmless for teacher-forced LM training and log-likelihood scoring (which is what our pipeline does), but it breaks naive autoregressive byte generation. `LlamaAdapter.generate()` raises `NotImplementedError` for `CHARFORMER`. **Don't try to fix this with a "causal GBST" variant** without also reading the paper carefully — the original Charformer is encoder-decoder, so causality was never an issue there.
 
@@ -320,6 +326,8 @@ evaluation:
 - **"Charformer's GBST is just a tokenizer — go put it in `src/arabic_eval/tokenizers/charformer.py`."** Half right — there is a tokenizer file, but it's a no-op byte encoder. The actual learning is `GBSTEmbedding` in `models/embeddings/charformer_embed.py`. Hyperparameter changes (M, d_s, conv_kernel) flow from the tokenizer YAML's `params` dict through `get_embedding_config()` to the embedding module's constructor; you almost never want to touch the tokenizer file itself.
 
 - **"Charformer should be able to generate text — it's a 'character transformer' after all."** It can in the original paper *because* the original Charformer is encoder-decoder and the decoder is a normal byte-level decoder. In our decoder-only setup, GBST's block-pooling looks ahead within blocks of size up to M, which is incompatible with autoregressive decoding. Generation isn't required by the 3-phase pipeline (eval is log-likelihood MCQ).
+
+- **"Write a full new `BaseModelAdapter` for Qwen / Mistral / Gemma."** Check the attribute surface first. Any HF causal LM with `model.model.embed_tokens` / `model.model.layers` / `model.lm_head` / `inputs_embeds` forward runs through `LlamaAdapter` unchanged — `Qwen3Adapter` is a ~20-line subclass that only changes the default checkpoint. Pin the claim with the tiny-random-model tests in `tests/test_qwen3_support.py` rather than by downloading weights.
 
 - **"Add LoRA / PEFT to speed up the SFT loop."** Today's loop is full-model — `LlamaAdapter.get_trainable_parameters()` plus the freezing helper covers it. Adding LoRA is a new model adapter (wraps the base with LoRA layers) plus a freeze-pattern that targets the LoRA params, not a flag on `PhaseConfig`. Confirm with the user that they want a new adapter (and accept the comparison-cleanliness trade-off — LoRA-tuned variants are no longer apples-to-apples vs full-FT) before starting.
 

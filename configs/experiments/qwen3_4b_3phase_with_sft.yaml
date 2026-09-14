@@ -1,0 +1,81 @@
+# Qwen3-4B-Base + native_qwen3 tokenizer + full 3-phase training pipeline.
+#
+# Second base-model family alongside Llama-3.2 (1B / 3B). Qwen3ForCausalLM
+# exposes the same attribute surface LlamaAdapter relies on (embed_tokens /
+# layers / lm_head / inputs_embeds), so ``Qwen3Adapter`` is a thin
+# registration over it and the rest of the pipeline (3-phase training +
+# LightEval-official eval prompts) runs unchanged. Phase 1 stays disabled
+# (native tokenizer → embeddings start pretrained); Phase 2 + Phase 3 train
+# on the same corpora as the Llama references.
+#
+# Compare against native_llama_3phase_with_sft / llama_3b_3phase_with_sft on
+# the same eval task list to read the base-model effect. For from-scratch
+# tokenizers on Qwen3, copy any existing tokenizer experiment and override
+# only the ``model:`` block (keep Phase 1 enabled there).
+#
+# Qwen3-4B-Base facts that matter here (see tokenizers/native_qwen3.py):
+#   * Base (not the post-trained Qwen/Qwen3-4B) — no chat template, no
+#     thinking mode, eos = <|endoftext|> (151643). Apples-to-apples with the
+#     Llama-3.2 base checkpoints.
+#   * No BOS, no UNK; pad = eos = 151643. Embedding matrix is padded to
+#     151936 rows (len(tokenizer) = 151669) — the wrapper reports 151936 so
+#     resize_token_embeddings is a no-op.
+#   * Tied embeddings (lm_head.weight is embed_tokens.weight), like
+#     Llama-3.2-1B — the freezing helper's lm_head warning is expected.
+#   * Not gated on the Hub; ~8 GB of bf16 weights.
+#   * Wall time: ~15-20h on H100 with SFT (~3× Llama-3.2-1B per step).
+#     Full-FT AdamW in bf16 needs ~32 GB for weights+grads+states plus
+#     activations — fits an 80 GB H100 at the default 4×4 @ 512 batch.
+
+experiment:
+  name: "qwen3_4b_3phase_with_sft"
+  output_dir: "outputs/experiments/qwen3_4b_3phase_with_sft"
+  seed: 42
+
+tokenizer:
+  type: "native_qwen3"
+  vocab_size: null     # NativeQwen3 wrapper ignores this; train() is a no-op
+  load_path: null
+  save_path: "outputs/tokenizers/native_qwen3_4b"
+  # Pinned explicitly so the tokenizer and model always come from the same
+  # checkpoint (the wrapper also reads this repo's config.json for the
+  # padded vocab_size).
+  params:
+    model_name_or_path: "Qwen/Qwen3-4B-Base"
+
+model:
+  type: "qwen3"
+  name_or_path: "Qwen/Qwen3-4B-Base"
+  dtype: "bfloat16"
+  device: "auto"
+
+training:
+  phases:
+    embedding_alignment:
+      # native_qwen3 embeddings start as the pretrained Qwen3-4B-Base weights
+      # (resize_token_embeddings is a no-op when vocab matches), so Phase 1
+      # only damages them. See native_llama_3phase_with_sft.yaml.
+      enabled: false
+
+sweep:
+  tokenizers:
+    - type: "native_qwen3"
+      vocab_sizes: [null]
+  tasks:
+    - type: "acva"
+      params:
+        num_fewshot: 0   # ACVA: 0-shot (T/F task — few-shot hurts under PMI)
+    - type: "alghafa"
+      params: {}
+    - type: "arabic_exam"
+      params: {}
+
+evaluation:
+  intrinsic_metrics: true
+  morphological_metrics: true
+  morph_sample_size: 500
+  downstream_metrics: true
+  failure_reports: true
+  score_normalization: "char+pmi"
+  num_fewshot: 3            # 3-shot in-context demos per LightEval MCQ row
+  num_eval_samples: null

@@ -1,0 +1,5 @@
+model:
+  type: "qwen3"
+  name_or_path: "Qwen/Qwen3-4B-Base"
+  dtype: "bfloat16"
+  device: "auto"

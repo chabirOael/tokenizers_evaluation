@@ -256,10 +256,27 @@ class LlamaAdapter(BaseModelAdapter):
         attention_mask = batch.get("attention_mask")  # [B, L] at byte level
         labels = batch.get("labels")  # [B, L] at byte level
 
+        d_s = self._charformer_downsample_rate
+        # The output head upsamples to ceil(L / d_s) * d_s positions, so an
+        # odd byte length would yield L+1 logits against L labels and HF's
+        # loss raises ("Expected input batch_size (2024) to match target
+        # batch_size (2020)" — this killed the charformer sweep cell).
+        # Pad every byte-level tensor up to a multiple of d_s first: pad
+        # bytes use pad_token_id, mask 0, labels -100, so nothing leaks
+        # into attention or loss.
+        L = input_ids.size(1)
+        pad = (d_s - L % d_s) % d_s if d_s > 1 else 0
+        if pad:
+            pad_id = self._model.config.pad_token_id or 0
+            input_ids = torch.nn.functional.pad(input_ids, (0, pad), value=pad_id)
+            if attention_mask is not None:
+                attention_mask = torch.nn.functional.pad(attention_mask, (0, pad))
+            if labels is not None:
+                labels = torch.nn.functional.pad(labels, (0, pad), value=-100)
+
         # GBST -> [B, ceil(L / d_s), D]
         inputs_embeds = self._model.model.embed_tokens(input_ids)
 
-        d_s = self._charformer_downsample_rate
         if d_s > 1 and attention_mask is not None:
             # A downsampled position is "valid" if any byte in its window is
             # valid. Pad the byte-level mask up to a multiple of d_s, then

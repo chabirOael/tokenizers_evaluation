@@ -2,7 +2,10 @@
 
 Wraps `meta-llama/Llama-3.2-1B`'s pretrained tokenizer (or any
 ``AutoTokenizer.from_pretrained`` target) so it slots into the pipeline like
-any other tokenizer. Unlike the eight from-scratch tokenizers, ``train()`` is
+any other tokenizer. The special-token IDs below are Llama-specific — for
+another model family subclass and override ``special_tokens`` (and
+``vocab_size`` if the embedding matrix is padded), as
+``native_qwen3.NativeQwen3Tokenizer`` does. Unlike the eight from-scratch tokenizers, ``train()`` is
 a no-op — the tokenizer ships with the model.
 
 Used as the basis for two baselines:

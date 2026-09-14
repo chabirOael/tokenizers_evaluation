@@ -1,0 +1,80 @@
+# Smoke-scale wiring check for Qwen3-4B-Base (30 steps per phase, 30 eval
+# rows, ACVA only). NOT meant for results — it exists to prove the model
+# loads, adapts, trains, checkpoints and evaluates before a full-budget run.
+#
+# Two sweep cells cover both integration paths:
+#   * native_qwen3 — no-op resize on the padded 151936-row matrix, tied
+#     lm_head warning in the freezing helper, BOS-less LightEval scoring.
+#     (Phase 1 runs here too — the sweep has one phase config for both cells;
+#     the real qwen3_4b_3phase_* configs disable it for native_qwen3.)
+#   * bpe @ 8K (trained on 200 texts) — the from-scratch path: Phase 1 ON,
+#     resize 151936 → 8000 keeps the first 8K pretrained rows. (8K, not
+#     16K: a sweep cell saves to outputs/tokenizers/<cell_name>, and bpe_16k
+#     is a real artifact we must not clobber with a smoke tokenizer.)
+#
+# Batch sizes are the real defaults (BS 4, grad-accum 4, max_length 512)
+# so the run also proves memory headroom at the full-budget shape.
+#
+# Run:
+#   .venv/bin/python scripts/run_experiment.py \
+#     --config configs/experiments/_smoke_qwen3_4b.yaml --sweep
+
+experiment:
+  name: "_smoke_qwen3_4b"
+  output_dir: "outputs/experiments/_smoke_qwen3_4b"
+  seed: 42
+
+tokenizer:
+  type: "native_qwen3"
+  vocab_size: null
+  load_path: null
+  save_path: "outputs/tokenizers/_smoke_native_qwen3_4b"
+  params:
+    model_name_or_path: "Qwen/Qwen3-4B-Base"
+
+model:
+  type: "qwen3"
+  name_or_path: "Qwen/Qwen3-4B-Base"
+  dtype: "bfloat16"
+  device: "auto"
+
+data:
+  max_train_samples: 200       # tiny corpus for the bpe tokenizer-training cell
+  max_eval_samples: 100
+
+training:
+  phases:
+    embedding_alignment:
+      # Enabled here (unlike the real native config) so the bpe cell
+      # exercises Phase 1 on Qwen3. For native_qwen3 it just drifts the
+      # pretrained rows for 30 steps — irrelevant at smoke scale.
+      steps: 30
+    warmup:
+      steps: 30
+      warmup_steps: 5
+    sft:
+      steps: 30
+      warmup_steps: 5
+      early_stopping:
+        eval_every_n_steps: 15
+        min_steps_before_stop: 10
+        patience: 3
+
+evaluation:
+  intrinsic_metrics: true
+  morphological_metrics: false   # skip Farasa/qalsadi for smoke speed
+  downstream_metrics: true
+  num_eval_samples: 30           # tiny eval set so a benchmark pass is seconds
+  failure_reports: false
+  score_normalization: "char+pmi"
+
+sweep:
+  tokenizers:
+    - type: "native_qwen3"
+      vocab_sizes: [null]
+    - type: "bpe"
+      vocab_sizes: [8000]
+  tasks:
+    - type: "acva"
+      params:
+        num_fewshot: 0

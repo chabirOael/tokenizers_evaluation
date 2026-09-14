@@ -7,3 +7,7 @@ try:
     from arabic_eval.models import llama_adapter  # noqa: F401
 except ImportError:
     pass
+try:
+    from arabic_eval.models import qwen3_adapter  # noqa: F401
+except ImportError:
+    pass
