@@ -10,6 +10,11 @@ Routes
     GET  /explainer      docs/araroopat_explainer.html      (the existing encode explainer, iframed)
     GET  /api/health     {"ok": true, "camel_python": "...", "warm_ms": ...}
     POST /api/trace      {"text": "...", "params": {...}}  →  full step trace (see araroopat_trace.py)
+                         The response carries a ``trace_id``; the trained tokenizer is kept in
+                         memory (one session — a new trace replaces it).
+    POST /api/decode     {"trace_id": "...", "items": ["[ROOT_كتب]", 128, ...]}  →  real decode()
+                         of that emission on the kept tokenizer + per-prefix streaming view
+                         (see ``trace_decode``). 409 if the trace_id is not the current one.
 
 Stdlib only (http.server) — no new dependencies. The CAMeL bridge is
 single-threaded, so trace requests are serialized with a lock; the bridge
@@ -23,6 +28,7 @@ import logging
 import sys
 import threading
 import time
+import uuid
 import webbrowser
 from http import HTTPStatus
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
@@ -36,7 +42,11 @@ from arabic_eval.tokenizers.araroopat_bridge import (  # noqa: E402
     _resolve_camel_python,
     get_shared_bridge,
 )
-from arabic_eval.tokenizers.araroopat_trace import trace_training  # noqa: E402
+from arabic_eval.tokenizers.araroopat_trace import (  # noqa: E402
+    MAX_PLAYGROUND_TOKENS,
+    trace_decode,
+    trace_training_with_tokenizer,
+)
 
 DOCS = REPO_ROOT / "docs"
 PAGE = DOCS / "araroopat_train_explorer.html"
@@ -47,6 +57,8 @@ log = logging.getLogger("araroopat.explorer")
 
 _TRACE_LOCK = threading.Lock()
 _STATE = {"camel_python": None, "warm_ms": None}
+# The trained tokenizer of the most recent trace, kept for /api/decode.
+_SESSION: dict = {"trace_id": None, "tokenizer": None}
 
 # Explorer-side parameter allowlist (anything else in the POST body is ignored).
 _INT_PARAMS = ("max_roots", "max_patterns", "min_root_freq", "min_pattern_freq")
@@ -98,7 +110,7 @@ class Handler(SimpleHTTPRequestHandler):
 
     def do_POST(self) -> None:  # noqa: N802
         route = self.path.split("?", 1)[0]
-        if route != "/api/trace":
+        if route not in ("/api/trace", "/api/decode"):
             self._send_json({"error": "not found"}, HTTPStatus.NOT_FOUND)
             return
         try:
@@ -106,6 +118,9 @@ class Handler(SimpleHTTPRequestHandler):
             req = json.loads(self.rfile.read(n).decode("utf-8") or "{}")
         except (ValueError, json.JSONDecodeError) as e:
             self._send_json({"error": f"bad JSON body: {e}"}, HTTPStatus.BAD_REQUEST)
+            return
+        if route == "/api/decode":
+            self._handle_decode(req)
             return
 
         text = (req.get("text") or "").strip()
@@ -133,7 +148,10 @@ class Handler(SimpleHTTPRequestHandler):
         t0 = time.perf_counter()
         with _TRACE_LOCK:
             try:
-                trace = trace_training(text, params)
+                trace, tokenizer = trace_training_with_tokenizer(text, params)
+                _SESSION["trace_id"] = uuid.uuid4().hex
+                _SESSION["tokenizer"] = tokenizer
+                trace["trace_id"] = _SESSION["trace_id"]
             except CamelBridgeError as e:
                 log.error("CAMeL bridge error: %s", e)
                 self._send_json({"error": f"CAMeL bridge error: {e}"},
@@ -146,6 +164,43 @@ class Handler(SimpleHTTPRequestHandler):
                 return
         trace["server_ms"] = round((time.perf_counter() - t0) * 1000, 1)
         self._send_json(trace)
+
+    def _handle_decode(self, req: dict) -> None:
+        trace_id = req.get("trace_id")
+        items = req.get("items")
+        if not isinstance(items, list) or not items:
+            self._send_json({"error": "items must be a non-empty list of ids / token strings"},
+                            HTTPStatus.BAD_REQUEST)
+            return
+        if len(items) > MAX_PLAYGROUND_TOKENS:
+            self._send_json({"error": f"too many items (> {MAX_PLAYGROUND_TOKENS})"},
+                            HTTPStatus.BAD_REQUEST)
+            return
+        with _TRACE_LOCK:
+            if _SESSION["tokenizer"] is None or trace_id != _SESSION["trace_id"]:
+                self._send_json({"error": "no matching trained tokenizer in this server session — "
+                                          "run the trace again, then decode"},
+                                HTTPStatus.CONFLICT)
+                return
+            t0 = time.perf_counter()
+            try:
+                result = trace_decode(_SESSION["tokenizer"], items)
+            except ValueError as e:
+                self._send_json({"error": str(e)}, HTTPStatus.BAD_REQUEST)
+                return
+            except CamelBridgeError as e:
+                log.error("CAMeL bridge error: %s", e)
+                self._send_json({"error": f"CAMeL bridge error: {e}"},
+                                HTTPStatus.INTERNAL_SERVER_ERROR)
+                return
+            except Exception as e:  # noqa: BLE001
+                log.exception("decode failed")
+                self._send_json({"error": f"{type(e).__name__}: {e}"},
+                                HTTPStatus.INTERNAL_SERVER_ERROR)
+                return
+        result["trace_id"] = trace_id
+        result["server_ms"] = round((time.perf_counter() - t0) * 1000, 1)
+        self._send_json(result)
 
 
 def _warm_bridge() -> None:

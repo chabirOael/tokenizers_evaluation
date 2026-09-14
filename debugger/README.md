@@ -47,6 +47,28 @@ Playback: **Play / Prev / Next / Show all**, a clickable step rail, and a reveal
 selector. Each word in step 07 expands to show the raw CAMeL candidate dict and the
 gate-by-gate decision.
 
+## LLM emission playground (after the trace)
+
+Below the steps, a playground lets you emit **any id sequence the way a language model
+would** and run it through the real `decode()` of the tokenizer just trained (the server
+keeps that instance; the trace response carries a `trace_id`):
+
+- type ids and/or token strings, whitespace-separated (`1 6 119 128 2` or
+  `[CLITICP_و] [ROOT_كتب] [PAT_1ِ2ا3ِ] </s>`), or click tokens in the vocab palette,
+  **Prefill from encode** (step 13's stream), or **Random emission**;
+- nothing is validated for "grammar" — orphan roots, `[PAT_*]` with no root, an unclosed
+  literal, leading enclitics, special tokens mid-stream, ids outside the vocab (silently
+  dropped by `decode()`), and `(ROOT, PAT)` pairs unseen in the corpus (→ CAMeL generator,
+  tier 2) all go straight in;
+- the result shows the decoded text, a token-by-token walkthrough whose **output-so-far**
+  column is `decode(ids[:k])` for each prefix (retracted words struck through, new words
+  highlighted — a pending root shows nothing until its `[PAT_*]` arrives), a per-pair tier
+  table, the generator's NDJSON lines, and counters (orphan roots, PAT-without-root,
+  unclosed literal, ignored ids, tier 1/2/3). The annotation column is an interpretation
+  from the token family; only the prefix decodes are ground truth.
+- `POST /api/decode {"trace_id", "items"}`; 409 if the server no longer holds that trace.
+  Cap 512 tokens. Runs are embedded in a saved snapshot (frozen there — no server).
+
 **Save as standalone HTML** downloads a single self-contained file with the results
 embedded. It opens from `file://` with no server and no CAMeL, keeps playback, and is
 read-only ("snapshot mode").
@@ -64,7 +86,7 @@ budget loop cut everything below the threshold (step 10).
 
 | File | Role |
 |---|---|
-| `debugger/serve_araroopat_explorer.py` | stdlib `http.server`; `GET /` page, `GET /explainer` old page, `GET /api/health`, `POST /api/trace` |
+| `debugger/serve_araroopat_explorer.py` | stdlib `http.server`; `GET /` page, `GET /explainer` old page, `GET /api/health`, `POST /api/trace`, `POST /api/decode` |
 | `src/arabic_eval/tokenizers/araroopat_trace.py` | the instrumented replay; calls the real helpers and asserts its explanation equals the real result |
 | `docs/araroopat_train_explorer.html` | the page (vanilla JS, no build step) |
 

@@ -261,6 +261,36 @@ td.ar,th.ar{text-align:right}
 .snapbanner.on{display:block}
 .snapbanner b{color:var(--accent)}
 textarea[readonly]{opacity:.85}
+/* playground */
+#pg{display:none;margin:0 0 80px}
+#pg.on{display:block}
+.pg-grid{display:grid;grid-template-columns:minmax(0,1.3fr) minmax(300px,1fr);gap:16px}
+@media (max-width:1000px){.pg-grid{grid-template-columns:1fr}}
+#pg-input{font-family:var(--mono);font-size:13px;direction:ltr;text-align:left;min-height:96px;line-height:1.8}
+.pg-parse{display:flex;flex-wrap:wrap;gap:2px;min-height:30px;margin-top:8px;direction:ltr}
+.tok.unknown{background:var(--bad-soft);color:var(--bad);border-color:var(--bad)}
+.tok.oor{background:var(--unk-soft);color:var(--unk);border-style:dashed;border-color:var(--unk)}
+.pg-tabs{display:flex;flex-wrap:wrap;gap:4px;margin:8px 0}
+.pg-tabs button{border:1px solid var(--line);background:var(--sunken);color:var(--ink-2);border-radius:6px;padding:3px 9px;font:inherit;font-size:11.5px;cursor:pointer;font-family:var(--mono)}
+.pg-tabs button.cur{background:var(--accent);color:#fff;border-color:var(--accent)}
+.pg-palette{max-height:260px;overflow:auto;border:1px solid var(--line);border-radius:8px;padding:6px;display:flex;flex-wrap:wrap;gap:2px;direction:ltr;background:var(--paper)}
+.pg-palette .tok{cursor:pointer}
+.pg-palette .tok:hover{outline:2px solid var(--accent)}
+.pg-filter{width:100%;border:1px solid var(--line);border-radius:6px;padding:6px 8px;font:inherit;font-size:12.5px;background:var(--paper);color:var(--ink);margin-bottom:6px}
+.pg-run{border:1px solid var(--line);border-radius:var(--radius);margin-top:14px;overflow:hidden}
+.pg-run>summary{padding:10px 14px;background:var(--sunken);display:flex;align-items:center;gap:12px;flex-wrap:wrap;list-style:none}
+.pg-run>summary::-webkit-details-marker{display:none}
+.pg-run .inner{padding:14px}
+.pg-out{font-family:var(--naskh);font-size:26px;direction:rtl;unicode-bidi:isolate;line-height:1.7;padding:12px 16px;background:var(--paper);border:1px solid var(--line);border-radius:8px;min-height:58px}
+.pg-out .new{background:var(--good-soft);color:var(--good);border-radius:4px;padding:0 3px}
+.pg-out .cursor{display:inline-block;width:2px;height:1em;background:var(--accent);vertical-align:-.15em;animation:pulse .9s ease-in-out infinite}
+tr.pg-row{opacity:0;transform:translateY(4px);transition:opacity .3s ease,transform .3s ease}
+tr.pg-row.on{opacity:1;transform:none}
+tr.pg-row.cur td{background:var(--accent-soft)}
+td.ann{font-size:12px;color:var(--ink-2)}
+.pg-outcell{font-family:var(--naskh);font-size:17px;direction:rtl;unicode-bidi:isolate;text-align:right}
+.pg-outcell .new{background:var(--good-soft);color:var(--good);border-radius:3px;padding:0 2px}
+.pg-outcell .gone{color:var(--bad);text-decoration:line-through;opacity:.7}
 footer{border-top:1px solid var(--line);padding:18px 0 40px;color:var(--ink-3);font-size:12px}
 </style>
 </head>
@@ -329,6 +359,44 @@ footer{border-top:1px solid var(--line);padding:18px 0 40px;color:var(--ink-3);f
   </div>
 
   <div id="steps"></div>
+
+  <!-- ===================== decode playground (after the trace) ===================== -->
+  <section class="card" id="pg">
+    <div class="stephead">
+      <span class="stepnum">▶</span><h3>LLM emission playground — real <code class="mono">decode()</code> on the tokenizer just trained</h3>
+      <span class="badge neutral">after training</span><span class="ref" id="pg-ref"></span>
+    </div>
+    <div class="stepbody">
+      <div class="notes">
+        <p>Compose any id sequence — the way a language model would emit it — and it goes straight into <code class="mono">AraRooPatTokenizer.decode()</code> of the instance built above. Nothing is validated for "grammar": orphan roots, a <code class="mono">[PAT_*]</code> with no root, an unclosed literal, a leading enclitic, special tokens mid-stream, ids that are not in the vocab, and <code class="mono">(ROOT, PAT)</code> pairs the corpus never contained (→ CAMeL generator, tier 2) are all fair game.</p>
+        <p>The <b>output-so-far</b> column is <code class="mono">decode(ids[:k])</code> for every prefix — the ground truth of what a consumer sees as tokens arrive. The <b>annotation</b> column is an interpretation derived from the token family; it never feeds the output.</p>
+      </div>
+      <div id="pg-frozen" class="snapbanner"></div>
+      <div class="pg-grid">
+        <div>
+          <div class="eyebrow">Emission — ids and/or token strings, whitespace-separated</div>
+          <textarea id="pg-input" spellcheck="false" placeholder="e.g.  1 6 119 128 2   or   [CLITICP_و] [ROOT_كتب] [PAT_1ِ2ا3ِ] </s>"></textarea>
+          <div class="pg-parse" id="pg-parse"></div>
+          <div class="runrow">
+            <button class="btn primary" id="pg-decode">Decode ▶</button>
+            <label class="small muted"><input type="checkbox" id="pg-stream" checked> stream token by token</label>
+            <button class="btn" id="pg-prefill" title="load the encode() stream of step 13">Prefill from encode</button>
+            <button class="btn" id="pg-random" title="draw random ids from the trained vocab">Random emission</button>
+            <input type="number" id="pg-n" value="12" min="1" max="512" style="width:64px" class="mono" title="length of the random emission">
+            <button class="btn" id="pg-clear">Clear</button>
+          </div>
+          <div id="pg-error" class="err" hidden></div>
+        </div>
+        <div>
+          <div class="eyebrow">Trained vocab — click to append</div>
+          <div class="pg-tabs" id="pg-tabs"></div>
+          <input class="pg-filter" id="pg-filter" placeholder="filter…">
+          <div class="pg-palette" id="pg-palette"></div>
+        </div>
+      </div>
+      <div id="pg-runs"></div>
+    </div>
+  </section>
 </section>
 
 <!-- ===================== TAB 2: existing explainer ===================== -->
@@ -719,12 +787,134 @@ async function run(){
     renderTrace(t);
     window.__trace = t;
     $('#save').disabled = false;
+    pgInit(t);
   } catch(e){
     $('#status').textContent = ''; $('#error').hidden = false; $('#error').textContent = e.message;
   } finally { btn.disabled = false; }
 }
 $('#run').onclick = run;
 $('#text').addEventListener('keydown', e => { if ((e.ctrlKey||e.metaKey) && e.key==='Enter') run(); });
+
+/* ------------------------------------------------------------------ */
+/* decode playground                                                   */
+/* ------------------------------------------------------------------ */
+const PG = {vocab:[], byToken:new Map(), byId:new Map(), fam:'root', frozen:false, timer:null};
+const PG_FAMS = ['root','pat','cliticp','clitice','prep','lit','char','digit','punct','special'];
+const PG_WEIGHTS = {root:.34, pat:.34, cliticp:.1, clitice:.06, prep:.04, punct:.04, digit:.03, lit:.02, char:.02, special:.01};
+
+function pgInit(t, opts={}){
+  const vstep = t.steps.find(s=>s.id==='vocab'); if (!vstep) return;
+  PG.vocab = vstep.data.vocab; PG.byToken = new Map(PG.vocab.map(v=>[v.token, v])); PG.byId = new Map(PG.vocab.map(v=>[v.id, v]));
+  PG.frozen = !!opts.frozen; PG.encodeStream = (t.steps.find(s=>s.id==='encode')||{data:{}}).data.stream || [];
+  $('#pg').classList.add('on'); $('#pg-ref').textContent = 'src/arabic_eval/tokenizers/araroopat.py · decode()';
+  $('#pg-runs').innerHTML = '';
+  const fams = PG_FAMS.filter(f => PG.vocab.some(v=>v.family===f));
+  $('#pg-tabs').innerHTML = ''; $('#pg-tabs').append(...fams.map(f => h('button', {class: f===PG.fam?'cur':'', onclick:()=>{ PG.fam=f; pgPalette(); }}, `${f} · ${PG.vocab.filter(v=>v.family===f).length}`)));
+  if (!fams.includes(PG.fam)) PG.fam = fams[0];
+  pgPalette();
+  for (const id of ['pg-input','pg-decode','pg-prefill','pg-random','pg-clear','pg-filter','pg-n','pg-stream']) $('#'+id).disabled = PG.frozen;
+  const fz = $('#pg-frozen'); fz.classList.toggle('on', PG.frozen); fz.innerHTML = '';
+  if (PG.frozen) fz.append(h('b',{},'Snapshot'), ' — the playground needs the running server (real decode() + CAMeL for tier 2). Runs made before saving are shown below, frozen.');
+  (t.playground_runs||[]).slice().reverse().forEach(r => pgRenderRun(r, {instant:true}));
+  pgParse();
+}
+function pgPalette(){
+  const q = ($('#pg-filter').value||'').trim();
+  [...$('#pg-tabs').children].forEach(b => b.classList.toggle('cur', b.textContent.startsWith(PG.fam+' ')));
+  const items = PG.vocab.filter(v => v.family===PG.fam && (!q || v.token.includes(q) || String(v.id)===q));
+  const pal = $('#pg-palette'); pal.innerHTML = '';
+  pal.append(...items.slice(0,600).map(v => { const c = tok(v.token, v.family, v.id, 'click to append'); c.onclick = () => pgAppend(v.token); return c; }));
+  if (items.length>600) pal.append(h('span',{class:'small muted'}, ` … +${items.length-600} (use the filter)`));
+}
+function pgAppend(s){ if (PG.frozen) return; const ta = $('#pg-input'); ta.value = (ta.value.trim() ? ta.value.replace(/\s+$/,'') + ' ' : '') + s; pgParse(); }
+function pgItems(){ return ($('#pg-input').value||'').split(/\s+/).filter(Boolean); }
+function pgParse(){
+  const box = $('#pg-parse'); box.innerHTML = '';
+  let bad = 0;
+  for (const it of pgItems()){
+    if (/^-?\d+$/.test(it)){ const v = PG.byId.get(+it); box.append(v ? tok(v.token, v.family, v.id) : tok(it, 'oor', undefined, 'id not in vocab — decode() will drop it')); }
+    else { const v = PG.byToken.get(it); if (v) box.append(tok(v.token, v.family, v.id)); else { bad++; box.append(tok(it, 'unknown', undefined, 'not a vocab token')); } }
+  }
+  $('#pg-decode').disabled = PG.frozen || bad>0 || pgItems().length===0;
+  return bad===0;
+}
+$('#pg-input').addEventListener('input', pgParse);
+$('#pg-filter').addEventListener('input', pgPalette);
+$('#pg-clear').onclick = () => { $('#pg-input').value=''; pgParse(); };
+$('#pg-prefill').onclick = () => { $('#pg-input').value = PG.encodeStream.map(s=>s.token).join(' '); pgParse(); };
+$('#pg-random').onclick = () => {
+  const n = Math.max(1, Math.min(512, +$('#pg-n').value||12)); const out = [];
+  const pools = {}; for (const f of PG_FAMS) pools[f] = PG.vocab.filter(v=>v.family===f);
+  const fams = PG_FAMS.filter(f => pools[f].length); const tot = fams.reduce((a,f)=>a+PG_WEIGHTS[f],0);
+  for (let i=0;i<n;i++){ let r = Math.random()*tot, f = fams[0]; for (const g of fams){ r -= PG_WEIGHTS[g]; if (r<=0){ f=g; break; } } const p = pools[f]; out.push(p[Math.floor(Math.random()*p.length)].token); }
+  $('#pg-input').value = out.join(' '); pgParse();
+};
+
+async function pgDecode(){
+  if (!pgParse()) return;
+  const btn = $('#pg-decode'); btn.disabled = true; $('#pg-error').hidden = true;
+  try {
+    const r = await fetch('/api/decode', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({trace_id: window.__trace.trace_id, items: pgItems()})});
+    const res = await r.json();
+    if (!r.ok || res.error) throw new Error(res.error || ('HTTP '+r.status));
+    res.saved_at = new Date().toISOString(); res.stream = $('#pg-stream').checked;
+    (window.__trace.playground_runs ||= []).push(res);
+    pgRenderRun(res, {instant: !res.stream});
+  } catch(e){ $('#pg-error').hidden = false; $('#pg-error').textContent = 'decode failed: ' + e.message; }
+  finally { btn.disabled = false; pgParse(); }
+}
+$('#pg-decode').onclick = pgDecode;
+$('#pg-input').addEventListener('keydown', e => { if ((e.ctrlKey||e.metaKey) && e.key==='Enter') pgDecode(); });
+
+function wordDiff(prev, cur){
+  // Word-level common prefix; the rest of `cur` is "new", the rest of `prev` is "gone".
+  const a = prev ? prev.split(' ') : [], b = cur ? cur.split(' ') : [];
+  let i = 0; while (i<a.length && i<b.length && a[i]===b[i]) i++;
+  return {same: b.slice(0,i), added: b.slice(i), gone: a.slice(i)};
+}
+function outCell(prev, cur){
+  const d = wordDiff(prev, cur), el = h('span', {});
+  d.same.forEach((w,k) => el.append((k?' ':''), w));
+  if (d.gone.length) el.append(' ', h('span',{class:'gone', title:'was emitted by the previous prefix, retracted now'}, d.gone.join(' ')));
+  if (d.added.length) el.append(' ', h('span',{class:'new'}, d.added.join(' ')));
+  if (!cur) el.append(h('span',{class:'muted small'}, '(empty)'));
+  return el;
+}
+function pgRenderRun(res, opts={}){
+  const c = res.counters||{}, det = h('details', {class:'pg-run', open:true});
+  const stamp = res.saved_at ? new Date(res.saved_at).toLocaleTimeString() : '';
+  det.append(h('summary', {}, h('span',{class:'mono small muted'}, stamp), h('span',{class:'mono'}, `${res.ids.length} tokens`),
+    h('bdi',{class:'naskh', style:'font-size:18px'}, res.decoded || '∅'),
+    ...Object.entries(c).map(([k,v]) => badge(`${k.replace(/_/g,' ')} ${v}`, /tier1/.test(k)?'ok':/tier2/.test(k)?'info':'warn')),
+    res.prefix_matches_final===false ? badge('prefix ≠ final','bad') : null,
+    h('span',{class:'dur'}, `decode ${res.decode_ms} ms · total ${res.total_ms} ms`)));
+  const inner = h('div', {class:'inner'});
+  const out = h('div', {class:'pg-out'}); inner.append(h('div',{class:'subh'},'decoded output' + (opts.instant?'':' (streaming)')), out);
+  inner.append(h('div',{class:'subh'},'emission walkthrough'));
+  const tbl = h('table', {}, h('thead',{}, h('tr',{}, ...['#','id','token','annotation (interpretation)','tier','output so far — decode(ids[:k])'].map(x=>h('th',{},x)))));
+  const tb = h('tbody'); let prev = '';
+  res.rows.forEach(row => {
+    const tr = h('tr', {class:'pg-row'},
+      h('td',{}, mono(row.pos)), h('td',{}, mono(row.id)),
+      h('td',{}, row.token ? tok(row.token, row.token==='<unk>'?'unk':row.family, undefined) : tok(String(row.id),'oor',undefined,'not in vocab')),
+      h('td',{class:'ann'}, row.note),
+      h('td',{}, row.tier ? h('span',{class:'tier tier'+row.tier}, 'tier '+row.tier) : ''),
+      h('td',{class:'pg-outcell'}, outCell(prev, row.output)));
+    prev = row.output; tb.append(tr);
+  });
+  tbl.append(tb); inner.append(h('div',{class:'tblwrap'}, tbl));
+  if (res.tiers && res.tiers.length) inner.append(h('div',{class:'subh'},'(root, pattern) reconstructions'), table([
+    {label:'pos', render:r=>mono(r.pos)}, {label:'root', render:r=>tok(r.root,'root',r.root_id)}, {label:'pattern', render:r=>tok(r.pattern,'pat',r.pat_id)},
+    {label:'tier', render:r=>h('span',{class:'tier tier'+r.tier}, 'tier '+r.tier+(r.tier===1?' · lookup table':r.tier===2?' · CAMeL generator':' · naive fill'))}, {label:'→', ar:true, render:r=>ar(r.value)}], res.tiers));
+  const w = wirePane(res.wire, 'generator calls on the CAMeL pipe'); if (w) inner.append(w);
+  det.append(inner); $('#pg-runs').prepend(det);
+  const rows = [...tb.children];
+  const showUpTo = k => { rows.forEach((r,i)=>{ r.classList.toggle('on', i<=k); r.classList.toggle('cur', i===k); }); out.innerHTML=''; out.append(outCell(k>0?res.rows[k-1].output:'', res.rows[k].output)); if (k<rows.length-1) out.append(' ', h('span',{class:'cursor'})); };
+  if (opts.instant){ rows.forEach(r=>r.classList.add('on')); out.textContent = res.decoded || ''; if (!res.decoded) out.append(h('span',{class:'muted small'},'(empty)')); return; }
+  if (PG.timer) clearInterval(PG.timer);
+  let k = 0; showUpTo(0);
+  PG.timer = setInterval(()=>{ k++; if (k>=rows.length){ clearInterval(PG.timer); PG.timer=null; rows.forEach(r=>r.classList.remove('cur')); return; } showUpTo(k); }, 420);
+}
 
 /* ------------------------------------------------------------------ */
 /* snapshot: save / restore a standalone HTML with the results embedded  */
@@ -780,6 +970,7 @@ function enterSnapshotMode(t){
   $('#status').innerHTML = ''; $('#status').append(`${t.steps.length} steps · trace ${t.total_ms} ms · `, t.all_ok ? badge('trace == real code ✓','ok') : badge('trace mismatch — see red badges','bad'));
   window.__trace = t;
   renderTrace(t);
+  pgInit(t, {frozen:true});
 }
 
 /* ------------------------------------------------------------------ */

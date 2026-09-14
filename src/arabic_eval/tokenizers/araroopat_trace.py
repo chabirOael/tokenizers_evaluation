@@ -362,6 +362,17 @@ def _trace_dict_to_analysis(d: Dict[str, str], particles: frozenset,
 
 def trace_training(text: str, params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """Replay ``train()`` on ``text`` and return the full step trace as JSON-able dict."""
+    return trace_training_with_tokenizer(text, params)[0]
+
+
+def trace_training_with_tokenizer(
+    text: str, params: Optional[Dict[str, Any]] = None,
+) -> Tuple[Dict[str, Any], AraRooPatTokenizer]:
+    """Like ``trace_training`` but also hands back the trained instance.
+
+    The explorer server keeps that instance alive so the decode playground
+    can run the real ``decode()`` on arbitrary id sequences afterwards.
+    """
     params = dict(params or {})
     params.setdefault("min_root_freq", 1)
     params.setdefault("min_pattern_freq", 1)
@@ -950,7 +961,7 @@ def trace_training(text: str, params: Optional[Dict[str, Any]] = None) -> Dict[s
         "fresh_vocab_size": fresh.vocab_size, "traced_vocab_size": tok.vocab_size,
     }, t0, notes=["Proves the trace above is the real algorithm, not a paraphrase of it."])
 
-    return {
+    trace = {
         "input": text,
         "texts": texts,
         "params": effective,
@@ -962,4 +973,204 @@ def trace_training(text: str, params: Optional[Dict[str, Any]] = None) -> Dict[s
                       st["data"].get("pass2") or [])
             if isinstance(r, dict)
         ),
+    }
+    return trace, tok
+
+
+# ---------------------------------------------------------------------------
+# Decode playground: an arbitrary id sequence, "as emitted by an LLM"
+# ---------------------------------------------------------------------------
+
+MAX_PLAYGROUND_TOKENS = 512
+
+_SPECIAL_SKIPPED = (A.TOK_PAD, A.TOK_BOS, A.TOK_EOS)
+
+
+def parse_emission(tok: AraRooPatTokenizer, items: List[Any]) -> Dict[str, Any]:
+    """Turn a list of ids / token strings into ids, reporting every item.
+
+    Statuses: ``ok`` (resolved to a vocab id), ``id_not_in_vocab`` (integer
+    outside the vocab — allowed, because the real ``decode()`` silently
+    drops such ids and that is worth seeing), ``unknown_token`` (a string
+    that is not a vocab entry — rejected, there is no id to emit).
+    """
+    parsed: List[Dict[str, Any]] = []
+    ids: List[int] = []
+    for raw in items:
+        item = str(raw).strip()
+        if not item:
+            continue
+        rec: Dict[str, Any] = {"item": item}
+        if item.lstrip("-").isdigit():
+            tid = int(item)
+            t = tok._reverse_vocab.get(tid)
+            rec.update({"id": tid, "token": t, "family": _split_key(t) if t else None,
+                        "status": "ok" if t is not None else "id_not_in_vocab"})
+            ids.append(tid)
+        elif item in tok._vocab:
+            tid = tok._vocab[item]
+            rec.update({"id": tid, "token": item, "family": _split_key(item), "status": "ok"})
+            ids.append(tid)
+        else:
+            rec.update({"id": None, "token": item, "family": None, "status": "unknown_token"})
+        parsed.append(rec)
+    return {"parsed": parsed, "ids": ids,
+            "unknown": [r["item"] for r in parsed if r["status"] == "unknown_token"]}
+
+
+def trace_decode(tok: AraRooPatTokenizer, items: List[Any]) -> Dict[str, Any]:
+    """Run the real ``decode()`` on an arbitrary emission and explain it.
+
+    Ground truth is ``decode(ids)`` plus ``decode(ids[:k])`` for every
+    prefix (the streaming view — what an LLM consumer would see as tokens
+    arrive). The per-token *annotation* is an interpretation derived from
+    the token family with a light shadow of the state machine; it is
+    labelled as such in the UI and never used to compute the output.
+    """
+    if not tok._vocab:
+        raise RuntimeError("Tokenizer not trained.")
+    parsed = parse_emission(tok, items)
+    if parsed["unknown"]:
+        raise ValueError("unknown token string(s): " + ", ".join(parsed["unknown"]))
+    ids = parsed["ids"]
+    if not ids:
+        raise ValueError("empty emission")
+    if len(ids) > MAX_PLAYGROUND_TOKENS:
+        raise ValueError(f"emission too long (> {MAX_PLAYGROUND_TOKENS} tokens)")
+
+    backend: MorphAnalyzer = tok._ensure_backend()
+    bridge = backend._bridge
+    bridge._ensure_started()
+    t_all = time.perf_counter()
+
+    # Full decode first so tier-2 generator calls (and their wire lines)
+    # happen once; every prefix decode below then hits the generate cache.
+    with _WireTap(bridge) as tap:
+        t0 = time.perf_counter()
+        decoded = tok.decode(ids)
+        full_ms = round((time.perf_counter() - t0) * 1000, 2)
+        wire = tap.take()
+
+    prefixes: List[str] = [tok.decode(ids[:k]) for k in range(1, len(ids) + 1)]
+
+    # ---- interpretation layer (shadow state, family-driven) ---------------
+    rows: List[Dict[str, Any]] = []
+    in_lit = False
+    pending: Optional[Tuple[str, int]] = None  # (root, root_id)
+    flushed = 0  # words appended to decode()'s ``out`` so far (shadow count)
+    counters = Counter()
+    tiers: List[Dict[str, Any]] = []
+    prev_out = ""
+    for pos, tid in enumerate(ids):
+        t = tok._reverse_vocab.get(tid)
+        fam = _split_key(t) if t is not None else None
+        inner = _inner(t) if t is not None else None
+        note = ""
+        tier = None
+        if t is None:
+            note = "ignored — id is not in the vocab, decode() drops it silently"
+            counters["ignored"] += 1
+        elif t in _SPECIAL_SKIPPED:
+            note = f"ignored — {t} is skipped by decode()"
+            counters["ignored"] += 1
+        elif t == A.TOK_UNK:
+            if pending:
+                note = "orphan root dumped as a bare word, then '?' emitted"; counters["orphan_root"] += 1; pending = None; flushed += 1
+            else:
+                note = "'?' emitted for <unk>"
+            counters["unk"] += 1; flushed += 1
+        elif t == TOK_LIT_BEGIN:
+            if pending:
+                note = "orphan root dumped as a bare word, then literal opened"; counters["orphan_root"] += 1; pending = None; flushed += 1
+            else:
+                note = "literal opened — following [CHAR_*] accumulate"
+            in_lit = True
+        elif t == TOK_LIT_END:
+            note = "literal closed → buffered chars flushed as one word (buffered proclitics prepended)" if in_lit else "[LIT_END] without an open literal — flushes an empty literal"
+            in_lit = False; flushed += 1
+        elif in_lit:
+            note = "char appended to the open literal" if fam == "char" else f"{fam} token inside an open literal — ignored until [LIT_END]"
+            if fam != "char":
+                counters["ignored_in_lit"] += 1
+        elif fam == "cliticp":
+            note = "proclitic buffered — attaches to the front of the next word"
+        elif fam == "clitice":
+            if flushed:
+                note = "enclitic attached to the last flushed word (particle join / ة→ت rules apply)"
+            else:
+                note = "enclitic with no flushed word yet — emitted standalone (buffered proclitics are NOT consumed)"
+                counters["leading_enclitic"] += 1; flushed += 1
+        elif fam == "prep":
+            if pending:
+                note = "orphan root dumped, then preposition flushed"; counters["orphan_root"] += 1; pending = None; flushed += 1
+            else:
+                note = "preposition flushed as a word — a following enclitic joins with particle rules"
+            flushed += 1
+        elif fam == "root":
+            if pending:
+                note = "previous root was orphaned (no PAT) → dumped as a bare word; this root now pending"; counters["orphan_root"] += 1; flushed += 1
+            else:
+                note = "root pending — nothing is emitted until a [PAT_*] arrives"
+            pending = (inner, tid)
+        elif fam == "pat":
+            if pending is None:
+                note = "PAT without a pending root → naive fill with an empty root (slots vanish, template letters remain)"
+                counters["pat_without_root"] += 1; flushed += 1
+            else:
+                root, rid = pending
+                key = (rid, tid)
+                if key in tok._reconstruction:
+                    tier, value = 1, tok._reconstruction[key]
+                else:
+                    gen = backend._generate_cache.get((root, inner))
+                    surf = (gen if tok.use_diacritized_surface else strip_diacritics(gen)) if gen else ""
+                    if surf:
+                        tier, value = 2, surf
+                    else:
+                        tier, value = 3, (strip_diacritics(naive_pattern_fill(root, inner)) or root)
+                note = f"reconstruct ({root}, {inner}) → tier {tier} → {value}; word flushed with buffered proclitics"
+                tiers.append({"pos": pos, "root": root, "pattern": inner, "root_id": rid, "pat_id": tid,
+                              "tier": tier, "value": value})
+                counters[f"tier{tier}"] += 1
+                pending = None; flushed += 1
+        elif fam == "digit":
+            if pending:
+                note = "orphan root dumped, then digit flushed"; counters["orphan_root"] += 1; pending = None; flushed += 1
+            else:
+                note = "digit — glued onto a preceding number, else flushed as a word"
+            flushed += 1
+        elif fam == "punct":
+            if pending:
+                note = "orphan root dumped, then punctuation flushed"; counters["orphan_root"] += 1; pending = None; flushed += 1
+            else:
+                note = "punctuation flushed as its own word"
+            flushed += 1
+        elif fam == "char":
+            note = "bare [CHAR_*] outside a literal — tolerated, flushed as its own word"
+            counters["bare_char"] += 1; flushed += 1
+        else:
+            note = "no rule matched — decode() ignores it"
+        out_k = prefixes[pos]
+        rows.append({"pos": pos, "id": tid, "token": t, "family": fam, "inner": inner,
+                     "note": note, "tier": tier, "output": out_k, "changed": out_k != prev_out})
+        prev_out = out_k
+    if pending:
+        counters["orphan_root_at_end"] += 1
+    if in_lit:
+        counters["unclosed_lit"] += 1
+
+    return {
+        "items": [r["item"] for r in parsed["parsed"]],
+        "parsed": parsed["parsed"],
+        "ids": ids,
+        "decoded": decoded,
+        "decode_ms": full_ms,
+        "total_ms": round((time.perf_counter() - t_all) * 1000, 1),
+        "ref": ref(A.AraRooPatTokenizer.decode),
+        "reconstruct_ref": ref(A.AraRooPatTokenizer._reconstruct),
+        "rows": rows,
+        "tiers": tiers,
+        "counters": dict(counters),
+        "wire": wire,
+        "prefix_matches_final": prefixes[-1] == decoded,
     }
