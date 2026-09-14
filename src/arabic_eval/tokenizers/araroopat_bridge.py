@@ -220,6 +220,17 @@ class CamelBridge:
         self._check(resp, req_id)
         return resp["result"]
 
+    def dialect_id(self, sentences: List[str]) -> List[Dict[str, Any]]:
+        """Sentence-level dialect ID (CAMeL ``DIDModel26``). One
+        ``{"top": <label>, "p_msa": <float>}`` per sentence. Used by the
+        pretraining-mix MSA filter when ``msa_filter.camel_did.enabled``."""
+        proc = self._ensure_started()  # noqa: F841
+        req_id = self._take_id()
+        self._send({"id": req_id, "op": "dialect_id", "sentences": list(sentences)})
+        resp = self._read_response()
+        self._check(resp, req_id)
+        return resp["results"]
+
     # ------------------------------------------------------------------
     # Wire I/O
     # ------------------------------------------------------------------

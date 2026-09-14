@@ -23,6 +23,56 @@ training:
   bf16: true
   fp16: false
   logging_steps: 50
+  # Packed raw-text mix for Phase 1 / Phase 2. Inert until a phase sets
+  # ``datasets: ["pretraining_mix"]`` (then loss_target must be full_sequence
+  # and max_length must equal block_size). Stage A (pool) is cached under
+  # cache_dir/<fingerprint> and shared by every cell; Stage B (token-budget
+  # fill + packing) runs per cell with the active tokenizer.
+  # Build / calibrate offline: scripts/build_pretraining_mix.py.
+  pretraining_mix:
+    block_size: 512
+    token_budget: null              # tokens under the active tokenizer; null = Σ(steps×batch_size)×block_size over phases using the mix
+    consume_sequentially: true      # warmup continues after embedding_alignment's last block
+    seed: 42
+    cache_dir: "outputs/data_cache/pretraining_mix"
+    normalization:                  # parity with the un-normalized QA phases: NFKC + tatweel + whitespace only
+      nfkc: true
+      remove_tatweel: true
+      normalize_alef: false
+      remove_diacritics: false
+    sources:
+      - name: "fineweb2_arb"        # HuggingFaceFW/fineweb-2, arb_Arab (streamed, shard-shuffled)
+        share: 0.70
+        params: {config: "arb_Arab", min_language_score: 0.90}
+      - name: "wikipedia_ar"        # wikimedia/wikipedia 20231101.ar
+        share: 0.20
+        params: {dump: "20231101.ar", skip_title_prefixes: ["قائمة"]}
+      - name: "arabicweb24"         # lightonai/ArabicWeb24 (gated → HF_TOKEN); swap for arabic_101b if needed
+        share: 0.10
+        params: {}
+    pool:
+      total_words: 20000000         # post-filter words, split by share; ≥ token_budget suffices for any tokenizer (fertility ≥ 1)
+      stream_shuffle_buffer: 10000
+      max_stream_docs_per_source: 3000000
+    dedup:
+      paragraph_exact: true         # repeated normalized paragraphs removed from docs (boilerplate)
+      minhash: {enabled: true, num_perm: 128, shingle_words: 5, threshold: 0.80}
+      priority: ["wikipedia_ar", "fineweb2_arb", "arabicweb24"]   # surviving copy of a cross-source duplicate
+    msa_filter:
+      heuristic: {enabled: true, max_markers_per_1k_words: 5.0, min_markers: 3}
+      camel_did: {enabled: false, sentences_per_doc: 8, min_sentence_words: 5, min_msa_share: 0.30}  # opt-in; MADAR-trained, lenient by design
+    quality:
+      min_words: 50
+      max_words: 3000               # truncated at a paragraph boundary, not dropped
+      strip_latin_parentheticals: true   # "(بالإنجليزية: Name)" glosses removed before the ratio rules
+      max_latin_letter_ratio: 0.05
+      min_arabic_letter_ratio: 0.70
+      max_short_line_ratio: 0.50
+      short_line_words: 5
+      max_dup_line_ratio: 0.30
+      max_symbol_ratio: 0.10
+      wikipedia_strip_sections: ["المراجع", "مراجع", "وصلات خارجية", "انظر أيضا", "انظر أيضًا", "انظر أيضاً", "مصادر", "ملاحظات", "المصادر"]
+
   phases:
     embedding_alignment:        # Phase 1
       enabled: true

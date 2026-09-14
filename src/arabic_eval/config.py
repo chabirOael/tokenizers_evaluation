@@ -16,6 +16,7 @@ DatasetName = Literal[
     "tydiqa_arabic",
     "arcd",
     "arabic_squad_mcq",   # synthetic MCQ derived from arabic_squad
+    "pretraining_mix",   # packed raw-text mix (training.pretraining_mix); full-sequence loss only
 ]
 
 
@@ -158,6 +159,187 @@ class PhasesConfig(BaseModel):
         return self
 
 
+
+# --------------------------------------------------------------------------
+# Pretraining mix (packed raw-text corpus for Phase 1 / Phase 2)
+# --------------------------------------------------------------------------
+
+class MixSourceConfig(BaseModel):
+    """One raw-text source of the pretraining mix.
+
+    ``name`` is a key of ``data.pretraining_mix.sources.SOURCE_REGISTRY``
+    (``fineweb2_arb`` | ``wikipedia_ar`` | ``arabicweb24`` | ``arabic_101b``).
+    ``share`` is the target fraction of the mix *in tokens under the active
+    tokenizer* (Stage B) and, tokenizer-independently, in words for the
+    cached pool (Stage A). ``params`` are forwarded to the source loader.
+    """
+    name: str
+    share: float
+    params: Dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("share")
+    @classmethod
+    def _share_in_unit_interval(cls, v):
+        if not (0.0 < v <= 1.0):
+            raise ValueError(f"source share must be in (0, 1], got {v}")
+        return v
+
+
+class MixNormalizationConfig(BaseModel):
+    """Document normalization applied before every filter. Default keeps
+    parity with the (un-normalized) QA phases and the eval prompts: NFKC +
+    tatweel + whitespace only; alef/diacritic normalization stays opt-in."""
+    nfkc: bool = True
+    remove_tatweel: bool = True
+    normalize_alef: bool = False
+    remove_diacritics: bool = False
+
+
+class MixPoolConfig(BaseModel):
+    """Tokenizer-independent pool (Stage A). ``total_words`` is split across
+    sources by ``share``; because every tokenizer in the panel has fertility
+    >= 1, a pool of ``total_words >= token_budget`` words is sufficient for
+    any cell."""
+    total_words: int = 20_000_000
+    stream_shuffle_buffer: int = 10_000
+    # Safety valve: stop streaming a source after this many raw docs even if
+    # its word target was not reached (filters rejecting ~everything).
+    max_stream_docs_per_source: int = 3_000_000
+
+    @field_validator("total_words", "max_stream_docs_per_source")
+    @classmethod
+    def _positive(cls, v):
+        if v <= 0:
+            raise ValueError(f"must be positive, got {v}")
+        return v
+
+    @field_validator("stream_shuffle_buffer")
+    @classmethod
+    def _non_negative(cls, v):
+        if v < 0:
+            raise ValueError(f"stream_shuffle_buffer must be >= 0 (0 = no shuffle), got {v}")
+        return v
+
+
+class MixMinHashConfig(BaseModel):
+    enabled: bool = True
+    num_perm: int = 128
+    shingle_words: int = 5
+    threshold: float = 0.80
+
+
+class MixDedupConfig(BaseModel):
+    """Two-level cross-source dedup. ``paragraph_exact`` removes repeated
+    normalized paragraphs *from* documents (boilerplate); ``minhash`` drops
+    near-duplicate *documents*. Sources are processed in ``priority`` order
+    so the surviving copy of a cross-source duplicate is the higher-priority
+    one; sources absent from ``priority`` come last, in YAML order."""
+    paragraph_exact: bool = True
+    minhash: MixMinHashConfig = Field(default_factory=MixMinHashConfig)
+    priority: List[str] = Field(default_factory=list)
+
+
+class MixHeuristicMsaConfig(BaseModel):
+    """Closed-list dialect-marker gate (data/pretraining_mix/filters.py).
+    Drop a document whose marker density exceeds ``max_markers_per_1k_words``
+    **and** whose marker count reaches ``min_markers`` — the count floor
+    stops one stray token from sinking a 50-word document (1/50 = 20/1k)."""
+    enabled: bool = True
+    max_markers_per_1k_words: float = 5.0
+    min_markers: int = 3
+
+
+class MixCamelDidConfig(BaseModel):
+    """Opt-in second signal: CAMeL Tools ``DIDModel26`` via the .venv-camel
+    bridge. MADAR-trained, so it mislabels encyclopedic MSA — keep
+    ``min_msa_share`` lenient. Off by default."""
+    enabled: bool = False
+    sentences_per_doc: int = 8
+    min_sentence_words: int = 5
+    min_msa_share: float = 0.30
+
+
+class MixMsaFilterConfig(BaseModel):
+    heuristic: MixHeuristicMsaConfig = Field(default_factory=MixHeuristicMsaConfig)
+    camel_did: MixCamelDidConfig = Field(default_factory=MixCamelDidConfig)
+
+
+class MixQualityConfig(BaseModel):
+    """Length + boilerplate rules. Every threshold is a drop reason counted
+    in the pool manifest."""
+    min_words: int = 50
+    max_words: int = 3000                    # truncate at a paragraph boundary (not a drop)
+    strip_latin_parentheticals: bool = True  # drop "(بالإنجليزية: Name)"-style glosses before the ratio rules
+    max_latin_letter_ratio: float = 0.05     # Latin letters / all letters
+    min_arabic_letter_ratio: float = 0.70    # Arabic-script letters / all letters
+    max_short_line_ratio: float = 0.50       # lines with < short_line_words words
+    short_line_words: int = 5
+    max_dup_line_ratio: float = 0.30         # repeated lines within the doc
+    max_symbol_ratio: float = 0.10           # symbol chars per word (Gopher-style)
+    wikipedia_strip_sections: List[str] = Field(default_factory=lambda: [
+        "المراجع", "مراجع", "وصلات خارجية", "انظر أيضا", "انظر أيضًا",
+        "انظر أيضاً", "مصادر", "ملاحظات", "المصادر",
+    ])
+
+
+class PretrainingMixConfig(BaseModel):
+    """Packed raw-text mix consumed by any phase whose ``datasets`` is
+    ``["pretraining_mix"]``.
+
+    Stage A (``pool``, ``dedup``, ``msa_filter``, ``quality``,
+    ``normalization``, ``sources``, ``seed``) is tokenizer-independent and
+    cached under ``cache_dir/<fingerprint>``. Stage B (``block_size``,
+    ``token_budget``) runs once per experiment cell with the active
+    tokenizer and writes ``{output_dir}/data/``.
+    """
+    block_size: int = 512
+    token_budget: Optional[int] = None       # None → Σ(steps × batch_size) × block_size over phases using the mix
+    consume_sequentially: bool = True        # next phase continues after the previous phase's last block
+    seed: int = 42
+    cache_dir: str = "outputs/data_cache/pretraining_mix"
+    normalization: MixNormalizationConfig = Field(default_factory=MixNormalizationConfig)
+    sources: List[MixSourceConfig]
+    pool: MixPoolConfig = Field(default_factory=MixPoolConfig)
+    dedup: MixDedupConfig = Field(default_factory=MixDedupConfig)
+    msa_filter: MixMsaFilterConfig = Field(default_factory=MixMsaFilterConfig)
+    quality: MixQualityConfig = Field(default_factory=MixQualityConfig)
+
+    @field_validator("block_size")
+    @classmethod
+    def _positive_block(cls, v):
+        if v <= 0:
+            raise ValueError(f"block_size must be positive, got {v}")
+        return v
+
+    @model_validator(mode="after")
+    def _check_sources(self):
+        if not self.sources:
+            raise ValueError("pretraining_mix.sources must list at least one source")
+        names = [s.name for s in self.sources]
+        if len(set(names)) != len(names):
+            raise ValueError(f"pretraining_mix.sources has duplicate names: {names}")
+        total = sum(s.share for s in self.sources)
+        if abs(total - 1.0) > 1e-6:
+            raise ValueError(
+                f"pretraining_mix source shares must sum to 1.0, got {total:.6f} ({names})"
+            )
+        unknown = [p for p in self.dedup.priority if p not in names]
+        if unknown:
+            raise ValueError(
+                f"pretraining_mix.dedup.priority names unknown sources {unknown}; sources are {names}"
+            )
+        if self.token_budget is not None and self.token_budget <= 0:
+            raise ValueError(f"pretraining_mix.token_budget must be positive, got {self.token_budget}")
+        return self
+
+    def source_order(self) -> List[MixSourceConfig]:
+        """Sources in dedup-priority order (priority first, then YAML order)."""
+        by_name = {s.name: s for s in self.sources}
+        ordered = [by_name[n] for n in self.dedup.priority]
+        ordered += [s for s in self.sources if s.name not in self.dedup.priority]
+        return ordered
+
+
 class TrainingConfig(BaseModel):
     """Three-phase training pipeline configuration.
 
@@ -171,6 +353,49 @@ class TrainingConfig(BaseModel):
     bf16: bool = True
     fp16: bool = False
     logging_steps: int = 50
+    pretraining_mix: Optional[PretrainingMixConfig] = None
+
+    @model_validator(mode="after")
+    def _check_pretraining_mix_phases(self):
+        """A phase that consumes the packed mix must (v1) list it as its sole
+        dataset, use full-sequence loss, and match the mix block size."""
+        for phase_name in ("embedding_alignment", "warmup", "sft"):
+            phase: PhaseConfig = getattr(self.phases, phase_name)
+            if "pretraining_mix" not in phase.datasets:
+                continue
+            if self.pretraining_mix is None:
+                raise ValueError(
+                    f"training.phases.{phase_name}.datasets lists 'pretraining_mix' "
+                    f"but training.pretraining_mix is not configured"
+                )
+            if len(phase.datasets) != 1:
+                raise ValueError(
+                    f"training.phases.{phase_name}: 'pretraining_mix' must be the sole "
+                    f"dataset of a phase (got {phase.datasets}); mixing packed raw-text "
+                    f"blocks with QA records in one phase is not supported"
+                )
+            if phase.loss_target != "full_sequence":
+                raise ValueError(
+                    f"training.phases.{phase_name}: 'pretraining_mix' requires "
+                    f"loss_target='full_sequence' (got {phase.loss_target!r}) — packed "
+                    f"raw text has no prompt/answer span"
+                )
+            if phase.max_length != self.pretraining_mix.block_size:
+                raise ValueError(
+                    f"training.phases.{phase_name}.max_length ({phase.max_length}) must equal "
+                    f"training.pretraining_mix.block_size ({self.pretraining_mix.block_size}) — "
+                    f"blocks are packed once and shared by every phase that consumes the mix"
+                )
+        return self
+
+    def phases_using_mix(self) -> List[str]:
+        """Names of *enabled* phases whose datasets is ['pretraining_mix'], in run order."""
+        out = []
+        for phase_name in ("embedding_alignment", "warmup", "sft"):
+            phase: PhaseConfig = getattr(self.phases, phase_name)
+            if phase.enabled and "pretraining_mix" in phase.datasets:
+                out.append(phase_name)
+        return out
 
 
 class EvaluationConfig(BaseModel):

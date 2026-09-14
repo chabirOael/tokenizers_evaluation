@@ -14,6 +14,7 @@ Wire format (one JSON object per line, both directions):
   client → server:
     {"id": <int>, "op": "analyze",  "words": ["wordA", "wordB", ...], "top": 1}
     {"id": <int>, "op": "generate", "root": "...", "pattern": "..."}
+    {"id": <int>, "op": "dialect_id", "sentences": ["...", ...]}   # → [{"top", "p_msa"}]
     {"id": <int>, "op": "shutdown"}
 
   server → client:
@@ -347,6 +348,33 @@ def _naive_fill(root: str, pattern: str) -> str:
 # Main loop
 # ---------------------------------------------------------------------------
 
+# --------------------------------------------------------------------------
+# dialect_id op (pretraining-mix MSA filter, opt-in)
+# --------------------------------------------------------------------------
+#
+# CAMeL's DIDModel26 is MADAR-trained (short travel-domain sentences) and
+# mislabels encyclopedic MSA — e.g. "تعتبر مدينة القاهرة من أكبر المدن…" →
+# KHA 0.32 with MSA outside the top-3. The client therefore aggregates over
+# several sentences per document with a lenient threshold. Loaded lazily on
+# the first request so araroopat-only sessions never pay for it.
+
+_DID_MODEL = None
+
+
+def _op_dialect_id(sentences: List[str]) -> List[Dict[str, Any]]:
+    global _DID_MODEL
+    if not sentences:
+        return []
+    if _DID_MODEL is None:
+        from camel_tools.dialectid import DIDModel26
+        _DID_MODEL = DIDModel26.pretrained()
+    preds = _DID_MODEL.predict([str(s) for s in sentences])
+    return [
+        {"top": p.top, "p_msa": float(p.scores.get("MSA", 0.0))}
+        for p in preds
+    ]
+
+
 def _send(payload: Dict[str, Any]) -> None:
     """Write one NDJSON line and flush. ensure_ascii=False keeps Arabic raw."""
     sys.stdout.write(json.dumps(payload, ensure_ascii=False))
@@ -377,6 +405,9 @@ def _serve(disambig, generator) -> int:  # noqa: ARG001 (generator unused for no
                     disambig, req.get("root") or "", req.get("pattern") or ""
                 )
                 _send({"id": req_id, "ok": True, "result": result})
+            elif op == "dialect_id":
+                results = _op_dialect_id(req.get("sentences") or [])
+                _send({"id": req_id, "ok": True, "results": results})
             elif op == "shutdown":
                 _send({"id": req_id, "ok": True, "result": "shutdown"})
                 return 0
