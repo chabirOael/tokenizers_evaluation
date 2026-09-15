@@ -381,3 +381,42 @@ def test_training_config_mix_phase_rules(tmp_path):
         tc(_mix_phase(mix_tokens=10_241))
     with pytest.raises(ValueError, match="implies steps = 10"):
         tc(_mix_phase(steps=11))
+
+
+def test_qa_blend_config_rules(tmp_path):
+    from arabic_eval.config import QABlendConfig
+
+    qb = QABlendConfig()
+    assert (qb.datasets, qb.share, qb.split) == (["tydiqa_arabic", "arcd"], 0.07, "train")
+    assert QABlendConfig(datasets="arcd").datasets == ["arcd"]
+    with pytest.raises(ValueError, match="in \\(0, 1\\)"):
+        QABlendConfig(share=0.0)
+    with pytest.raises(ValueError, match="in \\(0, 1\\)"):
+        QABlendConfig(share=1.0)
+    with pytest.raises(ValueError, match="raw-text mix is the host"):
+        QABlendConfig(datasets=["pretraining_mix"])
+    with pytest.raises(ValueError, match="duplicates"):
+        QABlendConfig(datasets=["arcd", "arcd"])
+    # Phase 3 early-stops on TyDiQA-val + ARCD-val: never blendable.
+    with pytest.raises(ValueError, match="early-stop split"):
+        QABlendConfig(datasets=["arcd"], split="validation")
+    assert QABlendConfig(datasets=["arabic_squad"], split="train").split == "train"
+    # Only a mix phase may carry a blend.
+    with pytest.raises(ValueError, match="qa_blend is only valid"):
+        _phase(qa_blend=QABlendConfig())
+
+    mix = mix_cfg(tmp_path, [("web", 1.0)])
+    sft = _phase(datasets=["arcd"], loss_target="answer_only", early_stopping=EarlyStoppingConfig())
+
+    def tc(p2):
+        return TrainingConfig(phases=PhasesConfig(embedding_alignment=_mix_phase(), warmup=p2, sft=sft),
+                              pretraining_mix=mix)
+
+    # 40 blocks × 0.07 = 2.8 → 3 QA blocks; the phase budget (steps) is unchanged.
+    ok = tc(_mix_phase(steps=None, mix_tokens=20_480, qa_blend=QABlendConfig(share=0.07)))
+    assert ok.phases.warmup.steps == 20
+    assert (ok.mix_blocks("warmup"), ok.qa_blocks("warmup"), ok.qa_blocks("embedding_alignment")) == (40, 3, 0)
+    with pytest.raises(ValueError, match="rounds to 0 QA blocks"):
+        tc(_mix_phase(steps=None, mix_tokens=20_480, qa_blend=QABlendConfig(share=0.01)))
+    with pytest.raises(ValueError, match="leaves no raw-text blocks"):
+        tc(_mix_phase(steps=None, mix_tokens=2 * 512, qa_blend=QABlendConfig(share=0.9)))

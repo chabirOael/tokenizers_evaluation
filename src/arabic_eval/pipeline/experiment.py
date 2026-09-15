@@ -87,19 +87,45 @@ def _packed_mix_loader(
     packed,
     tokenizer,
     block_size: int,
+    qa_packed=None,
 ) -> "tuple[DataLoader, Dict[str, Any]]":  # noqa: UP037
     """Train loader over the phase's slice of the packed pretraining mix.
 
-    The phase draws ``mix_tokens / block_size`` blocks — the next unread
-    range of the corpus, so consecutive mix phases never overlap. Blocks
-    were shuffled at pack time, so the loader runs ``shuffle=False`` and
-    the config validator guarantees ``steps × batch_size`` equals the slice
-    length: every block is read exactly once. The collator is dispatched on
-    ``embedding_type`` exactly like ``build_qa_dataloader``; a packed block
-    carries ``input_ids`` (+ ``char_ids`` for character_cnn) and the
-    collator derives full-sequence causal-LM labels from it.
+    The phase trains on ``mix_tokens / block_size`` blocks. Without a
+    ``qa_blend`` they are the next unread range of the raw-text corpus
+    (consecutive mix phases never overlap; blocks were shuffled at pack
+    time, so the loader runs ``shuffle=False``). With a ``qa_blend``,
+    ``round(share × blocks)`` of them are the next unread blocks of the
+    packed QA corpus instead, and the two slices are interleaved through a
+    seeded permutation (``BlendedBlockDataset``) so every batch is a random
+    mixture. The config validator guarantees ``steps × batch_size`` equals
+    the block count: every block is read exactly once. The collator is
+    dispatched on ``embedding_type`` exactly like ``build_qa_dataloader``;
+    a packed block carries ``input_ids`` (+ ``char_ids`` for character_cnn)
+    and the collator derives full-sequence causal-LM labels from it.
     """
-    dataset, info = packed.take(phase_name, phase_cfg.mix_tokens // block_size)
+    from arabic_eval.data.pretraining_mix.packing import BlendedBlockDataset
+
+    total_blocks = phase_cfg.mix_tokens // block_size
+    qa_blocks = int(round(phase_cfg.qa_blend.share * total_blocks)) if phase_cfg.qa_blend is not None else 0
+    dataset, info = packed.take(phase_name, total_blocks - qa_blocks)
+    if qa_blocks:
+        assert qa_packed is not None
+        qa_dataset, qa_info = qa_packed.take(phase_name, qa_blocks)
+        dataset = BlendedBlockDataset([dataset, qa_dataset], seed=phase_cfg.qa_blend.seed)
+        info = {
+            **info,
+            "qa_blend": {
+                **qa_info,
+                "datasets": list(phase_cfg.qa_blend.datasets),
+                "split": phase_cfg.qa_blend.split,
+                "share_target": phase_cfg.qa_blend.share,
+                "achieved_share": round(qa_blocks / total_blocks, 4),
+                "records_covered_approx": int(round(qa_blocks * block_size / max(qa_packed.manifest.get("tokens_per_record", 1.0), 1e-9))),
+            },
+            "phase_blocks": total_blocks,
+            "phase_tokens": total_blocks * block_size,
+        }
     collator = get_collator(
         tokenizer.embedding_type,
         pad_token_id=getattr(tokenizer, "pad_token_id", 0),
@@ -111,6 +137,13 @@ def _packed_mix_loader(
         phase_name, info["block_start"], info["block_end"], info["corpus_blocks"],
         info["n_tokens"], 100 * info["corpus_share"],
     )
+    if qa_blocks:
+        qb = info["qa_blend"]
+        logger.info(
+            "[%s] qa_blend: %d of %d blocks (%.1f%%, %d tokens ≈ %d records of %s) — QA blocks [%d, %d) of %d, interleaved",
+            phase_name, qa_blocks, total_blocks, 100 * qb["achieved_share"], qb["n_tokens"],
+            qb["records_covered_approx"], "+".join(qb["datasets"]), qb["block_start"], qb["block_end"], qb["corpus_blocks"],
+        )
     return loader, info
 
 
@@ -128,12 +161,14 @@ def _run_all_phases(
     A phase whose ``datasets`` is ``["pretraining_mix"]`` trains on the
     packed raw-text corpus (packed once per tokenizer under the pool cache;
     ``data_dir``, default ``{output_dir}/../data/pretraining_mix``, gets a
-    manifest pointing at it) instead of QA records; the other phases keep
-    the QA path. ``history[phase]["data"]`` records which blocks each mix
-    phase consumed.
+    manifest pointing at it) instead of QA records — optionally blended
+    with packed SFT-format QA text (``qa_blend``, its own cache beside the
+    pool); the other phases keep the QA path. ``history[phase]["data"]``
+    records which blocks each mix phase consumed.
     """
     history: Dict[str, Any] = {}
     packed = None
+    qa_packed = None
     data_dir = Path(data_dir) if data_dir is not None else Path(output_dir).parent / "data" / "pretraining_mix"
     for phase_name in _PHASE_NAMES:
         phase_cfg: PhaseConfig = getattr(training_cfg.phases, phase_name)
@@ -151,11 +186,19 @@ def _run_all_phases(
                 )
             if phase_cfg.clean_latin_rows:
                 logger.info(
-                    "[%s] clean_latin_rows ignored for pretraining_mix (the pool's "
-                    "Latin-letter-ratio rule already applied)", phase_name,
+                    "[%s] clean_latin_rows applies to the qa_blend records only (the pool's "
+                    "Latin-letter-ratio rule already applied to the raw text)", phase_name,
+                )
+            if phase_cfg.qa_blend is not None and qa_packed is None:
+                from arabic_eval.data.pretraining_mix.packing import pack_qa_blend
+                qa_packed = pack_qa_blend(
+                    phase_cfg.qa_blend, training_cfg.pretraining_mix.block_size,
+                    Path(training_cfg.pretraining_mix.cache_dir), tokenizer, tokenizer_type,
+                    clean_latin_rows=phase_cfg.clean_latin_rows, cell_data_dir=data_dir,
                 )
             train_loader, data_info = _packed_mix_loader(
                 phase_name, phase_cfg, packed, tokenizer, training_cfg.pretraining_mix.block_size,
+                qa_packed=qa_packed,
             )
         else:
             # Build the train loader from the phase's own corpus list.
@@ -215,6 +258,11 @@ def _run_all_phases(
             "packed_manifest": packed.manifest,
             "consumption": packed.consumption,
         }
+        if qa_packed is not None:
+            history["pretraining_mix"]["qa_blend"] = {
+                "packed_manifest": qa_packed.manifest,
+                "consumption": qa_packed.consumption,
+            }
     return history
 
 

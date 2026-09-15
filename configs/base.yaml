@@ -32,7 +32,12 @@ training:
   # (largest budget at which the shares hold exactly) under
   # <pool>/packed/<tokenizer_fp>/. Phases draw disjoint consecutive slices
   # of it — the pool must hold Σ mix_tokens for the lowest-fertility
-  # tokenizer (CharacterBERT ≈ 1 token/word) or packing raises.
+  # tokenizer (CharacterBERT ≈ 1 token/word) or packing raises. A mix phase
+  # may add ``qa_blend: {datasets, share, split, seed}`` — SFT-format QA
+  # train records (Phase 3 / eval surface form) packed the same way and
+  # replacing round(share × blocks) of the phase's raw-text blocks (cached
+  # once per tokenizer under cache_dir/qa_blend/; Phase 3 early-stop splits
+  # are refused).
   # Build / calibrate offline: scripts/build_pretraining_mix.py.
   pretraining_mix:
     block_size: 512

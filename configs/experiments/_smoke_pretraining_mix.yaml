@@ -1,6 +1,7 @@
 # Smoke-scale check of the pretraining-mix path on real data + real model:
 # tiny pool (200 K words), 30 steps per phase, 30 eval rows. Validates
-# streaming → filters → dedup → pack → Phase 1/2 consumption → eval wiring.
+# streaming → filters → dedup → pack → Phase 1/2 consumption (Phase 2 with a
+# 10 % QA blend) → eval wiring.
 # NOT for results. Needs HF_TOKEN (ArabicWeb24 + Llama).
 
 experiment:
@@ -37,11 +38,12 @@ training:
       batch_size: 4
     warmup:
       datasets: ["pretraining_mix"]
-      mix_tokens: 30720             # = 30 steps × 2 × 512, blocks [120, 180)
+      mix_tokens: 30720             # = 30 steps × 2 × 512 = 60 blocks: 6 QA + raw-text [120, 174)
       loss_target: "full_sequence"
       steps: 30
       batch_size: 2
       gradient_accumulation_steps: 2
+      qa_blend: {datasets: ["tydiqa_arabic", "arcd"], share: 0.10}
     sft:
       steps: 30
       batch_size: 2

@@ -12,6 +12,13 @@
 # slices are consecutive and disjoint, so Phase 1's blocks are identical in
 # every experiment on this pool and Phase 2 never repeats them.
 #
+# Phase 2 additionally BLENDS 7 % SFT-format QA text (qa_blend): TyDiQA-Arabic
+# + ARCD train records rendered with the Phase 3 / eval surface form
+# (السياق: … / السؤال: … / الإجابة: …, no chat template), packed into 512-token
+# blocks like the raw text and trained with the same full-sequence loss.
+# The share is taken OUT of the phase's block budget (560 of 8 000 blocks),
+# so the with/without-blend arms spend identical compute.
+#
 # Only deltas from configs/base.yaml are listed; the mix's own knobs
 # (sources, filters, dedup, thresholds) live in base.yaml under
 # training.pretraining_mix and can be overridden here.
@@ -25,12 +32,14 @@
 #   .venv/bin/python scripts/run_experiment.py \
 #       --config configs/experiments/all_tokenizers_sweep_pretrain_mix.yaml --sweep
 #
-# ABLATION SWITCH — Phase 2 on the mix drops the QA-format warmup (Phase 3
-# then carries all QA/MCQ-format exposure). To keep the QA warmup and change
-# only Phase 1, set:
-#   training.phases.warmup.datasets: ["arabic_squad"]
-#   training.phases.warmup.loss_target: "answer_only"
-#   training.phases.warmup.mix_tokens: null
+# ABLATION SWITCHES
+#   * pure raw-text Phase 2 (no QA blend, same 8 000 blocks):
+#       training.phases.warmup.qa_blend: null
+#   * keep the answer-only QA warmup and change only Phase 1:
+#       training.phases.warmup.datasets: ["arabic_squad"]
+#       training.phases.warmup.loss_target: "answer_only"
+#       training.phases.warmup.mix_tokens: null
+#       training.phases.warmup.qa_blend: null
 
 experiment:
   name: "all_tokenizers_sweep_pretrain_mix"
@@ -67,10 +76,15 @@ training:
       loss_target: "full_sequence"
       max_length: 512               # must equal pretraining_mix.block_size
     warmup:
-      datasets: ["pretraining_mix"] # ← the flag; see ABLATION SWITCH above
-      mix_tokens: 4096000           # blocks [8000, 16000): = steps 2000 × batch_size 4 × 512, disjoint from Phase 1
+      datasets: ["pretraining_mix"] # ← the flag; see ABLATION SWITCHES above
+      mix_tokens: 4096000           # 8 000 blocks = steps 2000 × batch_size 4 × 512 (phase budget incl. the blend)
       loss_target: "full_sequence"
       max_length: 512
+      qa_blend:                     # 560 QA blocks + raw-text blocks [8000, 15440), disjoint from Phase 1
+        datasets: ["tydiqa_arabic", "arcd"]
+        share: 0.07
+        split: "train"              # 'validation' is refused (Phase 3 early-stop splits)
+        seed: 42
 
 evaluation:
   intrinsic_metrics: true

@@ -21,6 +21,13 @@ with different learned vocabs never share an entry. Block order is fixed
 once per (pool, tokenizer): ``PackedCorpus.take`` hands each phase the
 next ``mix_tokens / block_size`` blocks, strictly consecutive and
 non-overlapping, and raises (never wraps) when the pool is too small.
+
+A phase may additionally *blend* SFT-format QA text (``qa_blend``):
+``pack_qa_blend`` renders the QA train records with the Phase 3 / eval
+surface form, packs them into blocks the same way (own cache, once per
+tokenizer, at ``<cache_dir>/qa_blend/<fp>/``), and ``BlendedBlockDataset``
+interleaves the phase's raw-text slice with its QA slice through a seeded
+permutation — every block read once, batches are random mixtures.
 """
 from __future__ import annotations
 
@@ -38,7 +45,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 from torch.utils.data import Dataset
 
-from ...config import PretrainingMixConfig
+from ...config import PretrainingMixConfig, QABlendConfig
 from ...tokenizers.base import BaseTokenizer
 from .pool import build_pool, iter_pool_docs, load_pool_manifest, pool_fingerprint
 
@@ -48,6 +55,8 @@ PACKED_MANIFEST = "packed_manifest.json"
 INPUT_IDS_FILE = "packed_input_ids.npy"
 CHAR_IDS_FILE = "packed_char_ids.npy"
 PACKED_SUBDIR = "packed"
+QA_BLEND_SUBDIR = "qa_blend"
+QA_BLEND_MANIFEST = "qa_blend_manifest.json"
 
 # Fixed probe for the tokenizer content hash: diacritics, digits, Latin,
 # punctuation and a rare word so vocab / merge differences show up.
@@ -277,6 +286,27 @@ class PackedBlockDataset(Dataset):
         return ex
 
 
+class BlendedBlockDataset(Dataset):
+    """Two block datasets read through one seeded permutation, so a phase
+    that blends QA text into the raw-text mix sees random mixtures in every
+    batch while still reading each block exactly once."""
+
+    def __init__(self, parts: List[Dataset], seed: int) -> None:
+        self._parts = [p for p in parts if len(p)]
+        if not self._parts:
+            raise ValueError("BlendedBlockDataset needs at least one non-empty part")
+        self._offsets = np.cumsum([0] + [len(p) for p in self._parts])
+        self._order = np.random.default_rng(seed).permutation(int(self._offsets[-1]))
+
+    def __len__(self) -> int:
+        return int(self._offsets[-1])
+
+    def __getitem__(self, i: int) -> Dict[str, Any]:
+        j = int(self._order[i])
+        part = int(np.searchsorted(self._offsets, j, side="right") - 1)
+        return self._parts[part][j - int(self._offsets[part])]
+
+
 @dataclass
 class PackedCorpus:
     input_ids: np.ndarray
@@ -284,6 +314,7 @@ class PackedCorpus:
     manifest: Dict[str, Any]
     cursor: int = 0
     consumption: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+    kind: str = "pretraining_mix"   # "pretraining_mix" | "qa_blend"
 
     @property
     def n_blocks(self) -> int:
@@ -299,6 +330,13 @@ class PackedCorpus:
         cannot supply them; nothing is ever repeated."""
         start = self.cursor
         end = start + n_blocks_needed
+        if end > self.n_blocks and self.kind == "qa_blend":
+            raise ValueError(
+                f"[{phase_name}] qa_blend: needs {n_blocks_needed} blocks starting at block {start} "
+                f"but the packed QA corpus has only {self.n_blocks} ({self.n_blocks * self.block_size} "
+                f"tokens over {self.manifest.get('n_records')} records of {self.manifest.get('datasets')}). "
+                f"Lower qa_blend.share or add a corpus"
+            )
         if end > self.n_blocks:
             raise ValueError(
                 f"[{phase_name}] pretraining_mix: needs {n_blocks_needed} blocks starting at block "
@@ -310,7 +348,7 @@ class PackedCorpus:
             )
         self.cursor = end
         info = {
-            "dataset": "pretraining_mix",
+            "dataset": self.kind,
             "block_start": start, "block_end": end, "n_blocks": n_blocks_needed,
             "n_tokens": n_blocks_needed * self.block_size,
             "corpus_blocks": self.n_blocks,
@@ -323,6 +361,24 @@ class PackedCorpus:
 # --------------------------------------------------------------------------
 # Build / cache
 # --------------------------------------------------------------------------
+
+def _publish_packed(directory: Path, manifest_name: str, manifest: Dict[str, Any],
+                    input_ids: np.ndarray, char_ids: Optional[np.ndarray]) -> None:
+    """Atomic publish: another process packing the same tokenizer must
+    never observe a half-written entry."""
+    tmp = directory.with_name(f"{directory.name}.tmp-{os.getpid()}")
+    if tmp.exists():
+        shutil.rmtree(tmp)
+    tmp.mkdir(parents=True)
+    np.save(tmp / INPUT_IDS_FILE, input_ids)
+    if char_ids is not None:
+        np.save(tmp / CHAR_IDS_FILE, char_ids)
+    with open(tmp / manifest_name, "w", encoding="utf-8") as f:
+        json.dump(manifest, f, ensure_ascii=False, indent=2)
+    if directory.exists():
+        shutil.rmtree(directory)
+    os.replace(tmp, directory)
+
 
 def _load_packed(directory: Path, manifest: Dict[str, Any]) -> PackedCorpus:
     input_ids = np.load(directory / INPUT_IDS_FILE, mmap_mode="r")
@@ -388,20 +444,7 @@ def build_packed_corpus(
             "sources": [s.to_json(total_taken) for s in stats.values()],
             "wall_sec": round(time.perf_counter() - t0, 1),
         }
-        # Atomic publish: another process packing the same tokenizer must
-        # never observe a half-written entry.
-        tmp = directory.with_name(f"{directory.name}.tmp-{os.getpid()}")
-        if tmp.exists():
-            shutil.rmtree(tmp)
-        tmp.mkdir(parents=True)
-        np.save(tmp / INPUT_IDS_FILE, input_ids)
-        if char_ids is not None:
-            np.save(tmp / CHAR_IDS_FILE, char_ids)
-        with open(tmp / PACKED_MANIFEST, "w", encoding="utf-8") as f:
-            json.dump(manifest, f, ensure_ascii=False, indent=2)
-        if directory.exists():
-            shutil.rmtree(directory)
-        os.replace(tmp, directory)
+        _publish_packed(directory, PACKED_MANIFEST, manifest, input_ids, char_ids)
         logger.info(
             "pretraining_mix: packed %d blocks × %d = %d tokens (budget %d; %s) in %.0fs → %s",
             manifest["n_blocks"], mix_cfg.block_size, manifest["n_tokens_packed"], budget,
@@ -414,5 +457,116 @@ def build_packed_corpus(
         cell_data_dir = Path(cell_data_dir)
         cell_data_dir.mkdir(parents=True, exist_ok=True)
         with open(cell_data_dir / PACKED_MANIFEST, "w", encoding="utf-8") as f:
+            json.dump({**corpus.manifest, "packed_dir": str(directory)}, f, ensure_ascii=False, indent=2)
+    return corpus
+
+
+# --------------------------------------------------------------------------
+# QA blend — SFT-format QA text packed like the pool
+# --------------------------------------------------------------------------
+
+def qa_blend_fingerprint(tok_id: Dict[str, Any], qa_cfg: QABlendConfig, block_size: int,
+                         clean_latin_rows: bool) -> str:
+    payload = json.dumps(
+        {
+            "tokenizer": tok_id, "datasets": list(qa_cfg.datasets), "split": qa_cfg.split,
+            "block_size": block_size, "seed": qa_cfg.seed, "clean_latin_rows": clean_latin_rows,
+        },
+        sort_keys=True, ensure_ascii=False,
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
+
+
+def pack_qa_blend(
+    qa_cfg: QABlendConfig,
+    block_size: int,
+    cache_dir: Path,
+    tokenizer: BaseTokenizer,
+    tokenizer_type: str,
+    clean_latin_rows: bool = False,
+    cell_data_dir: Optional[Path] = None,
+) -> PackedCorpus:
+    """Pack (or load) the *whole* QA train split(s) for this tokenizer.
+
+    Records are rendered with the Phase 3 / eval surface form
+    (``_format_qa_full``), encoded without truncation (BOS/EOS as the
+    tokenizer emits them, trailing EOS guaranteed), shuffled with
+    ``qa_cfg.seed``, concatenated and chunked into ``block_size`` blocks.
+    Cached at ``<cache_dir>/qa_blend/<fp>/`` and shared across experiments;
+    a phase takes the prefix it needs via ``PackedCorpus.take`` (strict, no
+    wrap). The blend does not depend on the pool, so it is cached beside
+    it rather than under it.
+    """
+    from ..finetune_corpora import _format_qa_full, filter_latin_records, load_corpora
+
+    tok_id = tokenizer_identity(tokenizer, tokenizer_type)
+    fp = qa_blend_fingerprint(tok_id, qa_cfg, block_size, clean_latin_rows)
+    directory = Path(cache_dir) / QA_BLEND_SUBDIR / fp
+    manifest_path = directory / QA_BLEND_MANIFEST
+
+    corpus: Optional[PackedCorpus] = None
+    if manifest_path.exists() and (directory / INPUT_IDS_FILE).exists():
+        with open(manifest_path, encoding="utf-8") as f:
+            existing = json.load(f)
+        if existing.get("fingerprint") == fp:
+            logger.info("qa_blend: reusing packed QA corpus %s (%d blocks)", directory, existing["n_blocks"])
+            corpus = _load_packed(directory, existing)
+
+    if corpus is None:
+        t0 = time.perf_counter()
+        records = load_corpora(list(qa_cfg.datasets), splits=qa_cfg.split)
+        n_loaded = len(records)
+        if clean_latin_rows:
+            records = filter_latin_records(records)
+        if not records:
+            raise ValueError(f"qa_blend: no records left from {list(qa_cfg.datasets)}/{qa_cfg.split}")
+        eos_id = int(tokenizer.special_tokens["eos_token"])
+        docs: List[EncodedDoc] = []
+        per_source: Dict[str, Dict[str, int]] = {}
+        words = 0
+        for rec in records:
+            text = _format_qa_full(rec)
+            ids, char_ids = encode_document(tokenizer, text, eos_id)
+            docs.append(EncodedDoc(source=rec.source, ids=ids, char_ids=char_ids))
+            words += len(text.split())
+            ps = per_source.setdefault(rec.source, {"records": 0, "tokens": 0})
+            ps["records"] += 1
+            ps["tokens"] += int(ids.shape[0])
+        input_ids, char_ids, tail = pack_blocks(docs, block_size, qa_cfg.seed)
+        n_tokens = int(sum(d.ids.shape[0] for d in docs))
+        del docs
+        manifest = {
+            "fingerprint": fp,
+            "tokenizer": tok_id,
+            "datasets": list(qa_cfg.datasets),
+            "split": qa_cfg.split,
+            "clean_latin_rows": clean_latin_rows,
+            "records_loaded": n_loaded,
+            "n_records": len(records),
+            "words": words,
+            "n_tokens": n_tokens,
+            "fertility": round(n_tokens / words, 4) if words else 0.0,
+            "tokens_per_record": round(n_tokens / len(records), 1),
+            "block_size": block_size,
+            "seed": qa_cfg.seed,
+            "n_blocks": int(input_ids.shape[0]),
+            "n_tokens_packed": int(input_ids.shape[0] * block_size),
+            "tail_tokens_dropped": tail,
+            "per_source": per_source,
+            "wall_sec": round(time.perf_counter() - t0, 1),
+        }
+        _publish_packed(directory, QA_BLEND_MANIFEST, manifest, input_ids, char_ids)
+        logger.info(
+            "qa_blend: packed %d records (%s/%s) → %d blocks × %d (fertility %.2f, %.0f tokens/record) in %.0fs → %s",
+            len(records), "+".join(qa_cfg.datasets), qa_cfg.split, manifest["n_blocks"], block_size,
+            manifest["fertility"], manifest["tokens_per_record"], manifest["wall_sec"], directory,
+        )
+        corpus = _load_packed(directory, manifest)
+    corpus.kind = "qa_blend"
+
+    if cell_data_dir is not None:
+        cell_data_dir = Path(cell_data_dir)
+        cell_data_dir.mkdir(parents=True, exist_ok=True)
+        with open(cell_data_dir / QA_BLEND_MANIFEST, "w", encoding="utf-8") as f:
             json.dump({**corpus.manifest, "packed_dir": str(directory)}, f, ensure_ascii=False, indent=2)
     return corpus

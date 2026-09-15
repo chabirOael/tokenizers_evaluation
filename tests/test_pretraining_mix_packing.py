@@ -14,11 +14,12 @@ import torch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from arabic_eval.config import (  # noqa: E402
-    EarlyStoppingConfig, PhaseConfig, PhasesConfig, TrainingConfig,
+    EarlyStoppingConfig, PhaseConfig, PhasesConfig, QABlendConfig, TrainingConfig,
 )
+from arabic_eval.data.finetune_corpora import QARecord, _format_qa_full  # noqa: E402
 from arabic_eval.data.pretraining_mix.packing import (  # noqa: E402
-    EncodedDoc, PackedBlockDataset, PackedCorpus, build_packed_corpus, exact_share_budget,
-    pack_blocks, select_docs, source_doc_order, tokenize_pool,
+    BlendedBlockDataset, EncodedDoc, PackedBlockDataset, PackedCorpus, build_packed_corpus,
+    exact_share_budget, pack_blocks, pack_qa_blend, select_docs, source_doc_order, tokenize_pool,
 )
 from arabic_eval.data.pretraining_mix.pool import build_pool, load_pool_manifest  # noqa: E402
 from arabic_eval.tokenizers.base import BaseTokenizer, EmbeddingType, TokenizerOutput  # noqa: E402
@@ -88,14 +89,14 @@ def _pool(tmp_path, sources=(("web", 0.7), ("wiki", 0.3)), total_words=6000, doc
     return cfg, out
 
 
-def _training_cfg(mix, p1_tokens, p2_tokens=None, bs=2, sft_enabled=False) -> TrainingConfig:
+def _training_cfg(mix, p1_tokens, p2_tokens=None, bs=2, sft_enabled=False, qa_blend=None) -> TrainingConfig:
     """Mix phases sized in tokens; steps derived (block_size 16)."""
     def phase(**kw):
         base = dict(datasets=["pretraining_mix"], trainable_parameters=["*"], learning_rate=1e-3,
                     batch_size=bs, loss_target="full_sequence", max_length=mix.block_size, save_checkpoint=False)
         base.update(kw)
         return PhaseConfig(**base)
-    warmup = (phase(mix_tokens=p2_tokens) if p2_tokens
+    warmup = (phase(mix_tokens=p2_tokens, qa_blend=qa_blend) if p2_tokens
               else phase(datasets=["arabic_squad"], loss_target="answer_only", steps=4))
     return TrainingConfig(
         phases=PhasesConfig(
@@ -313,3 +314,159 @@ def test_run_all_phases_char_cnn_branch_on_packed_mix(tmp_path, tiny_model_path)
     history = _run_all_phases(adapter, tok, tc, tmp_path / "cell" / "training",
                               tokenizer_type="charcnn", data_dir=tmp_path / "cell" / "data")
     assert history["warmup"]["status"] == "ok" and np.isfinite(history["warmup"]["final_train_loss"])
+
+
+# --------------------------------------------------------------------------
+# QA blend
+# --------------------------------------------------------------------------
+
+def _qa_records(n: int, source: str = "arcd", salt: int = 0) -> List[QARecord]:
+    return [QARecord(id=f"{source}-{i}", question=f"ما هو السؤال رقم {salt + i}؟",
+                     context=msa_doc(1, salt=salt + i), answer=f"الجواب {salt + i}", source=source)
+            for i in range(n)]
+
+
+def _patch_corpora(monkeypatch, records_by_name: Dict[str, List[QARecord]]):
+    """``pack_qa_blend`` loads QA records through ``load_corpora``; feed it in-memory records."""
+    import arabic_eval.data.finetune_corpora as fc
+    seen = {}
+
+    def fake(names, splits):
+        seen["names"], seen["splits"] = list(names), splits
+        return [r for n in names for r in records_by_name[n]]
+    monkeypatch.setattr(fc, "load_corpora", fake)
+    return seen
+
+
+def test_pack_qa_blend_renders_sft_format_packs_and_caches(tmp_path, monkeypatch):
+    recs = {"tydiqa_arabic": _qa_records(30, "tydiqa_arabic"), "arcd": _qa_records(10, "arcd", salt=500)}
+    seen = _patch_corpora(monkeypatch, recs)
+    tok = _WordTok()
+    qa_cfg = QABlendConfig(share=0.1)   # datasets default: tydiqa_arabic + arcd
+    corpus = pack_qa_blend(qa_cfg, 16, tmp_path / "cache", tok, "word", cell_data_dir=tmp_path / "cell")
+    assert seen == {"names": ["tydiqa_arabic", "arcd"], "splits": "train"}
+    m = corpus.manifest
+    assert corpus.kind == "qa_blend" and m["n_records"] == 40 and m["split"] == "train"
+    assert m["per_source"]["tydiqa_arabic"]["records"] == 30 and m["per_source"]["arcd"]["records"] == 10
+    # Every token of every rendered record (+1 EOS each) is packed, minus the tail.
+    n_tokens = sum(len(_format_qa_full(r).split()) + 1 for rs in recs.values() for r in rs)
+    assert m["n_tokens"] == n_tokens and m["n_blocks"] == n_tokens // 16
+    assert m["n_tokens_packed"] + m["tail_tokens_dropped"] == n_tokens
+    # The surface form is the Phase 3 / eval one: label tokens are present in the stream.
+    label_ids = {tok.encode(w).input_ids[0] for w in ("السياق:", "السؤال:", "الإجابة:")}
+    assert label_ids <= set(np.asarray(corpus.input_ids).ravel().tolist())
+    # One EOS separator per record; at most one can fall into the dropped tail.
+    assert int((np.asarray(corpus.input_ids) == 2).sum()) in (40, 39)
+    assert (tmp_path / "cell" / "qa_blend_manifest.json").exists()
+    assert json.load(open(tmp_path / "cell" / "qa_blend_manifest.json"))["packed_dir"].endswith(m["fingerprint"])
+
+    # Second call: cache hit, same blocks, nothing re-rendered.
+    monkeypatch.setattr("arabic_eval.data.finetune_corpora.load_corpora",
+                        lambda *a, **k: pytest.fail("cache miss"))
+    again = pack_qa_blend(qa_cfg, 16, tmp_path / "cache", tok, "word")
+    assert np.array_equal(np.asarray(again.input_ids), np.asarray(corpus.input_ids))
+
+    # Different tokenizer content → different entry; same share → same entry (share is not packed).
+    class _WordTokV2(_WordTok):
+        def encode(self, text, max_length=None, padding=False, truncation=False):
+            out = super().encode(text); return TokenizerOutput(input_ids=[i + 1 if i > 3 else i for i in out.input_ids],
+                                                                attention_mask=out.attention_mask, tokens=out.tokens)
+    _patch_corpora(monkeypatch, recs)
+    other = pack_qa_blend(qa_cfg, 16, tmp_path / "cache", _WordTokV2(), "word")
+    assert other.manifest["fingerprint"] != m["fingerprint"]
+    assert pack_qa_blend(QABlendConfig(share=0.5), 16, tmp_path / "cache", tok, "word").manifest["fingerprint"] == m["fingerprint"]
+    assert len(list((tmp_path / "cache" / "qa_blend").iterdir())) == 2
+
+
+def test_pack_qa_blend_clean_latin_rows_and_take_no_wrap(tmp_path, monkeypatch):
+    recs = _qa_records(20)
+    recs[3].answer = "Answer in Latin"
+    _patch_corpora(monkeypatch, {"arcd": recs})
+    tok = _WordTok()
+    cfg = QABlendConfig(datasets=["arcd"], share=0.1)
+    plain = pack_qa_blend(cfg, 16, tmp_path / "c", tok, "word")
+    _patch_corpora(monkeypatch, {"arcd": recs})
+    clean = pack_qa_blend(cfg, 16, tmp_path / "c", tok, "word", clean_latin_rows=True)
+    assert plain.manifest["n_records"] == 20 and clean.manifest["n_records"] == 19
+    assert clean.manifest["records_loaded"] == 20 and clean.manifest["fingerprint"] != plain.manifest["fingerprint"]
+
+    ds, info = plain.take("warmup", 3)
+    assert (info["dataset"], info["block_start"], info["block_end"]) == ("qa_blend", 0, 3)
+    with pytest.raises(ValueError, match="qa_blend: needs .* Lower qa_blend.share"):
+        plain.take("sft", plain.n_blocks)
+
+
+def test_pack_qa_blend_char_cnn(tmp_path, monkeypatch):
+    _patch_corpora(monkeypatch, {"arcd": _qa_records(12)})
+    corpus = pack_qa_blend(QABlendConfig(datasets=["arcd"], share=0.1), 16, tmp_path / "c", _CharCNNTok(), "charcnn")
+    assert corpus.char_ids is not None and corpus.char_ids.shape == (corpus.n_blocks, 16, 4)
+    assert corpus.char_ids.dtype == np.int16
+    assert "char_ids" in corpus.take("warmup", 1)[0][0]
+
+
+def test_blended_block_dataset_reads_every_block_once_and_mixes():
+    ids_a = np.arange(0, 20 * 4).reshape(20, 4).astype(np.int32)        # blocks 0..19 → values < 80
+    ids_b = np.arange(1000, 1000 + 5 * 4).reshape(5, 4).astype(np.int32)  # blocks 0..4 → values ≥ 1000
+    a = PackedBlockDataset(ids_a, None, 4, 14)     # 10 raw-text blocks
+    b = PackedBlockDataset(ids_b, None, 0, 5)      # 5 QA blocks
+    ds = BlendedBlockDataset([a, b], seed=7)
+    assert len(ds) == 15
+    firsts = [int(ds[i]["input_ids"][0]) for i in range(len(ds))]
+    assert sorted(firsts) == sorted([int(ids_a[j, 0]) for j in range(4, 14)] + [int(ids_b[j, 0]) for j in range(5)])
+    kinds = ["qa" if f >= 1000 else "raw" for f in firsts]
+    assert kinds != ["raw"] * 10 + ["qa"] * 5          # interleaved, not concatenated
+    # Deterministic per seed; a different seed gives a different order.
+    assert [int(BlendedBlockDataset([a, b], seed=7)[i]["input_ids"][0]) for i in range(15)] == firsts
+    assert [int(BlendedBlockDataset([a, b], seed=8)[i]["input_ids"][0]) for i in range(15)] != firsts
+    # An empty part is skipped rather than breaking the offsets.
+    assert len(BlendedBlockDataset([a, PackedBlockDataset(ids_b, None, 0, 5)], seed=1)) == 15
+    with pytest.raises(ValueError, match="at least one"):
+        BlendedBlockDataset([], seed=1)
+
+
+def test_run_all_phases_with_qa_blend(tmp_path, tiny_model_path, monkeypatch):
+    """Phase 2 keeps its token budget; 30 % of its blocks come from the QA
+    corpus, the raw-text slice shrinks accordingly, Phase 1 is untouched."""
+    from arabic_eval.models.qwen3_adapter import Qwen3Adapter
+    from arabic_eval.pipeline.experiment import _run_all_phases
+
+    _patch_corpora(monkeypatch, {"tydiqa_arabic": _qa_records(40, "tydiqa_arabic"), "arcd": _qa_records(10, "arcd", salt=900)})
+    cfg, pool = _pool(tmp_path)
+    cfg.cache_dir = str(pool.parent)
+    # P1: 6 blocks; P2: 10 blocks, share 0.3 → 3 QA + 7 raw-text.
+    tc = _training_cfg(cfg, p1_tokens=3 * 2 * 16, p2_tokens=5 * 2 * 16, bs=2, qa_blend=QABlendConfig(share=0.3))
+    assert (tc.mix_blocks("warmup"), tc.qa_blocks("warmup")) == (10, 3)
+    adapter = Qwen3Adapter(str(tiny_model_path), device="cpu", dtype="float32")
+    tok = _WordTok()
+    adapter.adapt_to_tokenizer(tok)
+    history = _run_all_phases(adapter, tok, tc, tmp_path / "cell" / "training",
+                              tokenizer_type="word", data_dir=tmp_path / "cell" / "data")
+    p1, p2 = history["embedding_alignment"], history["warmup"]
+    assert (p1["data"]["block_start"], p1["data"]["block_end"]) == (0, 6) and "qa_blend" not in p1["data"]
+    assert p2["steps_completed"] == 5
+    assert (p2["data"]["block_start"], p2["data"]["block_end"], p2["data"]["phase_blocks"]) == (6, 13, 10)
+    qb = p2["data"]["qa_blend"]
+    assert (qb["dataset"], qb["block_start"], qb["block_end"], qb["n_tokens"]) == ("qa_blend", 0, 3, 48)
+    assert qb["achieved_share"] == 0.3 and qb["datasets"] == ["tydiqa_arabic", "arcd"] and qb["records_covered_approx"] >= 1
+    assert history["pretraining_mix"]["qa_blend"]["consumption"].keys() == {"warmup"}
+    assert history["pretraining_mix"]["consumption"].keys() == {"embedding_alignment", "warmup"}
+    assert (tmp_path / "cell" / "data" / "qa_blend_manifest.json").exists()
+    assert (Path(cfg.cache_dir) / "qa_blend").is_dir()
+    assert np.isfinite(p2["final_train_loss"])
+
+
+def test_run_all_phases_qa_blend_raises_when_qa_corpus_too_small(tmp_path, tiny_model_path, monkeypatch):
+    from arabic_eval.models.qwen3_adapter import Qwen3Adapter
+    from arabic_eval.pipeline.experiment import _run_all_phases
+
+    _patch_corpora(monkeypatch, {"arcd": _qa_records(2)})   # ≈ 3–4 blocks of 16
+    cfg, pool = _pool(tmp_path)
+    cfg.cache_dir = str(pool.parent)
+    tc = _training_cfg(cfg, p1_tokens=2 * 2 * 16, p2_tokens=20 * 2 * 16, bs=2,
+                       qa_blend=QABlendConfig(datasets=["arcd"], share=0.5))   # wants 20 QA blocks
+    adapter = Qwen3Adapter(str(tiny_model_path), device="cpu", dtype="float32")
+    tok = _WordTok()
+    adapter.adapt_to_tokenizer(tok)
+    with pytest.raises(ValueError, match="Lower qa_blend.share"):
+        _run_all_phases(adapter, tok, tc, tmp_path / "cell" / "training",
+                        tokenizer_type="word", data_dir=tmp_path / "cell" / "data")

@@ -89,6 +89,63 @@ class EarlyStoppingConfig(BaseModel):
     )
 
 
+class QABlendConfig(BaseModel):
+    """Blend packed SFT-format QA text into a phase that trains on the
+    pretraining mix.
+
+    ``share`` is the fraction of the phase's *blocks* (hence tokens) that
+    are QA records rendered with the Phase 3 / eval surface form
+    (``السياق: …\\nالسؤال: …\\nالإجابة: {answer}``), packed EOS-separated into
+    ``block_size`` blocks exactly like the raw-text pool and trained with
+    the same full-sequence loss. The phase's token budget (``mix_tokens``)
+    is unchanged — the raw-text slice shrinks by ``round(share × blocks)``
+    blocks, so the with/without-blend arms of an ablation spend identical
+    compute. ``split`` must not be a Phase 3 early-stop split.
+    """
+    datasets: List[DatasetName] = Field(default_factory=lambda: ["tydiqa_arabic", "arcd"])
+    share: float = 0.07
+    split: str = "train"
+    seed: int = 42
+
+    @field_validator("datasets", mode="before")
+    @classmethod
+    def _coerce_datasets(cls, v):
+        if isinstance(v, str):
+            return [v]
+        return v
+
+    @field_validator("datasets")
+    @classmethod
+    def _qa_corpora_only(cls, v):
+        if not v:
+            raise ValueError("qa_blend.datasets must list at least one QA corpus")
+        if "pretraining_mix" in v:
+            raise ValueError("qa_blend.datasets must be QA corpora (the raw-text mix is the host, not a blend member)")
+        if len(set(v)) != len(v):
+            raise ValueError(f"qa_blend.datasets has duplicates: {v}")
+        return v
+
+    @field_validator("share")
+    @classmethod
+    def _share_open_unit_interval(cls, v):
+        if not (0.0 < v < 1.0):
+            raise ValueError(f"qa_blend.share must be in (0, 1), got {v}")
+        return v
+
+    @model_validator(mode="after")
+    def _no_early_stop_splits(self):
+        # Phase 3 early-stops on TyDiQA-val + ARCD-val; blending those rows
+        # into an earlier phase would contaminate the stopping signal.
+        if self.split != "train":
+            for name in self.datasets:
+                if name in ("tydiqa_arabic", "arcd"):
+                    raise ValueError(
+                        f"qa_blend: split {self.split!r} of {name!r} is a Phase 3 early-stop split; "
+                        f"only 'train' may be blended"
+                    )
+        return self
+
+
 class PhaseConfig(BaseModel):
     """One training phase.
 
@@ -120,6 +177,9 @@ class PhaseConfig(BaseModel):
     max_grad_norm: float = 1.0
     save_checkpoint: bool = True
     clean_latin_rows: bool = False
+    # Optional SFT-format QA text blended into a 'pretraining_mix' phase
+    # (share of the phase's blocks). See ``QABlendConfig``.
+    qa_blend: Optional[QABlendConfig] = None
     early_stopping: Optional[EarlyStoppingConfig] = None
 
     @field_validator("datasets", mode="before")
@@ -155,6 +215,8 @@ class PhaseConfig(BaseModel):
             raise ValueError("steps is required (only phases on 'pretraining_mix' may derive it from mix_tokens)")
         if not uses_mix and self.mix_tokens is not None:
             raise ValueError("mix_tokens is only valid on a phase whose datasets is ['pretraining_mix']")
+        if not uses_mix and self.qa_blend is not None:
+            raise ValueError("qa_blend is only valid on a phase whose datasets is ['pretraining_mix']")
         return self
 
 
@@ -430,10 +492,32 @@ class TrainingConfig(BaseModel):
                     f"{derived} (mix_tokens / (batch_size {phase.batch_size} × block_size {block})) but "
                     f"steps = {phase.steps}; set them consistently or omit steps"
                 )
+            if phase.qa_blend is not None:
+                total_blocks = phase.mix_tokens // block
+                qa_blocks = int(round(phase.qa_blend.share * total_blocks))
+                if qa_blocks < 1:
+                    raise ValueError(
+                        f"training.phases.{phase_name}.qa_blend.share ({phase.qa_blend.share}) × "
+                        f"{total_blocks} blocks rounds to 0 QA blocks; raise share or mix_tokens"
+                    )
+                if qa_blocks >= total_blocks:
+                    raise ValueError(
+                        f"training.phases.{phase_name}.qa_blend.share ({phase.qa_blend.share}) leaves no "
+                        f"raw-text blocks in the phase ({qa_blocks} of {total_blocks})"
+                    )
         return self
 
+    def qa_blocks(self, phase_name: str) -> int:
+        """QA blocks a blended mix phase draws: ``round(share × mix_tokens / block_size)``
+        (0 when the phase has no ``qa_blend``)."""
+        phase: PhaseConfig = getattr(self.phases, phase_name)
+        if phase.qa_blend is None:
+            return 0
+        return int(round(phase.qa_blend.share * self.mix_blocks(phase_name)))
+
     def mix_blocks(self, phase_name: str) -> int:
-        """Blocks a mix phase draws: ``mix_tokens / block_size``."""
+        """Blocks a mix phase trains on: ``mix_tokens / block_size`` (raw-text
+        blocks + QA-blend blocks; see ``qa_blocks``)."""
         phase: PhaseConfig = getattr(self.phases, phase_name)
         assert self.pretraining_mix is not None and phase.mix_tokens is not None
         return phase.mix_tokens // self.pretraining_mix.block_size

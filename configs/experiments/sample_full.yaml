@@ -129,6 +129,15 @@ training:
       max_grad_norm: 1.0
       save_checkpoint: true
       clean_latin_rows: false                        # drop training records whose question/context/answer/choices contain any Latin-script letter
+      # --- Packed raw-text alternative (see all_tokenizers_sweep_pretrain_mix.yaml) ---
+      # datasets: ["pretraining_mix"]                # sole dataset; loss_target must be full_sequence,
+      # mix_tokens: 4096000                          #   max_length == training.pretraining_mix.block_size,
+      #                                              #   mix_tokens == steps × batch_size × block_size (steps may be omitted)
+      # qa_blend:                                    # optional: SFT-format QA text replacing round(share × blocks)
+      #   datasets: ["tydiqa_arabic", "arcd"]        #   of the phase's raw-text blocks (Phase 3 / eval surface form,
+      #   share: 0.07                                #   full-sequence loss, packed like the pool; 'validation' refused)
+      #   split: "train"
+      #   seed: 42
 
     # =====================================================================
     # Phase 3 — SFT (Supervised Fine-Tuning)
