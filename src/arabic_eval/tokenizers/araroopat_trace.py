@@ -237,6 +237,35 @@ def _trace_proclitic_stack(text: str, proclitics: Tuple[Optional[str], ...]) -> 
     return {"input": text, "ops": ops, "output": cur, "matches_real": cur == real}
 
 
+def _trace_enclitic_stack(text: str, enclitics: Tuple[str, ...]) -> List[Dict[str, Any]]:
+    """Walk ``strip_enclitics_from_end`` one clitic at a time (outermost first).
+
+    ``enclitics`` is in emission order (innermost first: ``(ة, ه)``); the real
+    helper peels them in reverse, and the ة suffix strips as ت when a pronoun
+    followed it (``مَرْكَبَته`` → ``مَرْكَبَت`` → ``مَرْكَب``). The result is
+    asserted against the real helper by the callers.
+    """
+    ops: List[Dict[str, Any]] = []
+    cur = text
+    for clitic in reversed([c for c in enclitics if c]):
+        before = cur
+        note = None
+        if clitic == B.TAA_MARBUTA:
+            after = _strip_clitic_from_end(cur, B.TAA_MARBUTA)
+            if after == cur:
+                after = _strip_clitic_from_end(cur, B._TAA)
+                if after != cur:
+                    note = "ة is realized as ت before a pronoun — stripped as ت"
+        else:
+            after = _strip_clitic_from_end(cur, clitic)
+        op = {"clitic": clitic, "before": before, "after": after, "stripped": after != before}
+        if note:
+            op["note"] = note
+        ops.append(op)
+        cur = after
+    return ops
+
+
 def _trace_dict_to_analysis(d: Dict[str, str], particles: frozenset,
                             word: Optional[str] = None) -> Dict[str, Any]:
     """Explain every gate of ``_dict_to_analysis`` for one candidate dict."""
@@ -354,6 +383,226 @@ def _trace_dict_to_analysis(d: Dict[str, str], particles: frozenset,
         getattr(real, k) == v for k, v in t["analysis"].items()
     )
     return t
+
+
+def trace_validate_words(
+    unique_words: List[str], raw_by_word: Dict[str, List[Dict[str, str]]],
+    backend: MorphAnalyzer,
+) -> Tuple[Dict[str, Optional[B.Analysis]], List[Dict[str, Any]]]:
+    """Step 1h: walk every candidate of every word through the traced gates.
+
+    Returns ``(analyses, rows)`` and populates the backend's native /
+    analyze caches exactly like ``analyze_many()`` would. Shared by the
+    small-text tracer and the corpus tracer (which runs it on a sample).
+    """
+    analyses: Dict[str, Optional[B.Analysis]] = {}
+    val_rows = []
+    for w in unique_words:
+        cands = raw_by_word[w]
+        real = MorphAnalyzer._first_valid(cands, w, backend.particles)
+        backend._native_cache[w] = real   # same side effect as analyze_many()
+        backend._analyze_cache[w] = real  # (overwritten below if the peeler rescues it)
+        analyses[w] = real
+        traced = []
+        for ci, c in enumerate(cands):
+            tc = _trace_dict_to_analysis(c, backend.particles, w)
+            tc["index"] = ci
+            traced.append(tc)
+            if tc["accepted"]:
+                break
+        val_rows.append({
+            "word": w, "num_candidates": len(cands), "candidates": traced,
+            "accepted_index": next((c["index"] for c in traced if c["accepted"]), None),
+            "analyzed": real is not None,
+            "path": ("PREP" if real is not None and real.particle else
+                     "ROOT+PAT" if real is not None else "LIT (character fallback)"),
+            "surface_fallback": real is not None and real.particle is not None and not any(
+                c.get("accepted") for c in traced),
+            "matches_real": all(c.get("matches_real", True) for c in traced),
+        })
+    return analyses, val_rows
+
+
+def trace_peel_words(
+    unique_words: List[str], analyses: Dict[str, Optional[B.Analysis]],
+    backend: MorphAnalyzer,
+) -> List[Dict[str, Any]]:
+    """Step 1h': replay the clitic peeler on the words CAMeL rejected natively.
+
+    Mutates ``analyses`` (and the backend analyze cache) with the peeled
+    result, exactly like ``analyze_many()``. Words already analyzed are
+    skipped; ``trace_validate_words`` must have run on them first.
+    """
+    peel_rows = []
+    if backend.enable_peeler:
+        for w in unique_words:
+            if analyses[w] is not None:
+                continue
+            cands = B.peel_candidates(w, backend.peel_bare_alef)
+            spellings: List[str] = []
+            for c in cands:
+                for sp in MorphAnalyzer._residual_spellings(c):
+                    if sp not in spellings:
+                        spellings.append(sp)
+            # Every valid reading of each residual (server `top` > 1): for
+            # an unseen word the MLE scores tie at 1.0, so rank 1 is just
+            # database order and the reading we need may sit further down.
+            readings = dict(zip(spellings, backend._candidates_many(spellings)))
+            tried = []
+            accepted = None
+            for c in cands:
+                for sp in MorphAnalyzer._residual_spellings(c):
+                    reads = readings.get(sp, [])
+                    if not reads:
+                        tried.append({"proclitics": list(c.proclitics), "residual": sp,
+                                      "enclitics": list(c.enclitics), "peeled_len": c.peeled_len,
+                                      "residual_analyzed": False,
+                                      "verdict": "residual has no analysis"})
+                        continue
+                    for rank, res in enumerate(reads):
+                        row = {"proclitics": list(c.proclitics), "residual": sp,
+                               "enclitics": list(c.enclitics), "peeled_len": c.peeled_len,
+                               "residual_analyzed": True, "reading": rank + 1,
+                               "of_readings": len(reads),
+                               "residual_analysis": {"pos": res.pos, "surface": res.surface,
+                                                     "proclitics": list(res.proclitics),
+                                                     "enclitics": list(res.enclitics),
+                                                     "root": res.root, "pattern": res.pattern}}
+                        verdict = MorphAnalyzer.residual_verdict(c, sp, res)
+                        row["verdict"] = verdict or "accepted"
+                        tried.append(row)
+                        if verdict is None:
+                            accepted = B.merge_peeled(w, c, res)
+                            break
+                    if accepted is not None:
+                        break
+                if accepted is not None:
+                    break
+            real = backend._peel(w)
+            backend._analyze_cache[w] = real
+            analyses[w] = real
+            matches = (real is None) == (accepted is None) and (
+                real is None or (real.proclitics, real.root, real.pattern, real.enclitics)
+                == (accepted.proclitics, accepted.root, accepted.pattern, accepted.enclitics))
+            peel_rows.append({
+                "word": w, "num_candidates": len(cands), "candidates": tried,
+                "accepted": accepted is not None,
+                "result": None if accepted is None else {
+                    "proclitics": list(accepted.proclitics), "root": accepted.root,
+                    "pattern": accepted.pattern, "enclitics": list(accepted.enclitics),
+                    "surface": accepted.surface},
+                "path": "ROOT+PAT (peeled)" if accepted is not None else "LIT (character fallback)",
+                "matches_real": matches,
+            })
+    return peel_rows
+
+
+def trace_probe_roundtrip(
+    tr: "_Trace", tok: AraRooPatTokenizer, backend: MorphAnalyzer, tap: "_WireTap",
+    texts: List[str], unique_words: Optional[List[str]],
+    analyses: Optional[Dict[str, Optional[B.Analysis]]], real_reco: Dict[Tuple[int, int], str],
+) -> None:
+    """Step 6: encode → decode ``texts`` through the vocab just built (two steps).
+
+    ``unique_words`` / ``analyses`` may be ``None``: they are then derived
+    from the probe text and the backend's analyze cache after the encode
+    call (which fills it). The small-text tracer passes both explicitly.
+    """
+    vocab = tok._vocab
+    if unique_words is None:
+        counts: Counter = Counter()
+        for t_ in texts:
+            for w in unicodedata.normalize("NFKC", t_).split():
+                for chunk in _extract_alpha_chunks(w):
+                    counts[chunk] += 1
+        unique_words = list(counts.keys())
+    # ---- Step 6: encode → decode round trip -------------------------
+    t0 = time.perf_counter()
+    full_text = "\n".join(texts)
+    out = tok.encode(full_text)
+    if analyses is None:
+        analyses = {w: backend._analyze_cache.get(w) for w in unique_words}
+    enc_lines = tap.take()
+    stream = []
+    for i, (tid, metric) in enumerate(zip(out.input_ids, out.tokens)):
+        t_ = tok._reverse_vocab.get(tid, "?")
+        stream.append({"pos": i, "id": tid, "token": t_, "family": _split_key(t_),
+                       "inner": _inner(t_), "metric_string": metric})
+    # Per-chunk path annotation from the analysis cache.
+    chunk_paths = []
+    for w in unique_words:
+        a = analyses[w]
+        if a is None:
+            chunk_paths.append({"chunk": w, "path": "LIT", "why": "no valid analysis"})
+            continue
+        if a.particle:
+            needed = [f"{PFX_PREP}{a.particle}{SFX}"] + \
+                [f"{PFX_CLITICP}{c}{SFX}" for c in (a.prc3, a.prc2, a.prc1, a.prc0) if c] + \
+                ([f"{PFX_CLITICE}{a.enc0}{SFX}"] if a.enc0 else [])
+            missing = [t_ for t_ in needed if t_ not in vocab]
+            chunk_paths.append({"chunk": w, "path": "PREP" if not missing else "LIT",
+                                "why": "" if not missing else f"{missing[0]} not in vocab"})
+            continue
+        rt, pt = f"{PFX_ROOT}{a.root}{SFX}", f"{PFX_PAT}{a.pattern}{SFX}"
+        if rt in vocab and pt in vocab:
+            chunk_paths.append({"chunk": w, "path": "ROOT+PAT", "why": ""})
+        else:
+            chunk_paths.append({"chunk": w, "path": "LIT",
+                                "why": f"{rt if rt not in vocab else pt} cut by the budget"})
+    tr.step("encode", "encode(): the corpus through the vocab just built", A.AraRooPatTokenizer.encode, {
+        "input": full_text, "num_tokens": len(out.input_ids), "stream": stream,
+        "chunk_paths": chunk_paths, "ipc_calls": len([l for l in enc_lines if l["dir"] == "→ server"]),
+    }, t0, wire=enc_lines, notes=[
+        "Zero IPC calls expected: every alpha chunk was analyzed in the pre-pass and sits in "
+        "MorphAnalyzer's cache. That is what the shared _classify_char chunking buys.",
+        "metric_string is the cleaned Arabic surface the morphological metrics see for each token "
+        "(root letters for [ROOT_*], the cleaned inflected stem for [PAT_*], the clitic-stripped "
+        "surface for [PREP_*] — علي for عليه, so the tokens still concatenate to the word).",
+    ])
+
+    t0 = time.perf_counter()
+    decoded = tok.decode(out.input_ids)
+    dec_lines = tap.take()
+    tiers = []
+    pending: Optional[Tuple[int, str]] = None
+    for s in stream:
+        if s["family"] == "root":
+            pending = (s["id"], s["inner"])
+        elif s["family"] == "pat" and pending is not None:
+            key = (pending[0], s["id"])
+            if key in real_reco:
+                tiers.append({"root": pending[1], "pattern": s["inner"], "tier": 1, "value": real_reco[key]})
+            else:
+                gen = backend._generate_cache.get((pending[1], s["inner"]))
+                tiers.append({"root": pending[1], "pattern": s["inner"], "tier": 2 if gen else 3,
+                              "value": strip_diacritics(gen) if gen else
+                              strip_diacritics(naive_pattern_fill(pending[1], s["inner"]))})
+            pending = None
+    src_words = unicodedata.normalize("NFKC", full_text).split()
+    dec_words = decoded.split()
+    src_nodiac = [strip_diacritics(w) for w in src_words]
+    dec_nodiac = [strip_diacritics(w) for w in dec_words]
+    # Align source vs decoded words (decode emits punctuation/digits as
+    # separate units, so a positional zip would misalign everything).
+    diff_ops = []
+    for op, i1, i2, j1, j2 in difflib.SequenceMatcher(None, src_nodiac, dec_nodiac, autojunk=False).get_opcodes():
+        diff_ops.append({"op": op, "src": src_words[i1:i2], "dec": dec_words[j1:j2]})
+    tr.step("decode", "decode(): three-tier reconstruction back to Arabic", A.AraRooPatTokenizer.decode, {
+        "decoded": decoded, "tiers": tiers,
+        "source_words": src_words, "decoded_words": dec_words,
+        "exact_match": " ".join(src_words) == decoded,
+        "match_ignoring_diacritics": " ".join(src_nodiac) == strip_diacritics(decoded),
+        "match_ignoring_spacing": "".join(src_nodiac) == "".join(dec_nodiac),
+        "word_diff": diff_ops,
+        "length_mismatch": len(src_words) != len(dec_words),
+    }, t0, wire=dec_lines, notes=[
+        "Tier 1 = lookup table built in step 4 (O(1)); tier 2 = CAMeL generator; tier 3 = naive fill.",
+        "Decode joins proclitics with join_proclitics — the inverse of strip_proclitics_from_start, "
+        "including the لِ + الـ contraction.",
+        "Punctuation and digits become separate whitespace-joined words, so exact_match is usually "
+        "false on punctuated input even when every Arabic word round-trips.",
+    ])
+
 
 
 # ---------------------------------------------------------------------------
@@ -528,31 +777,7 @@ def trace_training_with_tokenizer(
 
         # ---- Step 1h: validate each candidate ---------------------------
         t0 = time.perf_counter()
-        analyses: Dict[str, Optional[B.Analysis]] = {}
-        val_rows = []
-        for w in unique_words:
-            cands = raw_by_word[w]
-            real = MorphAnalyzer._first_valid(cands, w, backend.particles)
-            backend._native_cache[w] = real   # same side effect as analyze_many()
-            backend._analyze_cache[w] = real  # (overwritten below if the peeler rescues it)
-            analyses[w] = real
-            traced = []
-            for ci, c in enumerate(cands):
-                tc = _trace_dict_to_analysis(c, backend.particles, w)
-                tc["index"] = ci
-                traced.append(tc)
-                if tc["accepted"]:
-                    break
-            val_rows.append({
-                "word": w, "num_candidates": len(cands), "candidates": traced,
-                "accepted_index": next((c["index"] for c in traced if c["accepted"]), None),
-                "analyzed": real is not None,
-                "path": ("PREP" if real is not None and real.particle else
-                         "ROOT+PAT" if real is not None else "LIT (character fallback)"),
-                "surface_fallback": real is not None and real.particle is not None and not any(
-                    c.get("accepted") for c in traced),
-                "matches_real": all(c.get("matches_real", True) for c in traced),
-            })
+        analyses, val_rows = trace_validate_words(unique_words, raw_by_word, backend)
         tr.step("validate", "Client-side validation: _first_valid → _dict_to_analysis", _dict_to_analysis, {
             "words": val_rows,
             "analyzed": sum(1 for r in val_rows if r["analyzed"]),
@@ -572,67 +797,7 @@ def trace_training_with_tokenizer(
         # same native call + validation as a whole word (its rows are in the
         # bridge trace as extra requests), then `peel_compatible` decides.
         t0 = time.perf_counter()
-        peel_rows = []
-        if backend.enable_peeler:
-            for w in unique_words:
-                if analyses[w] is not None:
-                    continue
-                cands = B.peel_candidates(w, backend.peel_bare_alef)
-                spellings: List[str] = []
-                for c in cands:
-                    for sp in MorphAnalyzer._residual_spellings(c):
-                        if sp not in spellings:
-                            spellings.append(sp)
-                # Every valid reading of each residual (server `top` > 1): for
-                # an unseen word the MLE scores tie at 1.0, so rank 1 is just
-                # database order and the reading we need may sit further down.
-                readings = dict(zip(spellings, backend._candidates_many(spellings)))
-                tried = []
-                accepted = None
-                for c in cands:
-                    for sp in MorphAnalyzer._residual_spellings(c):
-                        reads = readings.get(sp, [])
-                        if not reads:
-                            tried.append({"proclitics": list(c.proclitics), "residual": sp,
-                                          "enclitics": list(c.enclitics), "peeled_len": c.peeled_len,
-                                          "residual_analyzed": False,
-                                          "verdict": "residual has no analysis"})
-                            continue
-                        for rank, res in enumerate(reads):
-                            row = {"proclitics": list(c.proclitics), "residual": sp,
-                                   "enclitics": list(c.enclitics), "peeled_len": c.peeled_len,
-                                   "residual_analyzed": True, "reading": rank + 1,
-                                   "of_readings": len(reads),
-                                   "residual_analysis": {"pos": res.pos, "surface": res.surface,
-                                                         "proclitics": list(res.proclitics),
-                                                         "enclitics": list(res.enclitics),
-                                                         "root": res.root, "pattern": res.pattern}}
-                            verdict = MorphAnalyzer.residual_verdict(c, sp, res)
-                            row["verdict"] = verdict or "accepted"
-                            tried.append(row)
-                            if verdict is None:
-                                accepted = B.merge_peeled(w, c, res)
-                                break
-                        if accepted is not None:
-                            break
-                    if accepted is not None:
-                        break
-                real = backend._peel(w)
-                backend._analyze_cache[w] = real
-                analyses[w] = real
-                matches = (real is None) == (accepted is None) and (
-                    real is None or (real.proclitics, real.root, real.pattern, real.enclitics)
-                    == (accepted.proclitics, accepted.root, accepted.pattern, accepted.enclitics))
-                peel_rows.append({
-                    "word": w, "num_candidates": len(cands), "candidates": tried,
-                    "accepted": accepted is not None,
-                    "result": None if accepted is None else {
-                        "proclitics": list(accepted.proclitics), "root": accepted.root,
-                        "pattern": accepted.pattern, "enclitics": list(accepted.enclitics),
-                        "surface": accepted.surface},
-                    "path": "ROOT+PAT (peeled)" if accepted is not None else "LIT (character fallback)",
-                    "matches_real": matches,
-                })
+        peel_rows = trace_peel_words(unique_words, analyses, backend)
         tr.step("peel", "Clitic peeler: closed-list slicing of the words CAMeL rejected",
                 B.peel_candidates, {
             "enabled": backend.enable_peeler,
@@ -792,12 +957,8 @@ def trace_training_with_tokenizer(
                 continue
             all_pairs.add((e.root, e.pattern))
             pro = _trace_proclitic_stack(e.surface, e.proclitics)
-            s = pro["output"]
-            enc_ops = []
-            for c in e.enclitics:
-                s2 = _strip_clitic_from_end(s, c)
-                enc_ops.append({"clitic": c, "before": s, "after": s2, "stripped": s2 != s})
-                s = s2
+            enc_ops = _trace_enclitic_stack(pro["output"], e.enclitics)
+            s = enc_ops[-1]["after"] if enc_ops else pro["output"]
             inflected = _strip_clitic_surfaces(e.surface, e.proclitics, e.enclitics)
             row.update({
                 "root": e.root, "pattern": e.pattern, "surface": e.surface,
@@ -864,90 +1025,7 @@ def trace_training_with_tokenizer(
             "enclitic_freq": tok._metadata["enclitic_freq"], "config": tok._metadata["config"],
         }, t0, notes=["Answers 'where did this token come from?' without re-running the pre-pass."])
 
-        # ---- Step 6: encode → decode round trip -------------------------
-        t0 = time.perf_counter()
-        full_text = "\n".join(texts)
-        out = tok.encode(full_text)
-        enc_lines = tap.take()
-        stream = []
-        for i, (tid, metric) in enumerate(zip(out.input_ids, out.tokens)):
-            t_ = tok._reverse_vocab.get(tid, "?")
-            stream.append({"pos": i, "id": tid, "token": t_, "family": _split_key(t_),
-                           "inner": _inner(t_), "metric_string": metric})
-        # Per-chunk path annotation from the analysis cache.
-        chunk_paths = []
-        for w in unique_words:
-            a = analyses[w]
-            if a is None:
-                chunk_paths.append({"chunk": w, "path": "LIT", "why": "no valid analysis"})
-                continue
-            if a.particle:
-                needed = [f"{PFX_PREP}{a.particle}{SFX}"] + \
-                    [f"{PFX_CLITICP}{c}{SFX}" for c in (a.prc3, a.prc2, a.prc1, a.prc0) if c] + \
-                    ([f"{PFX_CLITICE}{a.enc0}{SFX}"] if a.enc0 else [])
-                missing = [t_ for t_ in needed if t_ not in vocab]
-                chunk_paths.append({"chunk": w, "path": "PREP" if not missing else "LIT",
-                                    "why": "" if not missing else f"{missing[0]} not in vocab"})
-                continue
-            rt, pt = f"{PFX_ROOT}{a.root}{SFX}", f"{PFX_PAT}{a.pattern}{SFX}"
-            if rt in vocab and pt in vocab:
-                chunk_paths.append({"chunk": w, "path": "ROOT+PAT", "why": ""})
-            else:
-                chunk_paths.append({"chunk": w, "path": "LIT",
-                                    "why": f"{rt if rt not in vocab else pt} cut by the budget"})
-        tr.step("encode", "encode(): the corpus through the vocab just built", A.AraRooPatTokenizer.encode, {
-            "input": full_text, "num_tokens": len(out.input_ids), "stream": stream,
-            "chunk_paths": chunk_paths, "ipc_calls": len([l for l in enc_lines if l["dir"] == "→ server"]),
-        }, t0, wire=enc_lines, notes=[
-            "Zero IPC calls expected: every alpha chunk was analyzed in the pre-pass and sits in "
-            "MorphAnalyzer's cache. That is what the shared _classify_char chunking buys.",
-            "metric_string is the cleaned Arabic surface the morphological metrics see for each token "
-            "(root letters for [ROOT_*], the cleaned inflected stem for [PAT_*], the clitic-stripped "
-            "surface for [PREP_*] — علي for عليه, so the tokens still concatenate to the word).",
-        ])
-
-        t0 = time.perf_counter()
-        decoded = tok.decode(out.input_ids)
-        dec_lines = tap.take()
-        tiers = []
-        pending: Optional[Tuple[int, str]] = None
-        for s in stream:
-            if s["family"] == "root":
-                pending = (s["id"], s["inner"])
-            elif s["family"] == "pat" and pending is not None:
-                key = (pending[0], s["id"])
-                if key in real_reco:
-                    tiers.append({"root": pending[1], "pattern": s["inner"], "tier": 1, "value": real_reco[key]})
-                else:
-                    gen = backend._generate_cache.get((pending[1], s["inner"]))
-                    tiers.append({"root": pending[1], "pattern": s["inner"], "tier": 2 if gen else 3,
-                                  "value": strip_diacritics(gen) if gen else
-                                  strip_diacritics(naive_pattern_fill(pending[1], s["inner"]))})
-                pending = None
-        src_words = unicodedata.normalize("NFKC", full_text).split()
-        dec_words = decoded.split()
-        src_nodiac = [strip_diacritics(w) for w in src_words]
-        dec_nodiac = [strip_diacritics(w) for w in dec_words]
-        # Align source vs decoded words (decode emits punctuation/digits as
-        # separate units, so a positional zip would misalign everything).
-        diff_ops = []
-        for op, i1, i2, j1, j2 in difflib.SequenceMatcher(None, src_nodiac, dec_nodiac, autojunk=False).get_opcodes():
-            diff_ops.append({"op": op, "src": src_words[i1:i2], "dec": dec_words[j1:j2]})
-        tr.step("decode", "decode(): three-tier reconstruction back to Arabic", A.AraRooPatTokenizer.decode, {
-            "decoded": decoded, "tiers": tiers,
-            "source_words": src_words, "decoded_words": dec_words,
-            "exact_match": " ".join(src_words) == decoded,
-            "match_ignoring_diacritics": " ".join(src_nodiac) == strip_diacritics(decoded),
-            "match_ignoring_spacing": "".join(src_nodiac) == "".join(dec_nodiac),
-            "word_diff": diff_ops,
-            "length_mismatch": len(src_words) != len(dec_words),
-        }, t0, wire=dec_lines, notes=[
-            "Tier 1 = lookup table built in step 4 (O(1)); tier 2 = CAMeL generator; tier 3 = naive fill.",
-            "Decode joins proclitics with join_proclitics — the inverse of strip_proclitics_from_start, "
-            "including the لِ + الـ contraction.",
-            "Punctuation and digits become separate whitespace-joined words, so exact_match is usually "
-            "false on punctuated input even when every Arabic word round-trips.",
-        ])
+        trace_probe_roundtrip(tr, tok, backend, tap, texts, unique_words, analyses, real_reco)
 
     # ---- Consistency: compare with a fresh, un-instrumented train() -------
     t0 = time.perf_counter()

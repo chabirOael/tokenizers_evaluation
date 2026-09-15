@@ -293,6 +293,98 @@ td.ann{font-size:12px;color:var(--ink-2)}
 .pg-outcell .gone{color:var(--bad);text-decoration:line-through;opacity:.7}
 footer{border-top:1px solid var(--line);padding:18px 0 40px;color:var(--ink-3);font-size:12px}
 </style>
+<style>
+/* ===================== TAB 3: corpus training (cx-*) — additive, nothing above is touched ===================== */
+#p-corpus .cx-intro{margin:14px 0 0;color:var(--ink-2);max-width:90ch}
+.cx-modebox{margin:6px 0 12px 26px;padding:10px 12px;border-left:2px solid var(--line);opacity:.55;pointer-events:none;transition:.15s}
+.cx-modebox.on{opacity:1;pointer-events:auto;border-left-color:var(--accent)}
+.cx-modebox .params{margin-top:4px}
+.params input[type=text],.cx-modebox select,#cx-search-q,#cx-save-name{border:1px solid var(--line);border-radius:6px;padding:6px 8px;font:inherit;font-size:12.5px;background:var(--paper);color:var(--ink);width:100%}
+#cx-probe{min-height:110px;font-size:18px}
+#cx-steps{margin:22px 0 40px;display:flex;flex-direction:column;gap:16px}
+.cx-progress{margin-top:12px;border:1px solid var(--line);border-radius:var(--radius);padding:12px 14px;background:var(--sunken);font-size:12.5px}
+.cx-progress .stage{font-weight:600;color:var(--ink);display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.cx-bar{height:8px;border-radius:4px;background:var(--line);overflow:hidden;margin:8px 0 6px}
+.cx-bar i{display:block;height:100%;background:var(--accent);width:0;transition:width .5s ease}
+.cx-bar.indet i{width:30%;animation:cxslide 1.2s ease-in-out infinite alternate}
+@keyframes cxslide{from{margin-left:0}to{margin-left:70%}}
+.cx-progress pre{margin:8px 0 0;max-height:150px;overflow:auto;font-family:var(--mono);font-size:11px;background:var(--paper);border:1px solid var(--line);border-radius:6px;padding:8px 10px;white-space:pre-wrap;direction:ltr;text-align:left}
+.cx-scale{display:flex;align-items:flex-start;gap:10px;margin:0 0 12px;padding:9px 12px;border-radius:8px;background:var(--accent-soft);border:1px solid transparent;font-size:12.5px;color:var(--ink-2)}
+.cx-scale b{color:var(--accent);font-weight:600;white-space:nowrap}
+.cx-scale .mono{color:var(--ink-3);font-size:11px}
+.cx-unavail{padding:14px 16px;border:1px dashed var(--line-2);border-radius:8px;color:var(--ink-2);font-size:13px;background:var(--paper)}
+.cx-seg{display:inline-flex;border:1px solid var(--line);border-radius:99px;overflow:hidden}
+.cx-seg button{border:none;background:var(--surface);color:var(--ink-2);padding:5px 12px;font:inherit;font-size:12px;cursor:pointer}
+.cx-seg button.cur{background:var(--accent);color:#fff}
+/* pattern decoration: every .tok.pat inside the tab gets a .wz (wazn) sibling */
+#p-corpus .wz{font-family:var(--naskh);font-size:15px;direction:rtl;unicode-bidi:isolate;padding:0 5px;border-radius:4px;background:var(--surface);border:1px solid var(--line);color:var(--pat);line-height:1.3}
+#p-corpus.pv-raw .wz{display:none}
+#p-corpus.pv-wazn .tok.pat>bdi{display:none}
+#p-corpus .tok.pat .wz::before{content:"≙ ";font-family:var(--mono);font-size:10px;color:var(--ink-3)}
+/* search */
+#cx-search,#cx-pg,#cx-save{display:none;margin:0 0 40px}
+#cx-search.on,#cx-pg.on,#cx-save.on{display:block}
+.cx-srow{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px}
+.cx-srow input{flex:1;min-width:240px;font-size:15px;font-family:var(--ar)}
+.cx-fams{display:flex;flex-wrap:wrap;gap:4px;margin:6px 0 10px}
+.cx-fams button{border:1px solid var(--line);background:var(--sunken);color:var(--ink-2);border-radius:6px;padding:3px 9px;font:inherit;font-size:11.5px;cursor:pointer;font-family:var(--mono)}
+.cx-fams button.cur{background:var(--accent);color:#fff;border-color:var(--accent)}
+.cx-encode{border:1px solid var(--line);border-radius:8px;padding:10px 12px;margin:8px 0 12px;background:var(--paper)}
+.cx-hits td .ex{font-family:var(--naskh);font-size:15px;direction:rtl;unicode-bidi:isolate;color:var(--ink-2)}
+.cx-hits td .gl{font-size:12px;color:var(--ink-2)}
+.cx-hits td .why{font-family:var(--mono);font-size:10.5px;color:var(--ink-3)}
+.cx-hits .btn{padding:2px 9px;font-size:11px}
+.cx-filled{display:inline-flex;direction:rtl;gap:1px;font-family:var(--naskh);font-size:17px}
+.cx-filled i{font-style:normal;padding:0 1px;border-radius:3px}
+.cx-filled i.s{background:var(--root-soft);color:var(--root)}
+#cx-pg-input{font-family:var(--mono);font-size:13px;direction:ltr;text-align:left;min-height:96px;line-height:1.8}
+.cx-pager{display:flex;gap:8px;align-items:center;margin-top:8px;font-size:12px;color:var(--ink-3)}
+.cx-saved-info{margin-top:6px;font-size:12px;color:var(--ink-2);font-family:var(--mono)}
+.cx-tierchip.cur{border-color:var(--accent);color:var(--accent);background:var(--accent-soft)}
+#cx-enc,#cx-words{display:none;margin:0 0 40px}
+#cx-enc.on,#cx-words.on{display:block}
+#cx-enc-text{min-height:110px;font-size:18px}
+.cx-procrow>td{padding:0 6px;border-bottom:none}
+.cx-procbox{padding:12px 14px;background:var(--sunken);border:1px solid var(--line);border-radius:8px;margin:2px 0 10px;font-size:13px}
+.cx-proc-head{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:6px}
+.cx-process .wordcard{margin-top:6px;background:var(--surface)}
+.cx-process .tblwrap{background:var(--surface)}
+/* shared renderers (gatesView etc.) reveal their .seq children through the step-card animation; here they sit outside a step card */
+#p-corpus .cx-process .seq>*{opacity:1;transform:none;animation:none}
+/* records browser (validate / peel / entries / freq / words): server-paged table + filters */
+.cx-browser{margin:10px 0 14px;padding:10px 12px;border:1px solid var(--line);border-radius:8px;background:var(--paper)}
+.cx-browser[hidden]{display:none}
+.cx-browser .cx-srow{margin-bottom:6px}
+.cx-browser .cx-srow input{font-size:14px;min-width:200px}
+.cx-browser .cx-pager{flex-wrap:wrap}
+.cx-browser .cx-pager select,.cx-browser .cx-pager input{border:1px solid var(--line);border-radius:6px;padding:2px 6px;font:inherit;font-size:12px;background:var(--paper);color:var(--ink)}
+.cx-browser .cx-pager input{width:64px;font-family:var(--mono)}
+.cx-browser .cx-pager .btn{padding:2px 8px;font-size:11px}
+.cx-stats .stat.cx-click{cursor:pointer;border-radius:6px;padding:2px 6px;margin:-2px 4px -2px -6px;transition:background .15s}
+.cx-stats .stat.cx-click:hover{background:var(--accent-soft)}
+.cx-stats .stat.cx-click.cur{background:var(--accent-soft);outline:1px solid var(--accent)}
+/* floating navigation panel (tab 03 only — lives inside #p-corpus) */
+#cx-nav{position:fixed;top:96px;left:calc(50% + 632px);width:190px;max-height:calc(100vh - 120px);overflow:auto;z-index:30;border:1px solid var(--line);border-radius:10px;background:var(--surface);box-shadow:0 6px 24px rgba(0,0,0,.08);font-size:12px;padding:6px;box-sizing:border-box}
+#cx-nav[hidden]{display:none}
+#cx-nav.collapsed{width:40px;padding:4px;left:auto;right:10px}
+@media (max-width:1650px){#cx-nav{left:auto;right:10px}}
+@media (max-width:1200px){#cx-nav{display:none}}
+#cx-nav .hd{display:flex;align-items:center;justify-content:space-between;gap:6px;padding:2px 4px 6px;color:var(--ink-3);font-family:var(--mono);font-size:10.5px;text-transform:uppercase;letter-spacing:.06em}
+#cx-nav.collapsed .hd{justify-content:center;padding:2px 0 4px}
+#cx-nav.collapsed .hd span{display:none}
+#cx-nav .hd button{border:none;background:none;color:var(--ink-2);cursor:pointer;font-size:14px;padding:0 2px;line-height:1}
+#cx-nav a{display:flex;align-items:center;gap:6px;padding:3px 6px;border-radius:6px;color:var(--ink-2);text-decoration:none;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#cx-nav a:hover{background:var(--sunken)}
+#cx-nav a.cur{background:var(--accent-soft);color:var(--accent);font-weight:600}
+#cx-nav a.dim{opacity:.45}
+#cx-nav a .n{font-family:var(--mono);font-size:10px;color:var(--ink-3);min-width:18px;text-align:center}
+#cx-nav a.nv-step{padding-left:12px}
+#cx-nav .grp{margin:6px 4px 2px;color:var(--ink-3);font-family:var(--mono);font-size:10px}
+#cx-nav.collapsed a{padding:3px 0;justify-content:center}
+#cx-nav.collapsed a .lab,#cx-nav.collapsed .grp{display:none}
+#cx-nav.collapsed a .n{min-width:0}
+#cx-nav.collapsed a.nv-sec .n{font-size:13px}
+</style>
 </head>
 <body>
 
@@ -313,6 +405,7 @@ footer{border-top:1px solid var(--line);padding:18px 0 40px;color:var(--ink-3);f
   <div class="tabs" role="tablist">
     <button class="tab" role="tab" aria-selected="true" data-panel="p-train"><span class="n">01</span>Training trace (live)</button>
     <button class="tab" role="tab" aria-selected="false" data-panel="p-explainer"><span class="n">02</span>Encode explainer (existing)</button>
+    <button class="tab" role="tab" aria-selected="false" data-panel="p-corpus"><span class="n">03</span>Corpus training</button>
   </div>
 </div></header>
 
@@ -403,6 +496,155 @@ footer{border-top:1px solid var(--line);padding:18px 0 40px;color:var(--ink-3);f
 <section class="panel" id="p-explainer">
   <p class="small muted" style="margin:14px 0 0">The original static explainer (<code class="mono">docs/araroopat_explainer.html</code>), unchanged, served from the same local server. It walks the <em>encode</em> path on pre-baked sentences.</p>
   <iframe id="explainer-frame" title="AraRooPat encode explainer" loading="lazy"></iframe>
+</section>
+
+<!-- ===================== TAB 3: corpus training ===================== -->
+<section class="panel pv-both" id="p-corpus">
+  <p class="cx-intro">Train <code class="mono">AraRooPatTokenizer</code> on the real corpus, or load a tokenizer already saved under <code class="mono">outputs/tokenizers/</code>, then read the same sixteen step cards as tab 01 — at corpus scale every card carries corpus-wide totals plus a seeded sample, and cards whose real run touched no CAMeL (cache hit) replay a sample live and say so. The job runs in the background on its own CAMeL subprocess; tab 01 stays usable meanwhile.</p>
+  <div class="snapbanner" id="cx-snapbanner"></div>
+  <nav id="cx-nav" hidden aria-label="sections of this tab"><div class="hd"><span>sections</span><button id="cx-nav-toggle" title="collapse / expand">⇔</button></div><div id="cx-nav-list"></div></nav>
+
+  <div class="inputgrid" id="cx-setup">
+    <div class="card"><div class="body">
+      <div class="subh">Source</div>
+      <label class="checkrow"><input type="radio" name="cx-mode" value="train" checked> <b>Train on the corpus</b> — the real <code class="mono">train()</code> rule: the CAMeL pre-pass cache is reused when its key matches and it covers every chunk, otherwise the pre-pass runs (hours).</label>
+      <div class="cx-modebox on" id="cx-trainbox">
+        <div class="params">
+          <label>dataset <input type="text" id="cx-dataset" value="Jr23xd23/ArabicText-Large"><span class="real" id="cx-dataset-note">loaded through load_arabic_dataset with configs/base.yaml preprocessing</span></label>
+          <label>max rows <input type="number" id="cx-maxrows" min="1" placeholder="all rows"><span class="real">blank = the whole train split (668 959 rows); a cap makes a fresh pre-pass short</span></label>
+          <label>pre-pass cache dir <select id="cx-cachedir"></select><span class="real" id="cx-cache-note">outputs/tokenizers/&lt;dir&gt;/corpus_analysis.pkl</span></label>
+          <label>cache policy <select id="cx-policy"><option value="auto">auto — reuse when key + coverage match</option><option value="ignore">ignore — run the CAMeL pre-pass again</option></select><span class="real">the explorer separates read policy from the write flag below; train() couples both</span></label>
+        </div>
+        <label class="checkrow"><input type="checkbox" id="cx-writecache" checked> write <code class="mono">corpus_analysis.pkl</code> after a fresh pre-pass (so the next run and the verify step can hit it)</label>
+      </div>
+      <label class="checkrow"><input type="radio" name="cx-mode" value="saved"> <b>Load a saved tokenizer</b> — <code class="mono">load()</code> of a directory written by <code class="mono">save()</code>; seconds, no corpus.</label>
+      <div class="cx-modebox" id="cx-savedbox">
+        <select id="cx-saved"></select>
+        <div class="cx-saved-info" id="cx-savedinfo"></div>
+      </div>
+      <div class="subh">Probe text — the encode → decode proof runs on this, not on the corpus (one line = one text)</div>
+      <textarea id="cx-probe" spellcheck="false"></textarea>
+      <div class="chips" id="cx-probe-examples"></div>
+    </div></div>
+
+    <div class="card"><div class="body">
+      <div class="subh">Vocab budget (configs/tokenizers/araroopat.yaml tiers)</div>
+      <div class="chips" id="cx-tiers"></div>
+      <div class="params" style="margin-top:10px">
+        <label>max_roots <input type="number" id="cx-max_roots" value="10000" min="0"><span class="real">never binding on this corpus (4 128 roots clear min freq)</span></label>
+        <label>max_patterns <input type="number" id="cx-max_patterns" value="4000" min="0"><span class="real">the binding budget; 6 076 = every pattern with freq ≥ 2</span></label>
+        <label>min_root_freq <input type="number" id="cx-min_root_freq" value="2" min="0"><span class="real">real default 2</span></label>
+        <label>min_pattern_freq <input type="number" id="cx-min_pattern_freq" value="2" min="0"><span class="real">real default 2</span></label>
+      </div>
+      <label class="checkrow"><input type="checkbox" id="cx-diac"> use_diacritized_surface (keep tashkeel in reconstruction values)</label>
+      <label class="checkrow"><input type="checkbox" id="cx-verify" checked> verify with an un-instrumented <code class="mono">train()</code> at the end (train mode: ≈ +7 min — the real train() re-chunks the corpus, then hits the cache)</label>
+      <label class="checkrow">sample size <input type="number" id="cx-sample" value="40" min="5" max="200" style="width:70px" class="mono"> chunks replayed live for the gate / peeler / entries / reconstruction cards</label>
+      <div class="runrow">
+        <button class="btn primary" id="cx-run">Run</button>
+        <button class="btn" id="cx-cancel" hidden>Cancel job</button>
+        <label class="small muted">Reveal <select id="cx-speed"><option value="0" selected>all at once</option><option value="900">step by step</option><option value="1800">slow</option></select></label>
+        <span class="status" id="cx-status"></span>
+      </div>
+      <div id="cx-error" class="err" hidden></div>
+      <div class="cx-progress" id="cx-progress" hidden>
+        <div class="stage"><span class="dot pulse"></span><span id="cx-stage"></span><span class="mono small muted" id="cx-counts"></span></div>
+        <div class="cx-bar" id="cx-bar"><i></i></div>
+        <div class="small muted" id="cx-eta"></div>
+        <pre id="cx-log"></pre>
+      </div>
+    </div></div>
+  </div>
+
+  <div class="playbar" id="cx-playbar">
+    <div class="playrow">
+      <button class="btn" id="cx-b-prev">◀ Prev</button>
+      <button class="btn" id="cx-b-play">▶ Play</button>
+      <button class="btn" id="cx-b-next">Next ▶</button>
+      <button class="btn" id="cx-b-all">Show all</button>
+      <span class="sp"></span>
+      <span class="small muted">patterns as</span>
+      <span class="cx-seg" id="cx-patview"><button data-v="raw">CAMeL 1ِ2ا3</button><button data-v="both" class="cur">both</button><button data-v="wazn">wazn فِعال</button></span>
+      <span class="status" id="cx-playstatus"></span>
+    </div>
+    <div class="rail" id="cx-rail"></div>
+  </div>
+
+  <div id="cx-steps"></div>
+
+  <section class="card" id="cx-search">
+    <div class="stephead"><span class="stepnum">search</span><h3>Find tokens in the vocab</h3><span class="badge neutral">after training / loading</span><span class="ref">src/arabic_eval/tokenizers/araroopat_corpus_trace.py · TokenIndex.search</span></div>
+    <div class="stepbody">
+      <p class="small muted" style="margin:0 0 10px">Type an <b>id</b>, a token like <code class="mono">[ROOT_</code>, root letters (<code class="mono">#</code> or a weak letter matches a masked radical: <span class="naskh">قول</span> finds <span class="naskh">ق#ل</span>), a <b>wazn</b> (<span class="naskh">مفعول</span>, with or without tashkeel), a gloss word (<code class="mono">participle</code>), or a whole <b>word</b> — a word is also encoded live so you see exactly which tokens it becomes, and looked up in the reconstruction table.</p>
+      <div class="cx-srow"><input id="cx-search-q" placeholder="ابحث… e.g. المدرسة, ق#ل, مَفْعُول, 4266, [CLITICE_, participle" spellcheck="false"><span class="mono small muted" id="cx-search-stat"></span></div>
+      <div class="cx-fams" id="cx-search-fams"></div>
+      <div id="cx-search-encode"></div>
+      <div id="cx-search-hits"></div>
+      <div class="cx-pager" id="cx-search-pager"></div>
+    </div>
+  </section>
+
+  <section class="card" id="cx-enc">
+    <div class="stephead"><span class="stepnum">encode</span><h3>Encode plain text → tokens</h3><span class="badge neutral">after training / loading</span><span class="ref">src/arabic_eval/tokenizers/araroopat.py · encode()</span></div>
+    <div class="stepbody">
+      <p class="small muted" style="margin:0 0 10px">The real <code class="mono">encode()</code> of any text on this tokenizer. Every alpha chunk is classified by the path it took — the exact all-or-nothing rule of <code class="mono">_emit_alpha</code> — and can be expanded to see the whole process: CAMeL's candidates and every gate, the clitic peeler, the vocab / budget check, the emitted tokens. Digits, punctuation and Latin go through fixed inventories or UNK and are not listed.</p>
+      <textarea id="cx-enc-text" spellcheck="false" placeholder="اكتب نصاً عربياً هنا…"></textarea>
+      <div class="chips" id="cx-enc-examples"></div>
+      <div class="runrow">
+        <button class="btn primary" id="cx-enc-run">Encode ▶</button>
+        <button class="btn" id="cx-enc-send" disabled title="copy the token stream into the decode playground below">send to decode ▶</button>
+        <span class="status" id="cx-enc-status"></span>
+      </div>
+      <div id="cx-enc-error" class="err" hidden></div>
+      <div id="cx-enc-out"></div>
+    </div>
+  </section>
+
+  <section class="card" id="cx-words">
+    <div class="stephead"><span class="stepnum">words</span><h3>Corpus words by category</h3><span class="badge neutral">train mode</span><span class="ref">src/arabic_eval/tokenizers/araroopat_corpus_trace.py · WordCategoryIndex</span></div>
+    <div class="stepbody">
+      <p class="small muted" style="margin:0 0 10px">Every unique alpha chunk of the corpus with the path <code class="mono">encode()</code> gives it under this vocab, sorted by occurrences. Pick a category, filter by substring, expand a word to replay its process live.</p>
+      <div id="cx-words-unavail" class="cx-unavail" hidden></div>
+      <div class="mono small muted" id="cx-words-stat" style="margin-bottom:6px"></div>
+      <div id="cx-words-mount"></div>
+    </div>
+  </section>
+
+  <section class="card" id="cx-pg">
+    <div class="stephead"><span class="stepnum">playground</span><h3>Decode tokens → text (LLM emission playground)</h3><span class="badge neutral">after training / loading</span><span class="ref">src/arabic_eval/tokenizers/araroopat.py · decode()</span></div>
+    <div class="stepbody">
+      <p class="small muted" style="margin:0 0 10px">Same as tab 01, on the corpus-trained tokenizer: ids and/or token strings, nothing validated for grammar, every prefix decoded (streaming view), tiers and generator lines shown. Search results and the palette append here.</p>
+      <div class="pg-grid">
+        <div>
+          <textarea id="cx-pg-input" spellcheck="false" placeholder="e.g.  1 6 4265 4270 2   or   [CLITICP_ال] [ROOT_درس] [PAT_مَ1ْ2َ3َ] [CLITICE_ة] </s>"></textarea>
+          <div class="pg-parse" id="cx-pg-parse"></div>
+          <div class="runrow">
+            <button class="btn primary" id="cx-pg-decode">Decode ▶</button>
+            <label class="small muted"><input type="checkbox" id="cx-pg-stream" checked> stream token by token</label>
+            <button class="btn" id="cx-pg-prefill" title="load the encode() stream of the probe text">Prefill from encode</button>
+            <button class="btn" id="cx-pg-random" title="draw random ids from the vocab">Random emission</button>
+            <input type="number" id="cx-pg-n" value="12" min="1" max="512" style="width:64px" class="mono" title="length of the random emission">
+            <button class="btn" id="cx-pg-clear">Clear</button>
+          </div>
+          <div id="cx-pg-error" class="err" hidden></div>
+        </div>
+        <div>
+          <div class="subh">vocab palette — click to append</div>
+          <div class="pg-tabs" id="cx-pg-tabs"></div>
+          <input class="pg-filter" id="cx-pg-filter" placeholder="filter (token text, wazn or id)…">
+          <div class="pg-palette" id="cx-pg-palette"></div>
+        </div>
+      </div>
+      <div id="cx-pg-runs"></div>
+    </div>
+  </section>
+
+  <section class="card" id="cx-save">
+    <div class="stephead"><span class="stepnum">save</span><h3>Save this tokenizer</h3><span class="ref">src/arabic_eval/tokenizers/araroopat.py · save()</span></div>
+    <div class="stepbody">
+      <div class="cx-srow"><span class="mono small muted">outputs/tokenizers/</span><input id="cx-save-name" placeholder="araroopat_corpus_balanced" style="max-width:360px"><label class="small muted"><input type="checkbox" id="cx-save-overwrite"> overwrite</label><button class="btn primary" id="cx-save-btn">Save</button><span class="status" id="cx-save-status"></span></div>
+      <div id="cx-save-error" class="err" hidden></div>
+    </div>
+  </section>
 </section>
 
 </main>
@@ -991,6 +1233,746 @@ const applyTheme = t => { if (t==='system') root.removeAttribute('data-theme'); 
 tb.onclick = () => { const cur = root.getAttribute('data-theme')||'system'; applyTheme(cur==='system'?'dark':cur==='dark'?'light':'system'); };
 try { applyTheme(localStorage.getItem('arp-theme')||'system'); } catch(_){}
 if (SNAP) enterSnapshotMode(SNAP);
+</script>
+<script>
+/* ================================================================== */
+/* TAB 3: corpus training. Additive module: reuses the page's helpers  */
+/* (h, tok, table, badge, patView, wirePane, outCell, the R renderers, */
+/* GROUP) and never touches tab 01/02 state or DOM.                     */
+/* ================================================================== */
+(function(){
+const CX = {
+  P:{steps:[], cur:-1, timer:null, playing:false},
+  jobId:null, poll:null, trace:null, sources:null, rate:null,
+  pg:{vocab:[], byToken:new Map(), byId:new Map(), fam:'root', timer:null, encodeStream:[]},
+  patInfo:new Map(), search:{timer:null, fam:'', offset:0, q:''},
+};
+const PANEL = $('#p-corpus');
+// Mirror of WAZN_SLOT_LETTERS in araroopat_corpus_trace.py (a test compares the two).
+const CX_WAZN = {"1":"ف","2":"ع","3":"ل","4":"ل"};
+const cxWazn = p => [...p].map(c => CX_WAZN[c] || c).join('');
+const cxInnerPat = t => t.startsWith('[PAT_') ? t.slice(5, -1) : t;
+const fmt = n => n===null||n===undefined ? '—' : typeof n==='number' ? n.toLocaleString('en-US') : (typeof n==='object' ? Object.entries(n).map(([k,v])=>`${k} ${fmt(v)}`).join(' · ') : String(n));
+const STAGES = {camel:'starting the job\'s CAMeL subprocess', load_corpus:'loading the corpus (HF datasets, base.yaml preprocessing)', chunk:'NFKC → split → alpha chunks → Counter over every text', cache:'reading the pre-pass cache and testing key + coverage', prepass:'CAMeL pre-pass — one NDJSON batch per 256 unique chunks', write_cache:'writing corpus_analysis.pkl', replay:'re-analyzing the sample live for the gate cards', freq:'frequency tables over every entry', vocab:'_build_vocab', reconstruction:'_build_reconstruction (generator for pairs without a corpus surface)', metadata:'_build_metadata', probe:'probe text encode → decode', verify:'un-instrumented train() cross-check', index:'building the search index', load:'load() of the saved directory'};
+const PROBE_EXAMPLES = [
+  ['eval-split row', 'العقر هي احدى قرى مديرية بني الحارث التابعة لمحافظة امانة العاصمة صنعاء اليمنية، بلغ تعداد سكانها 2741 نسمة حسب الاحصاء الذي جرى عام 2004.'],
+  ['clitics + weak root + لِلـ', 'والكتاب مفيد جداً، للولد الصغير.\nقال المعلم: الكتاب جديد وسيدرسه الطلاب في 2024!'],
+  ['enclitics + peeler', 'كتابهم على الطاولة وكتابك في الحقيبة، فهل رأيتهما؟ أتكتب سلمتكها'],
+  ['loanwords → LIT', 'تعمل شركة مايكروسوفت مع جوجل على الذكاء الاصطناعي.'],
+];
+
+/* ---------------- pattern decoration (wazn next to every [PAT_*]) ---------------- */
+function cxFilledView(info){
+  if (!info || !info.filled) return null;
+  return h('span', {class:'cx-filled', title:'first corpus example filled into the template (slots highlighted)'}, info.filled);
+}
+function cxDecorate(root){
+  root.querySelectorAll('.tok.pat').forEach(el => {
+    if (el.querySelector('.wz')) return;
+    const bdi = el.querySelector('bdi'); if (!bdi) return;
+    const inner = cxInnerPat(bdi.textContent);
+    const info = CX.patInfo.get(inner);
+    const w = info ? info.wazn : cxWazn(inner);
+    el.insertBefore(h('span', {class:'wz'}, w), bdi.nextSibling);
+    const tips = ['wazn ' + w];
+    if (info && info.gloss) tips.push(info.gloss + (info.gloss_tier==='skeleton' ? ' (loose match)' : ''));
+    if (info && info.filled) tips.push('e.g. ' + info.filled);
+    if (!el.title) el.title = tips.join(' · ');
+  });
+}
+document.querySelectorAll('#cx-patview button').forEach(b => b.onclick = () => {
+  document.querySelectorAll('#cx-patview button').forEach(x => x.classList.toggle('cur', x===b));
+  PANEL.classList.remove('pv-raw','pv-both','pv-wazn'); PANEL.classList.add('pv-'+b.dataset.v);
+});
+
+/* ---------------- sources ---------------- */
+async function cxLoadSources(){
+  const r = await fetch('/api/corpus/sources', {cache:'no-store'}); const s = await r.json();
+  if (!r.ok || s.error) throw new Error(s.error || ('HTTP '+r.status));
+  CX.sources = s;
+  const sel = $('#cx-saved'); sel.innerHTML = '';
+  if (!s.saved.length) sel.append(h('option', {value:''}, '— no saved araroopat tokenizer under outputs/tokenizers —'));
+  s.saved.slice().sort((a,b)=>b.mtime-a.mtime).forEach(d => sel.append(h('option', {value:d.name}, `${d.name} — vocab ${fmt(d.vocab_size)} (roots ${fmt(d.roots)}, patterns ${fmt(d.patterns)})`)));
+  cxSavedInfo();
+  const cs = $('#cx-cachedir'); cs.innerHTML = '';
+  const names = new Set(s.caches.map(c=>c.name)); const def = s.default_cache.split('/').pop(); if (!names.has(def)) s.caches.push({name:def, bytes:null, is_default:true, missing:true});
+  s.caches.forEach(c => cs.append(h('option', {value:c.name, selected: c.name===def ? '' : null}, c.missing ? `${c.name} (no cache file yet — a fresh pre-pass will create it)` : `${c.name} — ${(c.bytes/1e6).toFixed(0)} MB, ${new Date(c.mtime*1000).toLocaleString()}`)));
+  $('#cx-dataset').value = s.dataset.name;
+  $('#cx-dataset-note').textContent = `${s.dataset.cached_locally ? 'cached locally in ' + s.dataset.cache_dir : 'NOT cached locally — first load downloads it'} · preprocessing ${JSON.stringify(s.dataset.preprocessing)}`;
+  const tiers = $('#cx-tiers'); tiers.innerHTML = '';
+  Object.entries(s.tiers).forEach(([name, t]) => tiers.append(h('button', {class:'chip cx-tierchip'+(name==='balanced'?' cur':''), onclick:(e)=>{ $('#cx-max_roots').value = t.max_roots; $('#cx-max_patterns').value = t.max_patterns; document.querySelectorAll('.cx-tierchip').forEach(x=>x.classList.toggle('cur', x===e.currentTarget)); }}, `${name}: ${fmt(t.max_roots)} roots + ${fmt(t.max_patterns)} patterns`)));
+}
+function cxSavedInfo(){
+  const d = (CX.sources?.saved||[]).find(x => x.name===$('#cx-saved').value); const box = $('#cx-savedinfo'); box.innerHTML = '';
+  if (!d) return;
+  box.append(`config: ${Object.entries(d.config).map(([k,v])=>k+'='+v).join(' ')}`, h('br'), `metadata ${d.has_metadata?'✓':'✗'} · reconstruction ${d.has_reconstruction ? (d.reconstruction_bytes/1e6).toFixed(1)+' MB' : '✗'} · [PREP_*] inventory ${d.has_prepositions?'✓':'✗'}`);
+  if (!d.has_prepositions) box.append(h('div', {style:'color:var(--warn);margin-top:4px'}, 'saved before the 2026-09-13 [PREP_*] / ة-enclitic changes: its [PAT_*] tokens still carry ة and it has no [PREP_*] range, so the current encode() routes more words to the character path (LIT) than at training time. Retrain to compare fairly.'));
+}
+$('#cx-saved').addEventListener('change', cxSavedInfo);
+document.querySelectorAll('input[name=cx-mode]').forEach(r => r.addEventListener('change', () => {
+  const m = document.querySelector('input[name=cx-mode]:checked').value;
+  $('#cx-trainbox').classList.toggle('on', m==='train'); $('#cx-savedbox').classList.toggle('on', m==='saved');
+}));
+$('#cx-probe-examples').append(...PROBE_EXAMPLES.map(([lab, txt]) => h('button', {class:'chip', onclick:()=>{ $('#cx-probe').value = txt; }}, lab)));
+$('#cx-probe').value = PROBE_EXAMPLES[0][1] + '\n' + PROBE_EXAMPLES[1][1];
+
+/* ---------------- run + poll ---------------- */
+function cxParams(){
+  const p = {}; for (const k of ['max_roots','max_patterns','min_root_freq','min_pattern_freq']) p[k] = +$('#cx-'+k).value;
+  p.use_diacritized_surface = $('#cx-diac').checked; return p;
+}
+async function cxRun(){
+  $('#cx-error').hidden = true; $('#cx-status').innerHTML = '';
+  const mode = document.querySelector('input[name=cx-mode]:checked').value;
+  const body = {mode, params: cxParams(), probe_text: $('#cx-probe').value, sample_size: +$('#cx-sample').value||40, verify: $('#cx-verify').checked, seed: 42};
+  if (mode==='saved') body.saved_dir = $('#cx-saved').value;
+  else Object.assign(body, {dataset_name: $('#cx-dataset').value, max_train_samples: +$('#cx-maxrows').value || null, cache_dir: $('#cx-cachedir').value, cache_policy: $('#cx-policy').value, write_cache: $('#cx-writecache').checked});
+  try {
+    const r = await fetch('/api/corpus/train', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
+    const j = await r.json(); if (!r.ok || j.error) throw new Error(j.error || ('HTTP '+r.status));
+    cxAttach(j.job_id);
+  } catch(e){ $('#cx-error').hidden = false; $('#cx-error').textContent = e.message; }
+}
+function cxAttach(jobId){
+  CX.jobId = jobId; CX.rate = null;
+  $('#cx-run').disabled = true; $('#cx-cancel').hidden = false; $('#cx-progress').hidden = false; $('#cx-log').textContent = ''; cxNavBuild();
+  if (CX.poll) clearInterval(CX.poll);
+  CX.poll = setInterval(cxPollOnce, 1000); cxPollOnce();
+}
+async function cxPollOnce(){
+  let s; try { const r = await fetch('/api/corpus/status', {cache:'no-store'}); s = await r.json(); } catch(e){ return; }
+  if (!s || s.job_id !== CX.jobId) return;
+  const now = Date.now()/1000;
+  $('#cx-stage').textContent = `${s.stage||s.status} — ${STAGES[s.stage]||''}` + (s.stage_detail ? ` · ${s.stage_detail}` : '');
+  const bar = $('#cx-bar');
+  if (s.total > 0){ bar.classList.remove('indet'); bar.firstElementChild.style.width = Math.round(100*s.done/s.total)+'%'; $('#cx-counts').textContent = `${fmt(s.done)} / ${fmt(s.total)}`; }
+  else { bar.classList.toggle('indet', s.status==='running'); bar.firstElementChild.style.width = s.status==='done' ? '100%' : ''; $('#cx-counts').textContent = ''; }
+  let eta = '';
+  if (s.status==='running' && s.total > 0){
+    const p = CX.rate;
+    if (p && p.stage===s.stage && s.done > p.done && now > p.t){ const inst = (s.done-p.done)/(now-p.t); p.rate = p.rate ? 0.7*p.rate + 0.3*inst : inst; p.done = s.done; p.t = now; }
+    else if (!p || p.stage!==s.stage) CX.rate = {stage:s.stage, done:s.done, t:now, rate:null};
+    const rt = CX.rate && CX.rate.rate; if (rt) { const rem = (s.total-s.done)/rt; eta = `≈ ${rem>90 ? (rem/60).toFixed(1)+' min' : rem.toFixed(0)+' s'} left in this stage at ${fmt(Math.round(rt))} / s`; }
+  }
+  $('#cx-eta').textContent = `elapsed ${s.elapsed_s>90 ? (s.elapsed_s/60).toFixed(1)+' min' : s.elapsed_s+' s'}` + (eta ? ' · ' + eta : '');
+  $('#cx-log').textContent = (s.log||[]).join('\n'); $('#cx-log').scrollTop = 1e9;
+  if (s.status==='running' || s.status==='queued') return;
+  clearInterval(CX.poll); CX.poll = null; $('#cx-run').disabled = false; $('#cx-cancel').hidden = true;
+  $('#cx-progress').querySelector('.dot').classList.remove('pulse');
+  if (s.status==='done'){
+    try { const r = await fetch('/api/corpus/trace', {cache:'no-store'}); const t = await r.json(); if (!r.ok || t.error) throw new Error(t.error||('HTTP '+r.status)); cxOnTrace(t); }
+    catch(e){ $('#cx-error').hidden = false; $('#cx-error').textContent = 'trace fetch failed: ' + e.message; }
+  } else { $('#cx-error').hidden = false; $('#cx-error').textContent = s.status==='cancelled' ? 'job cancelled' : ('job failed: ' + (s.error||'?')); }
+}
+$('#cx-run').onclick = cxRun;
+$('#cx-cancel').onclick = async () => { try { await fetch('/api/corpus/cancel', {method:'POST', headers:{'Content-Type':'application/json'}, body:'{}'}); } catch(_){} };
+
+function cxOnTrace(t){
+  CX.trace = t; window.__corpusTrace = t;
+  const vstep = t.steps.find(s=>s.id==='vocab');
+  CX.patInfo = new Map(((vstep && vstep.data.vocab) || []).filter(v=>v.family==='pat').map(v=>[v.inner, v]));
+  const st = $('#cx-status'); st.innerHTML = '';
+  st.append(`${t.mode==='saved' ? 'loaded ' + t.saved_dir : 'trained on ' + fmt(t.corpus.rows) + ' texts'} · vocab ${fmt(t.vocab_size)} · reconstruction ${fmt(t.reconstruction_size)} · ${t.steps.length} steps · ${(t.total_ms/1000).toFixed(1)} s · `,
+    t.all_ok ? badge('trace == real code ✓','ok') : badge('trace mismatch — see red badges','bad'));
+  cxRenderTrace(t);
+  cxPgInit(t);
+  for (const id of ['cx-search','cx-enc','cx-words','cx-pg','cx-save']) $('#'+id).classList.add('on');
+  ENC.res = null; $('#cx-enc-out').innerHTML = ''; $('#cx-enc-status').textContent = ''; $('#cx-enc-send').disabled = true;
+  cxWordsInit();
+  cxNavBuild();
+  $('#cx-save-name').value = t.mode==='saved' ? t.saved_dir.split('/').pop() + '_copy' : `araroopat_corpus_${t.params.max_patterns}p_${new Date().toISOString().slice(0,10)}`;
+  cxSearchFams({}); $('#cx-search-hits').innerHTML = ''; $('#cx-search-encode').innerHTML = '';
+  cxSearchRun();
+}
+
+/* ---------------- step cards + playback ---------------- */
+const RX = {};
+const kv = obj => h('div', {class:'kv'}, ...Object.entries(obj).map(([k,v]) => h('div', {}, h('span',{class:'k'},k), h('span',{class:'v lat'}, typeof v==='object' && v!==null ? JSON.stringify(v) : String(v)))));
+RX.config = d => {
+  const out = h('div', {}, R.config(d));
+  if (d.corpus) out.append(h('div',{class:'subh'},'corpus'), kv({dataset: d.corpus.dataset_name, rows: fmt(d.corpus.rows), chars: fmt(d.corpus.chars), eval_rows: fmt(d.corpus.eval_rows), max_train_samples: d.corpus.max_train_samples ?? 'all', preprocessing: d.corpus.preprocessing, loader: d.corpus.loader, load_ms: d.corpus.load_ms, cache_policy: d.cache_policy, write_cache: d.write_cache}));
+  if (d.saved_dir) out.append(h('div',{class:'subh'},'artifacts read by load()'), kv(Object.fromEntries(Object.entries(d.files).map(([k,v])=>[k, (v/1e3).toFixed(0)+' kB']))), h('div',{class:'subh'},'config recorded in vocab_metadata.json'), kv(d.metadata_config||{}));
+  return out;
+};
+RX.cache = d => {
+  const kind = d.decision==='hit' ? 'ok' : d.decision==='miss' ? 'warn' : 'neutral';
+  const out = h('div', {}, h('div',{style:'margin-bottom:10px'}, badge('decision: '+d.decision, kind), ' ', d.policy ? badge('policy '+d.policy,'neutral') : null, ' ', badge('write_cache '+d.write_cache,'neutral')));
+  out.append(h('ul', {class:'small', style:'margin:0 0 10px;padding-left:20px'}, ...(d.reasons||[]).map(r=>h('li',{},r))));
+  out.append(kv({cache_file: d.default_cache_file, exists: d.default_cache_exists, bytes: d.file_bytes ? (d.file_bytes/1e6).toFixed(1)+' MB' : '—', mtime: d.file_mtime ? new Date(d.file_mtime*1000).toLocaleString() : '—', load_ms: d.load_ms, cached_entries: fmt(d.cached_entries), key_expected: d.key_expected, key_found: d.key_found ?? '—', rule: d.rule}));
+  if (d.coverage) out.append(h('div',{class:'subh'},'coverage test: cached_words ⊇ unique_words'), kv({cached_unique: fmt(d.coverage.cached_unique), needed_unique: fmt(d.coverage.needed_unique), missing: fmt(d.coverage.missing)}), d.coverage.missing_examples?.length ? h('div',{style:'margin-top:6px'}, h('span',{class:'small muted'},'first missing chunks: '), ...d.coverage.missing_examples.map(w=>h('span',{class:'run',style:'font-size:15px'},w))) : null);
+  return out;
+};
+RX.ipc = d => {
+  const out = h('div', {}, h('div',{style:'margin-bottom:8px'}, badge(d.source, d.prepass_ms!==null && d.prepass_ms!==undefined ? 'ok' : 'neutral')));
+  if (d.prepass_ms!==null && d.prepass_ms!==undefined){
+    const ms = d.batch_ms||[]; const sorted = ms.slice().sort((a,b)=>a-b);
+    out.append(kv({total_batches: fmt(d.total_batches), total_unique_chunks: fmt(d.total_unique), prepass: (d.prepass_ms/1000).toFixed(0)+' s', batch_ms_min: sorted[0]?.toFixed(0), batch_ms_median: sorted[Math.floor(sorted.length/2)]?.toFixed(0), batch_ms_max: sorted[sorted.length-1]?.toFixed(0), candidates_per_word_histogram: d.candidates_histogram}));
+  }
+  out.append(R.ipc(d)); return out;
+};
+const agreeBadge = w => w.agrees_with_prepass===false ? badge('≠ pre-pass entry','bad') : w.agrees_with_prepass===true ? badge('= pre-pass entry','ok') : null;
+RX.vocab = d => {
+  const total = d.vocab_size, bc = d.budget_counts||{};
+  const bar = h('div', {class:'rangebar'}, ...d.ranges.map(r => h('div', {class:'f-'+r.family, style:`flex:${r.count} 1 0`, title:`${r.family}: ids ${r.start}–${r.end} (${r.count})`}, r.count>=Math.max(3,total/25) ? `${r.family} ${r.start}–${r.end}` : '')));
+  const legend = h('div', {class:'legend'}, ...d.ranges.map(r => h('span',{}, h('i',{class:'f-'+r.family, style:`background:var(--${r.family==='cliticp'||r.family==='clitice'?'clitic':r.family==='char'?'lit':r.family})`}), `${r.family} · ids ${r.start}–${r.end} · ${r.count}`)));
+  const layout = table([{label:'#', render:(r)=>mono(d.layout.indexOf(r)+1)}, {label:'family', render:r=>badge(r.family,'neutral')}, {label:'source', render:r=>mono(r.source)},
+    {label:'items', render:r=> r.items ? h('span',{class:'tokrow ltr'}, ...r.items.slice(0,80).map(x=>tok(x, r.family)), r.items.length>80?h('span',{class:'small muted'},` … +${r.items.length-80}`):null) : h('span',{class:'small muted'},'see budget below')}], d.layout);
+  const bud = (rows, fam, label, counts) => h('div', {}, h('div',{class:'subh'}, `${label} — ${fmt(counts.kept)} kept of ${fmt(counts.candidates)} candidates` + (counts.cut_budget ? ` · cut by max ${fmt(counts.cut_budget + (counts.after_break||0))}` : '') + (counts.cut_minfreq ? ` · below min_freq ${fmt(counts.cut_minfreq + (counts.after_break||0))}` : '')), table([
+    {label:'candidate', render:r=>h('span',{class:r.kept?'':'cut'}, tok(r.key, fam), fam==='pat'?patView(r.key):null)}, {label:'freq', render:r=>mono(r.freq)},
+    {label:'decision', render:r=>r.kept?badge('kept','ok'):badge(r.reason,'bad')}], rows));
+  return h('div', {}, h('div',{}, h('span',{class:'stat'}, h('b',{},fmt(total)), h('span',{},'vocab_size')), h('span',{class:'stat'}, h('b',{},fmt((bc.root||{}).kept)), h('span',{},'roots kept')), h('span',{class:'stat'}, h('b',{},fmt((bc.pattern||{}).kept)), h('span',{},'patterns kept'))),
+    bar, legend, h('div',{class:'subh'},'ID order — the add() calls in _build_vocab'), layout,
+    h('div',{class:'twocol', style:'margin-top:10px'}, bud(d.root_budget,'root','root budget', bc.root||{}), bud(d.pattern_budget,'pat','pattern budget', bc.pattern||{})),
+    h('div',{class:'subh'},'special_token_map'), h('div',{class:'kv'}, ...Object.entries(d.special_token_map).map(([k,v])=>h('div',{}, h('span',{class:'k'},k), h('span',{class:'v lat'},v)))),
+    h('p',{class:'small muted', style:'margin:12px 0 0'}, `The full vocab (${fmt(total)} tokens) is loaded in the search card and the playground palette below rather than drawn here.`));
+};
+RX.reconstruction = d => {
+  const tot = d.totals || {};
+  const head = h('div', {style:'margin-bottom:8px'}, h('span',{class:'stat'}, h('b',{},fmt(d.size)), h('span',{},'entries')), ...['pairs','with_corpus_surface','unresolved','tier2_generator','tier3_naive'].filter(k=>k in tot).map(k => h('span',{class:'stat'}, h('b',{},fmt(tot[k])), h('span',{},k.replace(/_/g,' ')))));
+  if (d.from_artifacts) return h('div', {}, head, h('div',{class:'subh'},'sample of the loaded _reconstruction table'), table([{label:'root_id', render:r=>mono(r.root_id)}, {label:'pat_id', render:r=>mono(r.pat_id)}, {label:'root', render:r=>tok(r.root,'root')}, {label:'pattern', render:r=>tok(r.pattern,'pat')}, {label:'→ inflected stem', ar:true, render:r=>ar(r.value)}], d.table));
+  const el = R.reconstruction(d); el.replaceChild(head, el.firstElementChild);
+  if (tot.skipped) el.insertBefore(h('div',{style:'margin:6px 0'}, h('span',{class:'small muted'},'entries skipped in pass 1: '), kv(tot.skipped)), el.children[1]);
+  return el;
+};
+RX.metadata = d => h('div', {}, d.peeled && d.peeled.count!==null && d.peeled.count!==undefined ? h('div',{style:'margin-bottom:8px'}, h('span',{class:'stat'}, h('b',{},fmt(d.totals.roots)), h('span',{},'roots')), h('span',{class:'stat'}, h('b',{},fmt(d.totals.patterns)), h('span',{},'patterns')), h('span',{class:'stat'}, h('b',{},fmt(d.peeled.count)), h('span',{},'words rescued by the peeler'))) : null, R.metadata(d),
+  d.peeled && d.peeled.examples && d.peeled.examples.length ? h('div',{}, h('div',{class:'subh'},'peeled examples (audit for false peels)'), table([{label:'word', ar:true, render:r=>ar(r.word)}, {label:'tokens', render:r=>h('span',{class:'tokrow ltr'}, ...r.proclitics.map(x=>tok('[CLITICP_'+x+']','cliticp')), ...(r.particle?[tok('[PREP_'+r.particle+']','prep')]:[tok('[ROOT_'+r.root+']','root'), tok('[PAT_'+r.pattern+']','pat')]), ...r.enclitics.map(x=>tok('[CLITICE_'+x+']','clitice')))}], d.peeled.examples)) : null);
+RX.verify = d => d.skipped ? h('div', {class:'cx-unavail'}, 'Skipped: ' + d.why) : R.verify(d);
+
+function cxScale(sc){
+  const el = h('div', {class:'cx-scale'}, h('b', {}, 'corpus scale'), h('span', {}, sc.note));
+  if (sc.shown!==null && sc.shown!==undefined) el.append(h('span', {class:'mono'}, ` shown ${fmt(sc.shown)} · total ${fmt(sc.total)}`));
+  return el;
+}
+function cxStepCard(s){
+  const card = h('section', {class:'card step', id:'cx-step-'+s.id});
+  card.append(h('div', {class:'stephead'}, h('span',{class:'stepnum'}, String(s.num).padStart(2,'0')), h('h3',{}, s.title), h('span',{class:'badge neutral'}, GROUP[s.id]||''), h('span',{class:'ref', title:'source location'}, s.ref), h('span',{class:'dur'}, s.duration_ms+' ms')));
+  const body = h('div', {class:'stepbody'});
+  if (s.data && s.data._scale) body.append(cxScale(s.data._scale));
+  if (s.notes.length) body.append(h('div',{class:'notes'}, ...s.notes.map(n=>h('p',{},n))));
+  if (s.data && s.data.unavailable) body.append(h('div', {class:'cx-unavail'}, s.data.reason));
+  else { try { body.append((RX[s.id]||R[s.id]||(d=>h('pre',{class:'wire'},JSON.stringify(d,null,1))))(s.data)); } catch(e){ body.append(h('div',{class:'err'}, 'renderer error: '+e.message)); console.error(e); } }
+  const w = wirePane(s.wire); if (w) body.append(w);
+  card.append(body); cxDecorate(card);
+  return card;
+}
+function cxRenderTrace(t){
+  CX.P.steps = t.steps; CX.P.cur = -1; CX.wordsSummary = null; cxStop();
+  const cont = $('#cx-steps'); cont.innerHTML = ''; const rail = $('#cx-rail'); rail.innerHTML = '';
+  t.steps.forEach(s => { cont.append(cxStepCard(s)); rail.append(h('button', {onclick:()=>cxGoTo(s.num)}, `${String(s.num).padStart(2,'0')} ${s.id}`)); });
+  $('#cx-playbar').classList.add('on');
+  const speed = +$('#cx-speed').value;
+  if (speed===0) cxShowAll(); else { cxGoTo(0); cxStart(speed); }
+}
+function cxPaint(){
+  [...$('#cx-steps').children].forEach((c,i)=>{ c.classList.toggle('shown', i<=CX.P.cur); c.classList.toggle('cur', i===CX.P.cur); });
+  [...$('#cx-rail').children].forEach((b,i)=>{ b.classList.toggle('done', i<CX.P.cur); b.classList.toggle('cur', i===CX.P.cur); });
+  $('#cx-playstatus').textContent = CX.P.cur>=0 ? `step ${CX.P.cur+1} / ${CX.P.steps.length}` : '';
+  $('#cx-b-play').textContent = CX.P.playing ? '⏸ Pause' : '▶ Play';
+  cxNavSync();
+}
+function cxGoTo(i){ CX.P.cur = Math.max(0, Math.min(CX.P.steps.length-1, i)); cxPaint(); const el = $('#cx-steps').children[CX.P.cur]; if (el) setTimeout(()=>el.scrollIntoView({behavior:'smooth', block:'start'}), 30); }
+function cxShowAll(){ cxStop(); CX.P.cur = CX.P.steps.length-1; cxPaint(); }
+function cxStart(ms){ cxStop(); CX.P.playing = true; cxPaint(); CX.P.timer = setInterval(()=>{ if (CX.P.cur>=CX.P.steps.length-1) { cxStop(); return; } cxGoTo(CX.P.cur+1); }, ms || Math.max(600, +$('#cx-speed').value||900)); }
+function cxStop(){ if (CX.P.timer) clearInterval(CX.P.timer); CX.P.timer=null; CX.P.playing=false; cxPaint(); }
+$('#cx-b-prev').onclick = ()=>{ cxStop(); cxGoTo(CX.P.cur-1); };
+$('#cx-b-next').onclick = ()=>{ cxStop(); cxGoTo(CX.P.cur+1); };
+$('#cx-b-all').onclick = cxShowAll;
+$('#cx-b-play').onclick = ()=>{ if (CX.P.playing) cxStop(); else { if (CX.P.cur>=CX.P.steps.length-1) cxGoTo(0); cxStart(); } };
+
+/* ---------------- search ---------------- */
+function cxSearchFams(fams){
+  const box = $('#cx-search-fams'); box.innerHTML = '';
+  const all = [['', 'all'], ...Object.entries(fams).sort((a,b)=>b[1]-a[1]).map(([f,n])=>[f, `${f} · ${fmt(n)}`])];
+  all.forEach(([f, lab]) => box.append(h('button', {class: f===CX.search.fam ? 'cur' : '', onclick:()=>{ CX.search.fam = f; CX.search.offset = 0; cxSearchRun(); }}, lab)));
+}
+const hitTok = r => { const c = tok(r.token, r.family, r.id, 'click to append to the playground'); c.style.cursor='pointer'; c.onclick = () => cxPgAppend(r.token); return c; };
+async function cxSearchRun(){
+  if (!CX.trace) return;
+  const q = $('#cx-search-q').value.trim(); CX.search.q = q;
+  const stat = $('#cx-search-stat'); stat.textContent = '…';
+  try {
+    const r = await fetch(`/api/corpus/search?q=${encodeURIComponent(q)}&family=${encodeURIComponent(CX.search.fam)}&limit=100&offset=${CX.search.offset}`, {cache:'no-store'});
+    const res = await r.json(); if (!r.ok || res.error) throw new Error(res.error || ('HTTP '+r.status));
+    if (res.query !== CX.search.q) return; // stale
+    stat.textContent = `${fmt(res.total)} hit${res.total===1?'':'s'} · ${res.ms} ms`;
+    cxSearchFams(res.families||{});
+    const enc = $('#cx-search-encode'); enc.innerHTML = '';
+    if (res.encode){
+      if (res.encode.error) enc.append(h('div',{class:'cx-encode'}, badge('encode failed','bad'), ' ', res.encode.error));
+      else {
+        const stream = res.encode.stream;
+        enc.append(h('div',{class:'cx-encode'}, h('div',{class:'subh'}, 'encode("', h('bdi',{class:'naskh'}, res.encode.text), '") — live, through the real encode()'),
+          h('div',{class:'tokrow ltr'}, ...stream.map(s => { const c = tok(s.token, s.token==='<unk>'?'unk':s.family, s.id, `pos ${s.pos} · metric_string="${s.metric_string}"`); c.style.cursor='pointer'; c.onclick=()=>cxPgAppend(s.token); return c; })),
+          h('div',{style:'margin-top:6px;display:flex;gap:10px;align-items:center;flex-wrap:wrap'}, h('span',{class:'small muted'},'decode → '), h('bdi',{class:'naskh', style:'font-size:19px'}, res.encode.decoded), h('button',{class:'btn', onclick:()=>{ $('#cx-pg-input').value = stream.map(s=>s.token).join(' '); cxPgParse(); $('#cx-pg').scrollIntoView({behavior:'smooth'}); }}, 'send to playground ▶'))));
+        cxDecorate(enc);
+      }
+    }
+    const hits = $('#cx-search-hits'); hits.innerHTML = '';
+    if (!res.hits.length) hits.append(h('p',{class:'muted small'}, 'no token matches'));
+    else {
+      const t = table([
+        {label:'token', render:r=>hitTok(r)}, {label:'id', render:r=>mono(r.id)}, {label:'family', render:r=>badge(r.family,'neutral')},
+        {label:'human-readable', render:r=> r.family==='pat' ? h('div',{}, h('div',{}, h('bdi',{class:'naskh'}, r.wazn), ' ', r.filled ? h('span',{class:'small muted'}, '· e.g. ', h('bdi',{class:'naskh'}, r.filled)) : null), r.gloss ? h('div',{class:'gl'}, r.gloss, r.gloss_tier==='skeleton' ? h('span',{class:'muted'},' (loose)') : null) : h('div',{class:'gl muted'}, 'no gloss in the closed list'), r.weak_slots && r.weak_slots.length ? h('div',{class:'gl muted'}, `slot${r.weak_slots.length>1?'s':''} ${r.weak_slots.join(', ')} not in the template → weak / masked radical written as template material`) : null) : r.family==='root' && r.inner.includes('#') ? h('span',{class:'gl muted'}, '# = masked weak radical; the surface letter lives in the pattern') : ''},
+        {label:'freq', render:r=>mono(r.freq ?? '—')}, {label:'examples', render:r=>h('span',{class:'ex'}, (r.examples||[]).join(' · '))},
+        {label:'match', render:r=>h('span',{class:'why'}, r.why)},
+        {label:'', render:r=>h('button',{class:'btn', onclick:()=>cxPgAppend(r.token)}, '+ playground')},
+      ], res.hits);
+      t.classList.add('cx-hits'); hits.append(t); cxDecorate(hits);
+    }
+    const pg = $('#cx-search-pager'); pg.innerHTML = '';
+    if (res.total > res.limit) pg.append(h('button',{class:'btn', disabled: res.offset===0 ? '' : null, onclick:()=>{ CX.search.offset = Math.max(0, res.offset-res.limit); cxSearchRun(); }}, '◀'), `${fmt(res.offset+1)}–${fmt(Math.min(res.total, res.offset+res.limit))} of ${fmt(res.total)}`, h('button',{class:'btn', disabled: res.offset+res.limit>=res.total ? '' : null, onclick:()=>{ CX.search.offset = res.offset+res.limit; cxSearchRun(); }}, '▶'));
+  } catch(e){ stat.textContent = 'search failed: ' + e.message; }
+}
+$('#cx-search-q').addEventListener('input', () => { CX.search.offset = 0; if (CX.search.timer) clearTimeout(CX.search.timer); CX.search.timer = setTimeout(cxSearchRun, 250); });
+$('#cx-search-q').addEventListener('keydown', e => { if (e.key==='Enter'){ if (CX.search.timer) clearTimeout(CX.search.timer); CX.search.offset = 0; cxSearchRun(); } });
+
+/* ---------------- playground (own instance; same protocol as tab 01) ---------------- */
+const PGX = CX.pg;
+const PGX_FAMS = ['root','pat','cliticp','clitice','prep','lit','char','digit','punct','special'];
+const PGX_WEIGHTS = {root:.34, pat:.34, cliticp:.1, clitice:.06, prep:.04, punct:.04, digit:.03, lit:.02, char:.02, special:.01};
+function cxPgInit(t){
+  const vstep = t.steps.find(s=>s.id==='vocab'); if (!vstep) return;
+  PGX.vocab = vstep.data.vocab; PGX.byToken = new Map(PGX.vocab.map(v=>[v.token, v])); PGX.byId = new Map(PGX.vocab.map(v=>[v.id, v]));
+  PGX.encodeStream = (t.steps.find(s=>s.id==='encode')||{data:{}}).data.stream || [];
+  $('#cx-pg-runs').innerHTML = '';
+  const fams = PGX_FAMS.filter(f => PGX.vocab.some(v=>v.family===f));
+  if (!fams.includes(PGX.fam)) PGX.fam = fams[0];
+  $('#cx-pg-tabs').innerHTML = ''; $('#cx-pg-tabs').append(...fams.map(f => h('button', {class: f===PGX.fam?'cur':'', onclick:()=>{ PGX.fam=f; cxPgPalette(); }}, `${f} · ${fmt(PGX.vocab.filter(v=>v.family===f).length)}`)));
+  cxPgPalette(); cxPgParse();
+}
+function cxPgPalette(){
+  const q = ($('#cx-pg-filter').value||'').trim();
+  [...$('#cx-pg-tabs').children].forEach(b => b.classList.toggle('cur', b.textContent.startsWith(PGX.fam+' ')));
+  const items = PGX.vocab.filter(v => v.family===PGX.fam && (!q || v.token.includes(q) || String(v.id)===q || (v.wazn && v.wazn.includes(q))));
+  const pal = $('#cx-pg-palette'); pal.innerHTML = '';
+  pal.append(...items.slice(0,600).map(v => { const c = tok(v.token, v.family, v.id, 'click to append'); c.onclick = () => cxPgAppend(v.token); return c; }));
+  if (items.length>600) pal.append(h('span',{class:'small muted'}, ` … +${fmt(items.length-600)} (use the filter or the search card)`));
+  cxDecorate(pal);
+}
+function cxPgAppend(s){ const ta = $('#cx-pg-input'); ta.value = (ta.value.trim() ? ta.value.replace(/\s+$/,'') + ' ' : '') + s; cxPgParse(); }
+function cxPgItems(){ return ($('#cx-pg-input').value||'').split(/\s+/).filter(Boolean); }
+function cxPgParse(){
+  const box = $('#cx-pg-parse'); box.innerHTML = ''; let bad = 0;
+  for (const it of cxPgItems()){
+    if (/^-?\d+$/.test(it)){ const v = PGX.byId.get(+it); box.append(v ? tok(v.token, v.family, v.id) : tok(it, 'oor', undefined, 'id not in vocab — decode() will drop it')); }
+    else { const v = PGX.byToken.get(it); if (v) box.append(tok(v.token, v.family, v.id)); else { bad++; box.append(tok(it, 'unknown', undefined, 'not a vocab token')); } }
+  }
+  cxDecorate(box);
+  $('#cx-pg-decode').disabled = bad>0 || cxPgItems().length===0;
+  return bad===0;
+}
+$('#cx-pg-input').addEventListener('input', cxPgParse);
+$('#cx-pg-filter').addEventListener('input', cxPgPalette);
+$('#cx-pg-clear').onclick = () => { $('#cx-pg-input').value=''; cxPgParse(); };
+$('#cx-pg-prefill').onclick = () => { $('#cx-pg-input').value = PGX.encodeStream.map(s=>s.token).join(' '); cxPgParse(); };
+$('#cx-pg-random').onclick = () => {
+  const n = Math.max(1, Math.min(512, +$('#cx-pg-n').value||12)); const out = [];
+  const pools = {}; for (const f of PGX_FAMS) pools[f] = PGX.vocab.filter(v=>v.family===f);
+  const fams = PGX_FAMS.filter(f => pools[f].length); const tot = fams.reduce((a,f)=>a+PGX_WEIGHTS[f],0);
+  for (let i=0;i<n;i++){ let r = Math.random()*tot, f = fams[0]; for (const g of fams){ r -= PGX_WEIGHTS[g]; if (r<=0){ f=g; break; } } const p = pools[f]; out.push(p[Math.floor(Math.random()*p.length)].token); }
+  $('#cx-pg-input').value = out.join(' '); cxPgParse();
+};
+async function cxPgDecode(){
+  if (!cxPgParse() || !CX.trace) return;
+  const btn = $('#cx-pg-decode'); btn.disabled = true; $('#cx-pg-error').hidden = true;
+  try {
+    const r = await fetch('/api/corpus/decode', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({corpus_id: CX.trace.corpus_id, items: cxPgItems()})});
+    const res = await r.json(); if (!r.ok || res.error) throw new Error(res.error || ('HTTP '+r.status));
+    res.saved_at = new Date().toISOString(); res.stream = $('#cx-pg-stream').checked;
+    (CX.trace.playground_runs ||= []).push(res);
+    cxPgRenderRun(res, {instant: !res.stream});
+  } catch(e){ $('#cx-pg-error').hidden = false; $('#cx-pg-error').textContent = 'decode failed: ' + e.message; }
+  finally { btn.disabled = false; cxPgParse(); }
+}
+$('#cx-pg-decode').onclick = cxPgDecode;
+$('#cx-pg-input').addEventListener('keydown', e => { if ((e.ctrlKey||e.metaKey) && e.key==='Enter') cxPgDecode(); });
+function cxPgRenderRun(res, opts={}){
+  const c = res.counters||{}, det = h('details', {class:'pg-run', open:true});
+  const stamp = res.saved_at ? new Date(res.saved_at).toLocaleTimeString() : '';
+  det.append(h('summary', {}, h('span',{class:'mono small muted'}, stamp), h('span',{class:'mono'}, `${res.ids.length} tokens`),
+    h('bdi',{class:'naskh', style:'font-size:18px'}, res.decoded || '∅'),
+    ...Object.entries(c).map(([k,v]) => badge(`${k.replace(/_/g,' ')} ${v}`, /tier1/.test(k)?'ok':/tier2/.test(k)?'info':'warn')),
+    res.prefix_matches_final===false ? badge('prefix ≠ final','bad') : null,
+    h('span',{class:'dur'}, `decode ${res.decode_ms} ms · total ${res.total_ms} ms`)));
+  const inner = h('div', {class:'inner'});
+  const out = h('div', {class:'pg-out'}); inner.append(h('div',{class:'subh'},'decoded output' + (opts.instant?'':' (streaming)')), out);
+  inner.append(h('div',{class:'subh'},'emission walkthrough'));
+  const tbl = h('table', {}, h('thead',{}, h('tr',{}, ...['#','id','token','annotation (interpretation)','tier','output so far — decode(ids[:k])'].map(x=>h('th',{},x)))));
+  const tb = h('tbody'); let prev = '';
+  res.rows.forEach(row => {
+    tb.append(h('tr', {class:'pg-row'}, h('td',{}, mono(row.pos)), h('td',{}, mono(row.id)),
+      h('td',{}, row.token ? tok(row.token, row.token==='<unk>'?'unk':row.family, undefined) : tok(String(row.id),'oor',undefined,'not in vocab')),
+      h('td',{class:'ann'}, row.note), h('td',{}, row.tier ? h('span',{class:'tier tier'+row.tier}, 'tier '+row.tier) : ''),
+      h('td',{class:'pg-outcell'}, outCell(prev, row.output))));
+    prev = row.output;
+  });
+  tbl.append(tb); inner.append(h('div',{class:'tblwrap'}, tbl));
+  if (res.tiers && res.tiers.length) inner.append(h('div',{class:'subh'},'(root, pattern) reconstructions'), table([
+    {label:'pos', render:r=>mono(r.pos)}, {label:'root', render:r=>tok(r.root,'root',r.root_id)}, {label:'pattern', render:r=>tok(r.pattern,'pat',r.pat_id)},
+    {label:'tier', render:r=>h('span',{class:'tier tier'+r.tier}, 'tier '+r.tier+(r.tier===1?' · lookup table':r.tier===2?' · CAMeL generator':' · naive fill'))}, {label:'→', ar:true, render:r=>ar(r.value)}], res.tiers));
+  const w = wirePane(res.wire, 'generator calls on the CAMeL pipe'); if (w) inner.append(w);
+  det.append(inner); cxDecorate(det); $('#cx-pg-runs').prepend(det);
+  const rows = [...tb.children];
+  const showUpTo = k => { rows.forEach((r,i)=>{ r.classList.toggle('on', i<=k); r.classList.toggle('cur', i===k); }); out.innerHTML=''; out.append(outCell(k>0?res.rows[k-1].output:'', res.rows[k].output)); if (k<rows.length-1) out.append(' ', h('span',{class:'cursor'})); };
+  if (opts.instant){ rows.forEach(r=>r.classList.add('on')); out.textContent = res.decoded || ''; if (!res.decoded) out.append(h('span',{class:'muted small'},'(empty)')); return; }
+  if (PGX.timer) clearInterval(PGX.timer);
+  let k = 0; showUpTo(0);
+  PGX.timer = setInterval(()=>{ k++; if (k>=rows.length){ clearInterval(PGX.timer); PGX.timer=null; rows.forEach(r=>r.classList.remove('cur')); return; } showUpTo(k); }, 420);
+}
+
+/* ---------------- save ---------------- */
+$('#cx-save-btn').onclick = async () => {
+  const st = $('#cx-save-status'); st.textContent = 'saving…'; $('#cx-save-error').hidden = true;
+  try {
+    const r = await fetch('/api/corpus/save', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({name: $('#cx-save-name').value.trim(), overwrite: $('#cx-save-overwrite').checked})});
+    const res = await r.json(); if (!r.ok || res.error) throw new Error(res.error || ('HTTP '+r.status));
+    st.innerHTML = ''; st.append(badge('saved '+res.path, 'ok'), ' ', h('span',{class:'mono small muted'}, Object.entries(res.files).map(([k,v])=>`${k} ${(v/1e3).toFixed(0)} kB`).join(' · ') + ` · ${res.ms} ms`));
+    cxLoadSources().catch(()=>{});
+  } catch(e){ st.textContent = ''; $('#cx-save-error').hidden = false; $('#cx-save-error').textContent = e.message; }
+};
+
+
+/* ---------------- word categories: shared bits ---------------- */
+const CAT_KIND = {root_pat:'ok', root_pat_peeled:'ok', prep:'info', lit_no_analysis:'warn', lit_root_cut:'bad', lit_pattern_cut:'bad', lit_clitic_missing:'bad'};
+const catBadge = (key, label) => badge(label || key, CAT_KIND[key] || 'neutral');
+const tokChips = (stream, onclick) => h('span', {class:'tokrow ltr'}, ...stream.map(s => { const c = tok(s.token, s.token==='<unk>'?'unk':s.family, s.id, s.metric_string!==undefined ? `pos ${s.pos} · metric_string="${s.metric_string}"` : ''); if (onclick){ c.style.cursor='pointer'; c.onclick=()=>onclick(s); } return c; }));
+const analysisChips = a => !a || !a.analyzed ? badge('no analysis','warn') : h('span',{class:'tokrow ltr'}, ...(a.proclitics||[]).map(x=>tok('[CLITICP_'+x+']','cliticp')), ...(a.particle ? [tok('[PREP_'+a.particle+']','prep')] : [tok('[ROOT_'+a.root+']','root'), tok('[PAT_'+a.pattern+']','pat')]), ...(a.enclitics||[]).map(x=>tok('[CLITICE_'+x+']','clitice')));
+
+/* The process one chunk went through, replayed live by /api/corpus/word_trace. */
+function cxProcessView(res){
+  const out = h('div', {class:'cx-process'});
+  out.append(h('div', {class:'cx-proc-head'}, h('bdi',{class:'naskh', style:'font-size:22px'}, res.chunk), catBadge(res.category, res.label), h('span',{class:'small muted'}, res.why),
+    res.agrees_with_corpus===false ? badge('≠ corpus category','bad') : res.agrees_with_corpus===true ? badge('= corpus category','ok') : null,
+    res.agrees_with_prepass===false ? badge('≠ pre-pass entry','bad') : res.agrees_with_prepass===true ? badge('= pre-pass entry','ok') : null, h('span',{class:'dur'}, res.ms+' ms')));
+  if (res.other_chunks && res.other_chunks.length) out.append(h('p',{class:'small muted'}, 'only the first alpha chunk is traced; the word also contains: ' + res.other_chunks.join(' ')));
+  // 1. CAMeL candidates + gates (tab 01's renderers, unchanged)
+  const v = res.validate;
+  out.append(h('div',{class:'subh'}, `1 · CAMeL native analysis — ${v.num_candidates} candidate${v.num_candidates===1?'':'s'}, walked in MLE order` + (v.accepted_index!==null && v.accepted_index!==undefined ? ` · accepted #${v.accepted_index}` : ' · none accepted')));
+  if (!v.candidates.length) out.append(h('p',{class:'muted small'}, 'CAMeL returned an empty candidate list — the word is not in the morphology DB at all.'));
+  for (const c of v.candidates){
+    const det = h('details', {class:'wordcard', open: c.accepted || v.candidates.length===1 ? '' : null}, h('summary',{}, h('span',{class:'small mono'}, `candidate #${c.index}`), c.accepted ? badge('accepted','ok') : badge('rejected: '+c.reject_reason,'bad')));
+    const inner = h('div',{class:'inner'}); inner.append(h('div',{class:'subh'},'raw dict from the server'), candidateDict(c.candidate), h('div',{class:'subh'},'_dict_to_analysis gates, in order'), gatesView(c.gates));
+    if (c.accepted) inner.append(h('div',{class:'subh'},'→ analysis'), analysisChips({analyzed:true, proclitics:[c.analysis.prc3,c.analysis.prc2,c.analysis.prc1,c.analysis.prc0].filter(Boolean), particle:c.analysis.particle, root:c.analysis.root, pattern:c.analysis.pattern, enclitics:[c.analysis.fem, c.analysis.enc0, c.analysis.enc1].filter(Boolean)}));
+    det.append(inner); out.append(det);
+  }
+  // 2. peeler
+  out.append(h('div',{class:'subh'}, '2 · clitic peeler'));
+  if (!res.peel) out.append(h('p',{class:'small muted'}, v.analyzed ? 'not needed — CAMeL analysed the whole word natively.' : 'peeler disabled.'));
+  else {
+    const p = res.peel;
+    out.append(h('div',{style:'margin-bottom:6px'}, p.accepted ? badge('rescued by the peeler','ok') : badge('exhausted → character path','warn'), ' ', h('span',{class:'small muted'}, `${p.num_candidates} slicing${p.num_candidates===1?'':'s'}, least peeled first`)));
+    if (!p.candidates.length) out.append(h('p',{class:'muted small'}, 'No closed-list slicing exists for this word (no listed clitic at either end, or the residual would be shorter than 2 letters).'));
+    for (const c of p.candidates){
+      const ok = c.verdict === 'accepted'; const resInfo = typeof c.residual === 'object' && c.residual ? c.residual : null;
+      const resText = resInfo ? p.word.slice(c.proclitics.join('').length, p.word.length - c.enclitics.join('').length) : c.residual;
+      out.append(h('div',{style:'display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:5px 0;border-bottom:1px dashed var(--line)'},
+        h('span',{class:'tokrow ltr'}, ...c.proclitics.map(x=>tok('[CLITICP_'+x+']','cliticp')), h('span',{class:'run '+(c.residual_analyzed?'kept':'drop')}, resText), ...c.enclitics.map(x=>tok('[CLITICE_'+x+']','clitice'))),
+        c.residual_analysis ? h('span',{class:'small muted'}, `reading ${c.reading}/${c.of_readings}: ${c.residual_analysis.pos}` + (c.residual_analysis.proclitics.length?` · CAMeL proclitics ${c.residual_analysis.proclitics.join('+')}`:'') + (c.residual_analysis.enclitics.length?` · enclitics ${c.residual_analysis.enclitics.join('+')}`:'')) : null,
+        badge(c.verdict, ok?'ok':'bad')));
+    }
+    if (p.result) out.append(h('div',{style:'margin-top:6px'}, h('span',{class:'small muted'},'→ merged analysis: '), analysisChips({analyzed:true, ...p.result})));
+  }
+  // 3. vocab / budget check
+  out.append(h('div',{class:'subh'}, '3 · vocab check — the all-or-nothing rule of _emit_alpha'));
+  const vc = res.vocab_check;
+  if (!res.analysis.analyzed) out.append(h('p',{class:'small muted'}, 'nothing to check: without an analysis the chunk goes straight to [LIT_BEGIN] [CHAR_*]… [LIT_END].'));
+  else {
+    const rows = [];
+    if (vc.particle) rows.push({what:'particle', token:vc.particle.token, fam:'prep', ok:vc.particle.in_vocab, reason: vc.particle.in_vocab ? 'in the vocab' : 'not in the vocab'});
+    if (vc.root) rows.push({what:'root', token:vc.root.token, fam:'root', ok:vc.root.in_vocab, reason:vc.root.reason});
+    if (vc.pattern) rows.push({what:'pattern', token:vc.pattern.token, fam:'pat', ok:vc.pattern.in_vocab, reason:vc.pattern.reason});
+    for (const c of vc.clitics) rows.push({what:c.kind, token:c.token, fam:c.kind==='proclitic'?'cliticp':'clitice', ok:c.in_vocab, reason: c.in_vocab ? 'in the vocab' : 'not in the vocab'});
+    const t = table([{label:'', render:r=>h('span',{class:'mark', style:'font-weight:700;color:var(--'+(r.ok?'good':'bad')+')'}, r.ok?'✓':'✗')}, {label:'needed', render:r=>mono(r.what)}, {label:'token', render:r=>tok(r.token, r.fam)}, {label:'budget loop', render:r=>h('span',{class:'small'}, r.reason)}], rows);
+    out.append(t); cxDecorate(t);
+    if (res.missing.length) out.append(h('p',{class:'small', style:'color:var(--bad);margin:6px 0 0'}, `${res.missing.length} needed token${res.missing.length>1?'s':''} missing → the whole chunk falls to the character path.`));
+  }
+  // 4. result
+  out.append(h('div',{class:'subh'}, '4 · what encode() emits'));
+  const st = h('div',{}, tokChips(res.stream)); cxDecorate(st);
+  out.append(st, h('div',{style:'margin-top:6px'}, h('span',{class:'small muted'},'decode → '), h('bdi',{class:'naskh', style:'font-size:19px'}, res.decoded), ' ', h('button',{class:'btn', style:'padding:2px 9px;font-size:11px', onclick:()=>{ $('#cx-pg-input').value = res.stream.map(s=>s.token).join(' '); cxPgParse(); $('#cx-pg').scrollIntoView({behavior:'smooth'}); }}, 'send to decode ▶')));
+  if (res.cached) out.append(h('p',{class:'small muted', style:'margin:8px 0 0'}, `corpus record: ${res.cached.label} · ${fmt(res.cached.count)} occurrence${res.cached.count===1?'':'s'}` + (res.cached.peeled ? ' · peeled' : '')));
+  const w = wirePane(res.wire, 'CAMeL calls on the pipe'); if (w) out.append(w);
+  return out;
+}
+async function cxTraceInto(container, word, btn){
+  if (container.dataset.loaded) { container.hidden = !container.hidden; return; }
+  if (btn) btn.disabled = true;
+  container.hidden = false; container.innerHTML = ''; container.append(h('span',{class:'dot pulse'}), ' replaying through CAMeL…');
+  try {
+    const r = await fetch(`/api/corpus/word_trace?word=${encodeURIComponent(word)}`, {cache:'no-store'});
+    const res = await r.json(); if (!r.ok || res.error) throw new Error(res.error || ('HTTP '+r.status));
+    container.innerHTML = ''; container.append(cxProcessView(res)); container.dataset.loaded = '1';
+  } catch(e){ container.innerHTML = ''; container.append(h('div',{class:'err'}, 'trace failed: ' + e.message)); }
+  finally { if (btn) btn.disabled = false; }
+}
+function traceCell(word){
+  const box = h('div', {class:'cx-procbox', hidden:''});
+  const btn = h('button', {class:'btn', style:'padding:2px 9px;font-size:11px', onclick:()=>cxTraceInto(box, word, btn)}, 'process ▾');
+  return {btn, box};
+}
+function catChips(container, cats, cur, onpick, countKey){
+  container.innerHTML = '';
+  const all = [{key:'', label:'all', n: cats.reduce((a,c)=>a+c[countKey],0)}, ...cats.map(c=>({key:c.key, label:c.label, n:c[countKey]}))];
+  all.forEach(c => container.append(h('button', {class: c.key===cur ? 'cur' : '', disabled: (!c.n && c.key) ? '' : null, onclick:()=>onpick(c.key)}, `${c.label} · ${fmt(c.n)}`)));
+}
+
+/* ---------------- encode plain text ---------------- */
+const ENC = {res:null, cat:''};
+$('#cx-enc-examples').append(...PROBE_EXAMPLES.map(([lab, txt]) => h('button', {class:'chip', onclick:()=>{ $('#cx-enc-text').value = txt; }}, lab)));
+$('#cx-enc-text').value = PROBE_EXAMPLES[1][1];
+async function cxEncode(){
+  if (!CX.trace) return;
+  const btn = $('#cx-enc-run'); btn.disabled = true; $('#cx-enc-error').hidden = true;
+  const st = $('#cx-enc-status'); st.innerHTML = ''; st.append(h('span',{class:'dot pulse'}), ' encoding…');
+  try {
+    const r = await fetch('/api/corpus/encode', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({corpus_id: CX.trace.corpus_id, text: $('#cx-enc-text').value})});
+    const res = await r.json(); if (!r.ok || res.error) throw new Error(res.error || ('HTTP '+r.status));
+    ENC.res = res; ENC.cat = ''; st.innerHTML = ''; st.append(`${fmt(res.num_tokens)} tokens · ${fmt(res.num_words)} words · ${fmt(res.num_chunks)} unique chunks · ${res.ipc_calls} CAMeL call${res.ipc_calls===1?'':'s'} · ${res.ms} ms`);
+    $('#cx-enc-send').disabled = false; cxEncRender();
+  } catch(e){ st.textContent = ''; $('#cx-enc-error').hidden = false; $('#cx-enc-error').textContent = e.message; }
+  finally { btn.disabled = false; }
+}
+function cxEncRender(){
+  const res = ENC.res, out = $('#cx-enc-out'); out.innerHTML = '';
+  const stream = h('div', {}, h('div',{class:'subh'},'token stream'), tokChips(res.stream));
+  out.append(stream);
+  out.append(h('div',{class:'subh'},'decode() of that stream'), h('div',{style:'display:flex;gap:12px;align-items:center;flex-wrap:wrap'}, h('bdi',{class:'naskh', style:'font-size:20px'}, res.decoded),
+    res.match_ignoring_spacing ? badge('round-trip ✓ (tashkeel + spacing ignored)','ok') : badge('round-trip differs','warn'), res.match_ignoring_diacritics ? badge('ignoring tashkeel only ✓','ok') : null, res.exact_match ? badge('exact ✓','ok') : null));
+  out.append(h('div',{class:'subh'},'alpha chunks by path (occurrences in this text)'));
+  const chips = h('div',{class:'cx-fams'}); out.append(chips);
+  catChips(chips, res.categories, ENC.cat, k => { ENC.cat = k; cxEncRender(); }, 'occurrences');
+  const rows = res.chunks.filter(c => !ENC.cat || c.category===ENC.cat);
+  const tbl = h('table', {}, h('thead',{}, h('tr',{}, ...['chunk','×','path','why','analysis','corpus',''].map(x=>h('th',{},x)))));
+  const tb = h('tbody');
+  for (const c of rows){
+    const {btn, box} = traceCell(c.chunk);
+    tb.append(h('tr',{}, h('td',{class:'ar'}, ar(c.chunk)), h('td',{}, mono(c.count)), h('td',{}, catBadge(c.category, c.label), c.peeled ? ' ' : '', c.peeled ? badge('peeled','info') : null), h('td',{class:'small', style:'max-width:360px'}, c.why),
+      h('td',{}, analysisChips({analyzed: !!(c.root||c.particle), proclitics:c.proclitics, particle:c.particle, root:c.root, pattern:c.pattern, enclitics:c.enclitics})),
+      h('td',{class:'small muted'}, c.corpus ? `${CATEGORY_LABEL_JS[c.corpus.category]||c.corpus.category} · ×${fmt(c.corpus.count)}` : (CX.trace.mode==='train' ? 'not in corpus' : '')), h('td',{}, btn)));
+    tb.append(h('tr',{class:'cx-procrow'}, h('td',{colspan:'7'}, box)));
+  }
+  tbl.append(tb); const wrap = h('div',{class:'tblwrap cx-hits'}, tbl); out.append(wrap); cxDecorate(out);
+  const w = wirePane(res.wire, 'CAMeL calls made by encode()'); if (w) out.append(w);
+}
+const CATEGORY_LABEL_JS = {root_pat:'ROOT+PAT', root_pat_peeled:'ROOT+PAT (peeled)', prep:'PREP', lit_no_analysis:'LIT: no analysis', lit_root_cut:'LIT: root cut', lit_pattern_cut:'LIT: pattern cut', lit_clitic_missing:'LIT: clitic / particle token missing'};
+$('#cx-enc-run').onclick = cxEncode;
+$('#cx-enc-text').addEventListener('keydown', e => { if ((e.ctrlKey||e.metaKey) && e.key==='Enter') cxEncode(); });
+$('#cx-enc-send').onclick = () => { if (!ENC.res) return; $('#cx-pg-input').value = ENC.res.stream.map(s=>s.token).join(' '); cxPgParse(); $('#cx-pg').scrollIntoView({behavior:'smooth'}); };
+
+/* ---------------- records browser: server-paged table with chips, filter, pager, per-row process view ---------------- */
+async function cxWordsSummary(){
+  if (CX.wordsSummary) return CX.wordsSummary;
+  const r = await fetch('/api/corpus/words?summary=1', {cache:'no-store'}); const s = await r.json();
+  if (s.unavailable){ CX.wordsSummary = {unavailable:true, error:s.error}; return CX.wordsSummary; }
+  if (!r.ok || s.error) throw new Error(s.error || ('HTTP '+r.status));
+  CX.wordsSummary = s; return s;
+}
+const PATH_KIND = {root_pat:'ok', prep:'ok', peeled:'info', lit:'warn'};
+const pathBadge = (key, label) => badge(label || key, PATH_KIND[key] || 'neutral');
+const PATH_OF_TOTAL = {'ROOT+PAT':'root_pat', PREP:'prep', peeled:'peeled', LIT:'lit'};
+function cxBrowser(opts){
+  const st = {chip: opts.chip || '', q:'', offset:0, limit: opts.pageSize || 50, res:null};
+  const root = h('div', {class:'cx-browser', hidden: opts.open ? null : ''});
+  const chips = h('div', {class:'cx-fams'});
+  const input = h('input', {placeholder: opts.placeholder || 'filter…', spellcheck:'false'});
+  const stat = h('span', {class:'mono small muted'});
+  const hits = h('div', {});
+  const pager = h('div', {class:'cx-pager'});
+  root.append(...[opts.intro ? h('p',{class:'small muted', style:'margin:0 0 6px'}, opts.intro) : null, chips, h('div', {class:'cx-srow'}, input, ...(opts.controls || []), stat), hits, pager].filter(Boolean));
+  let timer = null;
+  input.addEventListener('input', () => { st.q = input.value.trim(); st.offset = 0; if (timer) clearTimeout(timer); timer = setTimeout(run, 250); });
+  function paintChips(){
+    chips.innerHTML = '';
+    const list = typeof opts.chips === 'function' ? opts.chips(st.res, st) : (opts.chips || []);
+    for (const c of list) chips.append(h('button', {class: c.key===st.chip ? 'cur' : '', disabled: (c.n===0 && c.key!=='') ? '' : null, onclick:()=>{ st.chip = c.key; st.offset = 0; run(); }}, c.n===undefined ? c.label : `${c.label} · ${fmt(c.n)}`));
+  }
+  function paintPager(res){
+    pager.innerHTML = '';
+    const pages = Math.max(1, Math.ceil(res.total / st.limit)), page = Math.floor(res.offset / st.limit) + 1;
+    const go = o => { st.offset = Math.max(0, Math.min(o, (pages-1)*st.limit)); run(); };
+    pager.append(`${fmt(res.total)} ${opts.noun || 'rows'}` + (res.total ? ` · ${fmt(res.offset+1)}–${fmt(Math.min(res.total, res.offset+st.limit))}` : '') + ` · ${res.ms} ms`,
+      h('button',{class:'btn', title:'first page', disabled: page<=1 ? '' : null, onclick:()=>go(0)}, '|◀'), h('button',{class:'btn', title:'previous page', disabled: page<=1 ? '' : null, onclick:()=>go(res.offset-st.limit)}, '◀'),
+      h('span',{class:'mono'}, 'page '), h('input',{type:'number', min:'1', max:String(pages), value:String(page), title:'jump to page', onchange:e=>{ const p = Math.max(1, Math.min(pages, +e.target.value||1)); go((p-1)*st.limit); }}), h('span',{class:'mono'}, ` of ${fmt(pages)}`),
+      h('button',{class:'btn', title:'next page', disabled: page>=pages ? '' : null, onclick:()=>go(res.offset+st.limit)}, '▶'), h('button',{class:'btn', title:'last page', disabled: page>=pages ? '' : null, onclick:()=>go((pages-1)*st.limit)}, '▶|'),
+      h('select', {title:'page size', onchange:e=>{ st.limit = +e.target.value; st.offset = 0; run(); }}, ...[25,50,100,200].map(n => h('option',{value:String(n), selected: n===st.limit ? '' : null}, `${n} / page`))));
+  }
+  async function run(){
+    stat.innerHTML = ''; stat.append(h('span',{class:'dot pulse'}), ' loading…');
+    try {
+      const res = await opts.fetch(st); st.res = res; stat.textContent = opts.stat ? opts.stat(res) : '';
+      paintChips(); hits.innerHTML = '';
+      const cols = typeof opts.columns === 'function' ? opts.columns(res) : opts.columns;
+      const tbl = h('table', {}, h('thead',{}, h('tr',{}, ...cols.map(c=>h('th',{},c.label)), opts.expand ? h('th') : null)));
+      const tb = h('tbody');
+      for (const row of res.rows){
+        const tr = h('tr', {}, ...cols.map(c => h('td', {class: c.ar ? 'ar' : (c.cls||'')}, c.render(row, res))));
+        if (opts.expand){ const {btn, box} = traceCell(opts.expand(row)); tr.append(h('td',{}, btn)); tb.append(tr, h('tr',{class:'cx-procrow'}, h('td',{colspan:String(cols.length+1)}, box))); }
+        else tb.append(tr);
+      }
+      tbl.append(tb); hits.append(res.rows.length ? h('div',{class:'tblwrap cx-hits'}, tbl) : h('p',{class:'muted small'}, opts.empty || 'nothing matches')); cxDecorate(hits);
+      paintPager(res);
+    } catch(e){ stat.textContent = ''; hits.innerHTML = ''; hits.append(h('div',{class:'err'}, e.message)); pager.innerHTML = ''; }
+  }
+  const api = {root, st, run,
+    open(chip){ if (chip!==undefined){ st.chip = chip; st.offset = 0; } root.hidden = false; run(); if (opts.onOpen) opts.onOpen(st); },
+    close(){ root.hidden = true; if (opts.onOpen) opts.onOpen(null); },
+    toggle(chip){ if (!root.hidden && (chip===undefined || chip===st.chip)) api.close(); else api.open(chip); }};
+  return api;
+}
+// Every unique chunk of the corpus, by pre-pass path (validate / peel / entries cards).
+function cxRecordsBrowser(kind, opts){
+  const pathChips = () => { const s = CX.wordsSummary || {}; const list = [];
+    if (kind !== 'peel') list.push({key:'', label:'all', n:s.unique}, {key:'analyzed', label:'analyzed', n:s.analyzed});
+    for (const p of (s.paths||[])) if (kind !== 'peel' || p.key==='peeled' || p.key==='lit') list.push({key:p.key, label:p.label, n:p.unique});
+    return list; };
+  const fetchFn = async st => { const s = await cxWordsSummary(); if (s.unavailable) throw new Error(s.error);
+    const r = await fetch(`/api/corpus/words?path=${encodeURIComponent(st.chip)}&q=${encodeURIComponent(st.q)}&full=1&limit=${st.limit}&offset=${st.offset}`, {cache:'no-store'});
+    const res = await r.json(); if (!r.ok || res.error) throw new Error(res.error || ('HTTP '+r.status)); return res; };
+  const colWord = {label:'word', ar:true, render:r=>ar(r.word)}, colN = {label:'×', render:r=>mono(fmt(r.count))}, colPath = {label:'pre-pass path', render:r=>pathBadge(r.path, r.path_label)};
+  const colTok = {label:'analysis (emission order)', render:r=>analysisChips(r)}, colCat = {label:'encode() category', render:r=>catBadge(r.category, r.label)};
+  const colAr = (label, key) => ({label, ar:true, render:r=>r[key]?ar(r[key]):'—'});
+  const columns = kind === 'entries' ? [colWord, colN, colPath, {label:'analyzed', render:r=>r.analyzed?badge('true','ok'):badge('false','warn')},
+      colAr('root','root'), colAr('pattern (bare)','pattern'), colAr('pattern_raw','pattern_raw'), colAr('stem','stem'), colAr('surface (diac)','surface'),
+      {label:'proclitics', render:r=>h('span',{class:'tokrow ltr'}, ...(r.proclitics||[]).map(c=>tok('[CLITICP_'+c+']','cliticp')))}, {label:'enclitics', render:r=>h('span',{class:'tokrow ltr'}, ...(r.enclitics||[]).map(c=>tok('[CLITICE_'+c+']','clitice')))}, colCat]
+    : kind === 'peel' ? [colWord, colN, colPath, colTok, colAr('surface','surface'), colCat]
+    : [colWord, colN, colPath, colTok, colCat];
+  return cxBrowser({chip: opts.chip || '', open: !!opts.open, chips: pathChips, fetch: fetchFn, columns, expand: r=>r.word, noun:'records',
+    placeholder:'filter words… (substring, tashkeel ignored)', intro: opts.intro, onOpen: opts.onOpen,
+    stat: res => `${fmt(res.total)} of ${fmt((CX.wordsSummary||{}).unique)} unique chunks`});
+}
+function cxStatsRow(items, browser){
+  const row = h('div', {class:'cx-stats', style:'margin-bottom:8px'});
+  for (const it of items){ const el = h('span', {class:'stat cx-click', title:'click to page through these records', onclick:()=>browser.toggle(it.chip)}, h('b',{},fmt(it.n)), h('span',{},it.label)); el.dataset.chip = it.chip; row.append(el); }
+  return row;
+}
+const cxStatsSync = row => st => row.querySelectorAll('.stat').forEach(s => s.classList.toggle('cur', !!st && s.dataset.chip===st.chip));
+RX.validate = d => {
+  const el = R.validate(d);
+  el.querySelectorAll('details.wordcard').forEach((det,i) => { const b = agreeBadge(d.words[i]||{}); if (b) det.querySelector('summary').append(b); });
+  let row; const br = cxRecordsBrowser('validate', {onOpen: st => cxStatsSync(row)(st), intro:'Every unique chunk on the chosen pre-pass path, by occurrences. "analysis" is what the pre-pass stored; "encode() category" is what the built vocab does with it (an analyzed word can still fall to LIT when its root or pattern was cut by the budget). process ▾ replays the word live.'});
+  row = cxStatsRow([{label:'analyzed', n:d.analyzed, chip:'analyzed'}, {label:'rejected → LIT', n:d.total-d.analyzed, chip:'lit'},
+    ...Object.entries(d.path_totals||{}).map(([k,v]) => ({label:k, n:v, chip:PATH_OF_TOTAL[k]||k}))], br);
+  el.replaceChild(row, el.firstElementChild);
+  el.insertBefore(br.root, el.children[1]);
+  const list = el.querySelector('.seq');
+  if (d.replay_disagreements) el.insertBefore(h('p',{class:'small', style:'color:var(--bad)'}, `${d.replay_disagreements} sampled word(s) analyze differently now than in the pre-pass entries — a stale cache or a changed CAMeL database.`), list);
+  el.insertBefore(h('div',{class:'subh'}, `sample replay — ${d.words.length} words re-analyzed live, with their gates`), list);
+  return el;
+};
+RX.peel = d => {
+  const el = R.peel(d);
+  el.querySelectorAll('details.wordcard').forEach((det,i) => { const b = agreeBadge(d.words[i]||{}); if (b) det.querySelector('summary').append(b); });
+  if (!d.enabled) return el;
+  let row; const br = cxRecordsBrowser('peel', {chip:'peeled', onOpen: st => cxStatsSync(row)(st), intro:'Every chunk CAMeL rejected natively: rescued by the peeler (its merged analysis shown) or exhausted → character path. process ▾ replays the slicings and verdicts live.'});
+  row = cxStatsRow([{label:'rescued → ROOT+PAT / PREP', n:d.rescued, chip:'peeled'}, {label:'exhausted → LIT fallback', n:d.total-d.rescued, chip:'lit'}], br);
+  el.replaceChild(row, el.firstElementChild);
+  el.insertBefore(br.root, el.children[1]);
+  const list = el.querySelector('.seq'); if (list) el.insertBefore(h('div',{class:'subh'}, `sample replay — the sample's ${d.words.length} native misses, replayed live`), list);
+  return el;
+};
+RX.entries = d => {
+  let row; const br = cxRecordsBrowser('entries', {open:true, onOpen: st => cxStatsSync(row)(st)});
+  const tot = d.totals || {};
+  row = cxStatsRow([{label:'entries', n:tot.entries, chip:''}, ...Object.entries(tot).filter(([k]) => k!=='entries').map(([k,v]) => ({label:k, n:v, chip:PATH_OF_TOTAL[k]||k}))], br);
+  if (!d.browsable) return h('div', {}, row, R.entries(d));
+  br.run(); cxStatsSync(row)(br.st);
+  return h('div', {}, row, br.root);
+};
+RX.freq = d => {
+  const ft = (rows, fam, label) => {
+    const max = Math.max(...rows.map(r=>r.freq),1);
+    return h('div', {}, h('div',{class:'subh'}, label + ` (${rows.length})`), rows.length ? table([
+      {label:'key', render:r=>tok(r.key, fam)}, {label:'freq', render:r=>h('span',{}, mono(r.freq), h('span',{class:'bar', style:`width:${Math.round(100*r.freq/max)}px`}))},
+      {label:'from words', ar:true, render:r=>h('span',{class:'tokrow'}, ...r.words.map(w=>h('span',{class:'run',style:'font-size:15px'},w)))}], rows) : h('p',{class:'muted small'},'empty'));
+  };
+  const fb = (kind, fam, label, placeholder) => {
+    const br = cxBrowser({open:true, pageSize:50, noun:'candidates', placeholder,
+      chips: res => res ? [{key:'', label:'all', n:res.candidates}, {key:'1', label:'kept in vocab', n:res.kept_total}, {key:'0', label:'cut', n:res.candidates-res.kept_total}] : [],
+      fetch: async st => { const r = await fetch(`/api/corpus/freq?kind=${kind}&q=${encodeURIComponent(st.q)}&kept=${st.chip}&limit=${st.limit}&offset=${st.offset}`, {cache:'no-store'}); const res = await r.json(); if (!r.ok || res.error) throw new Error(res.error || ('HTTP '+r.status)); return res; },
+      columns: res => [{label:'rank', render:r=>mono(fmt(r.rank))}, {label:'key', render:r=>tok(r.key, fam)},
+        {label:'freq', render:r=>h('span',{}, mono(r.freq), h('span',{class:'bar', style:`width:${Math.round(100*r.freq/Math.max(res.max_freq,1))}px`}))},
+        {label:'vocab', render:r=>r.in_vocab?badge('kept','ok'):badge('cut','warn')},
+        {label:'from words', ar:true, render:r=>h('span',{class:'tokrow'}, ...r.words.map(w=>h('span',{class:'run',style:'font-size:15px'},w)))}],
+      stat: res => `${fmt(res.total)} match${res.total===1?'':'es'} of ${fmt(res.candidates)} · ${fmt(res.kept_total)} kept`});
+    br.run();
+    return h('div', {}, h('div',{class:'subh'}, `${label} (${fmt((d.sizes||{})[kind==='root'?'root_freq':'pat_freq'])})` + (d.from_metadata ? ' — kept tokens only' : '')), br.root);
+  };
+  return h('div', {}, h('div',{class:'twocol'}, fb('root','root','root_freq','search roots… # or a weak letter = masked radical (قول finds ق#ل)'), fb('pat','pat','pat_freq','search patterns… CAMeL slots or wazn, tashkeel ignored (مفعول, 1ا2)')),
+    h('div',{class:'twocol', style:'margin-top:10px'}, ft(d.proclitic_freq,'cliticp','proclitic_freq'), ft(d.enclitic_freq,'clitice','enclitic_freq'), ft(d.preposition_freq||[],'prep','preposition_freq')));
+};
+
+/* ---------------- corpus words by category ---------------- */
+let WORDS = null;
+async function cxWordsInit(){
+  const un = $('#cx-words-unavail'); un.hidden = true; const mount = $('#cx-words-mount'); mount.innerHTML = ''; $('#cx-words-stat').textContent = '';
+  try {
+    const s = await cxWordsSummary();
+    if (s.unavailable){ un.hidden = false; un.textContent = s.error + ' Train on the corpus (a covering pre-pass cache makes it minutes) to browse its words by path.'; return; }
+    $('#cx-words-stat').textContent = `${fmt(s.unique)} unique chunks · ${fmt(s.occurrences)} occurrences · ${fmt(s.peeled)} peeled`;
+    const peeledBox = h('input',{type:'checkbox', id:'cx-words-peeled', onchange:()=>{ WORDS.st.offset = 0; WORDS.run(); }});
+    WORDS = cxBrowser({open:true, pageSize:100, noun:'words', placeholder:'filter words… (substring, tashkeel ignored)', controls:[h('label', {class:'small muted'}, peeledBox, ' peeled only')],
+      chips: () => [{key:'', label:'all', n:s.unique}, ...s.categories.map(c=>({key:c.key, label:c.label, n:c.unique}))],
+      fetch: async st => { const r = await fetch(`/api/corpus/words?category=${encodeURIComponent(st.chip)}&q=${encodeURIComponent(st.q)}${peeledBox.checked?'&peeled=1':''}&limit=${st.limit}&offset=${st.offset}`, {cache:'no-store'}); const res = await r.json(); if (!r.ok || res.error) throw new Error(res.error || ('HTTP '+r.status)); return res; },
+      columns: [{label:'word', ar:true, render:r=>ar(r.word)}, {label:'occurrences', render:r=>mono(fmt(r.count))}, {label:'path', render:r=>h('span',{}, catBadge(r.category, r.label), r.peeled ? ' ' : null, r.peeled ? badge('peeled','info') : null)},
+        {label:'root', render:r=>r.root ? tok('[ROOT_'+r.root+']','root') : ''}, {label:'pattern', render:r=>r.pattern ? tok('[PAT_'+r.pattern+']','pat') : ''}],
+      expand: r=>r.word});
+    mount.append(WORDS.root); WORDS.run();
+  } catch(e){ un.hidden = false; un.textContent = 'could not load word categories: ' + e.message; }
+}
+
+/* ---------------- floating navigation ---------------- */
+const NAV_SECTIONS = [['cx-setup','source & run','▣'], ['cx-progress','progress','◔'], ['cx-steps','training trace',''], ['cx-search','search','⌕'], ['cx-enc','encode','⇢'], ['cx-words','words','☷'], ['cx-pg','playground','▶'], ['cx-save','save','⬇']];
+const NAV = {targets:[], userToggled:false};
+function cxNavBuild(){
+  const nav = $('#cx-nav'), list = $('#cx-nav-list'); list.innerHTML = ''; NAV.targets = [];
+  const add = (el, label, n, cls, onclick) => { const a = h('a', {class:cls, onclick: onclick || (()=>cxNavGo(el))}, h('span',{class:'n'}, n), h('span',{class:'lab'}, label)); a._target = el; list.append(a); NAV.targets.push(a); return a; };
+  for (const [id, label, glyph] of NAV_SECTIONS){
+    const el = $('#'+id); if (!el) continue;
+    if (id === 'cx-steps'){
+      if (!CX.P.steps.length) continue;
+      list.append(h('div',{class:'grp'}, 'steps'));
+      CX.P.steps.forEach((s,i) => { const card = el.children[i]; const a = add(card, s.id, String(s.num).padStart(2,'0'), 'nv-step', ()=>{ cxStop(); if (i > CX.P.cur) cxGoTo(i); else cxNavGo(card); }); a._step = i; });
+      list.append(h('div',{class:'grp'}, 'tools'));
+      continue;
+    }
+    if (id === 'cx-progress' && el.hidden) continue;
+    if (el.classList.contains('card') && !el.classList.contains('on')) continue;
+    add(el, label, glyph, 'nv-sec');
+  }
+  nav.hidden = NAV.targets.length <= 1;
+  if (!NAV.userToggled) nav.classList.toggle('collapsed', window.innerWidth < 1650);
+  cxNavSync();
+}
+function cxNavGo(el){ el.scrollIntoView({behavior:'smooth', block:'start'}); }
+function cxNavSync(){
+  if (!NAV.targets.length) return;
+  let cur = null;
+  for (const a of NAV.targets){
+    const el = a._target;
+    if (a._step!==undefined && !el.classList.contains('shown')){ a.classList.add('dim'); continue; }
+    a.classList.remove('dim');
+    if (el.getBoundingClientRect().top <= 110) cur = a;
+  }
+  NAV.targets.forEach(a => a.classList.toggle('cur', a===cur));
+  if (cur){ const nav = $('#cx-nav'); const r = cur.getBoundingClientRect(), nr = nav.getBoundingClientRect(); if (r.top < nr.top) nav.scrollTop -= (nr.top - r.top) + 6; else if (r.bottom > nr.bottom) nav.scrollTop += (r.bottom - nr.bottom) + 6; }
+}
+let navRaf = null;
+window.addEventListener('scroll', () => { if (!PANEL.classList.contains('active') || navRaf) return; navRaf = requestAnimationFrame(()=>{ navRaf = null; cxNavSync(); }); }, {passive:true});
+window.addEventListener('resize', () => { if (!NAV.userToggled) $('#cx-nav').classList.toggle('collapsed', window.innerWidth < 1650); });
+$('#cx-nav-toggle').onclick = () => { NAV.userToggled = true; $('#cx-nav').classList.toggle('collapsed'); };
+$('.tab[data-panel=p-corpus]').addEventListener('click', () => setTimeout(cxNavSync, 60));
+cxNavBuild();
+
+/* ---------------- boot ---------------- */
+if (window.__EMBEDDED_TRACE){
+  const b = $('#cx-snapbanner'); b.classList.add('on'); b.append(h('b',{},'Snapshot'), ' — corpus training needs the running server (background job, CAMeL, search index). Start it with ', h('span',{class:'mono'},'.venv/bin/python debugger/serve_araroopat_explorer.py --open'), '.');
+  ['cx-run','cx-cancel','cx-search-q','cx-pg-input','cx-save-btn','cx-enc-run','cx-words-q'].forEach(id => { const el = $('#'+id); if (el) el.disabled = true; });
+} else {
+  cxLoadSources().catch(e => { $('#cx-error').hidden = false; $('#cx-error').textContent = 'could not list sources: ' + e.message; });
+  // Re-attach to a job that is still running or already finished on the server (page reload).
+  fetch('/api/corpus/status', {cache:'no-store'}).then(r=>r.json()).then(s => { if (s && s.job_id && (s.status==='running' || s.status==='queued' || (s.status==='done' && s.has_trace))) cxAttach(s.job_id); }).catch(()=>{});
+}
+})();
 </script>
 </body>
 </html>
