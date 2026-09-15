@@ -317,7 +317,7 @@ def test_build_pool_source_exhausted_marks_target_unreached(tmp_path):
 
 def test_fingerprint_ignores_stage_b_fields(tmp_path):
     a = mix_cfg(tmp_path, [("web", 1.0)])
-    b = mix_cfg(tmp_path, [("web", 1.0)], block_size=1024, token_budget=5, consume_sequentially=False)
+    b = mix_cfg(tmp_path, [("web", 1.0)], block_size=1024, cache_dir=str(tmp_path / "elsewhere"))
     c = mix_cfg(tmp_path, [("web", 1.0)], quality={"min_words": 21})
     assert pool_fingerprint(a) == pool_fingerprint(b) != pool_fingerprint(c)
 
@@ -338,22 +338,46 @@ def _phase(**kw) -> PhaseConfig:
     return PhaseConfig(**base)
 
 
+def _mix_phase(**kw) -> PhaseConfig:
+    # 10 steps × batch 2 × block 512 = 10 240 tokens
+    base = dict(datasets=["pretraining_mix"], mix_tokens=10_240)
+    base.update(kw)
+    return _phase(**base)
+
+
+def test_phase_config_steps_and_mix_tokens_rules():
+    with pytest.raises(ValueError, match="steps is required"):
+        _phase(steps=None)
+    with pytest.raises(ValueError, match="only valid on a phase"):
+        _phase(mix_tokens=512)
+    with pytest.raises(ValueError, match="mix_tokens must be positive"):
+        _mix_phase(mix_tokens=0)
+    assert _mix_phase(steps=None).steps is None  # resolved by TrainingConfig
+
+
 def test_training_config_mix_phase_rules(tmp_path):
     mix = mix_cfg(tmp_path, [("web", 1.0)])
     sft = _phase(datasets=["arcd"], loss_target="answer_only", early_stopping=EarlyStoppingConfig())
-    ok = TrainingConfig(phases=PhasesConfig(
-        embedding_alignment=_phase(datasets=["pretraining_mix"]),
-        warmup=_phase(datasets=["pretraining_mix"]), sft=sft), pretraining_mix=mix)
+
+    def tc(p1, p2=None):
+        return TrainingConfig(phases=PhasesConfig(embedding_alignment=p1, warmup=p2 or _phase(), sft=sft),
+                              pretraining_mix=mix)
+
+    ok = tc(_mix_phase(), _mix_phase(steps=None, mix_tokens=20_480))
     assert ok.phases_using_mix() == ["embedding_alignment", "warmup"]
+    assert ok.phases.warmup.steps == 20  # derived: 20 480 / (2 × 512)
+    assert [ok.mix_blocks(n) for n in ("embedding_alignment", "warmup")] == [20, 40]
     with pytest.raises(ValueError, match="not configured"):
-        TrainingConfig(phases=PhasesConfig(embedding_alignment=_phase(datasets=["pretraining_mix"]),
-                                           warmup=_phase(), sft=sft))
+        TrainingConfig(phases=PhasesConfig(embedding_alignment=_mix_phase(), warmup=_phase(), sft=sft))
     with pytest.raises(ValueError, match="sole dataset"):
-        TrainingConfig(phases=PhasesConfig(embedding_alignment=_phase(datasets=["pretraining_mix", "arcd"]),
-                                           warmup=_phase(), sft=sft), pretraining_mix=mix)
+        tc(_mix_phase(datasets=["pretraining_mix", "arcd"]))
     with pytest.raises(ValueError, match="full_sequence"):
-        TrainingConfig(phases=PhasesConfig(embedding_alignment=_phase(datasets=["pretraining_mix"], loss_target="answer_only"),
-                                           warmup=_phase(), sft=sft), pretraining_mix=mix)
+        tc(_mix_phase(loss_target="answer_only"))
     with pytest.raises(ValueError, match="block_size"):
-        TrainingConfig(phases=PhasesConfig(embedding_alignment=_phase(datasets=["pretraining_mix"], max_length=256),
-                                           warmup=_phase(), sft=sft), pretraining_mix=mix)
+        tc(_mix_phase(max_length=256))
+    with pytest.raises(ValueError, match="mix_tokens is required"):
+        tc(_mix_phase(mix_tokens=None))
+    with pytest.raises(ValueError, match="multiple of batch_size"):
+        tc(_mix_phase(mix_tokens=10_241))
+    with pytest.raises(ValueError, match="implies steps = 10"):
+        tc(_mix_phase(steps=11))

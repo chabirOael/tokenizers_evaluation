@@ -101,7 +101,13 @@ class PhaseConfig(BaseModel):
     enabled: bool = True
     datasets: List[DatasetName]
     trainable_parameters: List[str]
-    steps: int
+    # Micro-steps (one batch per step). Required unless the phase draws from
+    # the pretraining mix, where it is derived from ``mix_tokens``.
+    steps: Optional[int] = None
+    # Tokens drawn from the packed pretraining mix (phases with
+    # ``datasets: ["pretraining_mix"]`` only). Consecutive mix phases take
+    # disjoint block ranges. Must equal steps × batch_size × block_size.
+    mix_tokens: Optional[int] = None
     learning_rate: float
     batch_size: int
     gradient_accumulation_steps: int = 1
@@ -135,12 +141,21 @@ class PhaseConfig(BaseModel):
             raise ValueError("trainable_parameters cannot mix '*' with other entries; use ['*'] alone for 'all parameters'")
         return v
 
-    @field_validator("steps")
+    @field_validator("steps", "mix_tokens")
     @classmethod
-    def _positive_steps(cls, v):
-        if v <= 0:
-            raise ValueError(f"steps must be positive, got {v}")
+    def _positive_if_set(cls, v, info):
+        if v is not None and v <= 0:
+            raise ValueError(f"{info.field_name} must be positive, got {v}")
         return v
+
+    @model_validator(mode="after")
+    def _steps_or_mix_tokens(self):
+        uses_mix = "pretraining_mix" in self.datasets
+        if not uses_mix and self.steps is None:
+            raise ValueError("steps is required (only phases on 'pretraining_mix' may derive it from mix_tokens)")
+        if not uses_mix and self.mix_tokens is not None:
+            raise ValueError("mix_tokens is only valid on a phase whose datasets is ['pretraining_mix']")
+        return self
 
 
 class PhasesConfig(BaseModel):
@@ -294,13 +309,13 @@ class PretrainingMixConfig(BaseModel):
 
     Stage A (``pool``, ``dedup``, ``msa_filter``, ``quality``,
     ``normalization``, ``sources``, ``seed``) is tokenizer-independent and
-    cached under ``cache_dir/<fingerprint>``. Stage B (``block_size``,
-    ``token_budget``) runs once per experiment cell with the active
-    tokenizer and writes ``{output_dir}/data/``.
+    cached under ``cache_dir/<fingerprint>``. Stage B (``block_size``)
+    packs the *whole* pool once per tokenizer — at the largest budget where
+    the token shares hold exactly — into ``<pool>/packed/<tokenizer_fp>/``,
+    shared by every experiment. Phases then draw disjoint, consecutive
+    block ranges sized by their ``mix_tokens``; nothing ever wraps.
     """
     block_size: int = 512
-    token_budget: Optional[int] = None       # None → Σ(steps × batch_size) × block_size over phases using the mix
-    consume_sequentially: bool = True        # next phase continues after the previous phase's last block
     seed: int = 42
     cache_dir: str = "outputs/data_cache/pretraining_mix"
     normalization: MixNormalizationConfig = Field(default_factory=MixNormalizationConfig)
@@ -334,8 +349,6 @@ class PretrainingMixConfig(BaseModel):
             raise ValueError(
                 f"pretraining_mix.dedup.priority names unknown sources {unknown}; sources are {names}"
             )
-        if self.token_budget is not None and self.token_budget <= 0:
-            raise ValueError(f"pretraining_mix.token_budget must be positive, got {self.token_budget}")
         return self
 
     def source_order(self) -> List[MixSourceConfig]:
@@ -363,8 +376,12 @@ class TrainingConfig(BaseModel):
 
     @model_validator(mode="after")
     def _check_pretraining_mix_phases(self):
-        """A phase that consumes the packed mix must (v1) list it as its sole
-        dataset, use full-sequence loss, and match the mix block size."""
+        """A phase that consumes the packed mix must list it as its sole
+        dataset, use full-sequence loss, match the mix block size, and
+        declare ``mix_tokens`` consistent with its step budget:
+        ``mix_tokens == steps × batch_size × block_size`` (``steps`` is
+        derived when omitted) — so the tokens a phase *reserves* are exactly
+        the tokens it *trains on*, with no silent repetition or waste."""
         for phase_name in ("embedding_alignment", "warmup", "sft"):
             phase: PhaseConfig = getattr(self.phases, phase_name)
             if "pretraining_mix" not in phase.datasets:
@@ -386,13 +403,40 @@ class TrainingConfig(BaseModel):
                     f"loss_target='full_sequence' (got {phase.loss_target!r}) — packed "
                     f"raw text has no prompt/answer span"
                 )
-            if phase.max_length != self.pretraining_mix.block_size:
+            block = self.pretraining_mix.block_size
+            if phase.max_length != block:
                 raise ValueError(
                     f"training.phases.{phase_name}.max_length ({phase.max_length}) must equal "
-                    f"training.pretraining_mix.block_size ({self.pretraining_mix.block_size}) — "
+                    f"training.pretraining_mix.block_size ({block}) — "
                     f"blocks are packed once and shared by every phase that consumes the mix"
                 )
+            if phase.mix_tokens is None:
+                raise ValueError(
+                    f"training.phases.{phase_name}: mix_tokens is required on a phase that "
+                    f"draws from 'pretraining_mix' (tokens the phase takes = steps × batch_size × block_size)"
+                )
+            per_step = phase.batch_size * block
+            if phase.mix_tokens % per_step != 0:
+                raise ValueError(
+                    f"training.phases.{phase_name}.mix_tokens ({phase.mix_tokens}) must be a multiple "
+                    f"of batch_size × block_size ({phase.batch_size} × {block} = {per_step})"
+                )
+            derived = phase.mix_tokens // per_step
+            if phase.steps is None:
+                phase.steps = derived
+            elif phase.steps != derived:
+                raise ValueError(
+                    f"training.phases.{phase_name}: mix_tokens ({phase.mix_tokens}) implies steps = "
+                    f"{derived} (mix_tokens / (batch_size {phase.batch_size} × block_size {block})) but "
+                    f"steps = {phase.steps}; set them consistently or omit steps"
+                )
         return self
+
+    def mix_blocks(self, phase_name: str) -> int:
+        """Blocks a mix phase draws: ``mix_tokens / block_size``."""
+        phase: PhaseConfig = getattr(self.phases, phase_name)
+        assert self.pretraining_mix is not None and phase.mix_tokens is not None
+        return phase.mix_tokens // self.pretraining_mix.block_size
 
     def phases_using_mix(self) -> List[str]:
         """Names of *enabled* phases whose datasets is ['pretraining_mix'], in run order."""

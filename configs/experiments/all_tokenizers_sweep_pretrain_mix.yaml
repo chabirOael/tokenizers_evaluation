@@ -4,11 +4,13 @@
 #
 #     70 % FineWeb-2 arb_Arab  |  20 % Arabic Wikipedia  |  10 % ArabicWeb24
 #
-# instead of Arabic-SQuAD. Shares hold *in tokens under each cell's
-# tokenizer* (Stage B); the filtered pool (dedup → MSA gate → length /
-# boilerplate rules) is built once and cached (Stage A). Phase 2 continues
-# from the block where Phase 1 stopped (consume_sequentially), so both phases
-# see the same distribution with no repetition.
+# instead of Arabic-SQuAD. The filtered pool (dedup → MSA gate → length /
+# boilerplate rules) is built once and cached (Stage A); the WHOLE pool is
+# packed once per tokenizer at the largest budget where the 70/20/10 shares
+# hold exactly in that tokenizer's tokens (Stage B, shared across
+# experiments). Each phase declares the tokens it draws (mix_tokens); the
+# slices are consecutive and disjoint, so Phase 1's blocks are identical in
+# every experiment on this pool and Phase 2 never repeats them.
 #
 # Only deltas from configs/base.yaml are listed; the mix's own knobs
 # (sources, filters, dedup, thresholds) live in base.yaml under
@@ -28,6 +30,7 @@
 # only Phase 1, set:
 #   training.phases.warmup.datasets: ["arabic_squad"]
 #   training.phases.warmup.loss_target: "answer_only"
+#   training.phases.warmup.mix_tokens: null
 
 experiment:
   name: "all_tokenizers_sweep_pretrain_mix"
@@ -55,17 +58,17 @@ model:
 training:
   pretraining_mix:
     block_size: 512
-    token_budget: null              # auto: (1000×8 + 2000×4) × 512 = 8.19 M tokens per cell
-    consume_sequentially: true
     # sources / pool / dedup / msa_filter / quality: inherited from base.yaml
 
   phases:
     embedding_alignment:
       datasets: ["pretraining_mix"]
+      mix_tokens: 4096000           # blocks [0, 8000): = steps 1000 × batch_size 8 × block_size 512
       loss_target: "full_sequence"
       max_length: 512               # must equal pretraining_mix.block_size
     warmup:
       datasets: ["pretraining_mix"] # ← the flag; see ABLATION SWITCH above
+      mix_tokens: 4096000           # blocks [8000, 16000): = steps 2000 × batch_size 4 × 512, disjoint from Phase 1
       loss_target: "full_sequence"
       max_length: 512
 

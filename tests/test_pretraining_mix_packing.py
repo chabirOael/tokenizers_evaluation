@@ -17,8 +17,8 @@ from arabic_eval.config import (  # noqa: E402
     EarlyStoppingConfig, PhaseConfig, PhasesConfig, TrainingConfig,
 )
 from arabic_eval.data.pretraining_mix.packing import (  # noqa: E402
-    EncodedDoc, PackedBlockDataset, PackedCorpus, build_packed_corpus, fill_token_budget,
-    pack_blocks, resolve_token_budget, source_doc_order,
+    EncodedDoc, PackedBlockDataset, PackedCorpus, build_packed_corpus, exact_share_budget,
+    pack_blocks, select_docs, source_doc_order, tokenize_pool,
 )
 from arabic_eval.data.pretraining_mix.pool import build_pool, load_pool_manifest  # noqa: E402
 from arabic_eval.tokenizers.base import BaseTokenizer, EmbeddingType, TokenizerOutput  # noqa: E402
@@ -88,17 +88,20 @@ def _pool(tmp_path, sources=(("web", 0.7), ("wiki", 0.3)), total_words=6000, doc
     return cfg, out
 
 
-def _training_cfg(mix, p1_steps=3, p2_steps=4, bs=2, p2_on_mix=True, sft_enabled=False) -> TrainingConfig:
+def _training_cfg(mix, p1_tokens, p2_tokens=None, bs=2, sft_enabled=False) -> TrainingConfig:
+    """Mix phases sized in tokens; steps derived (block_size 16)."""
     def phase(**kw):
-        base = dict(datasets=["pretraining_mix"], trainable_parameters=["*"], steps=p1_steps, learning_rate=1e-3,
+        base = dict(datasets=["pretraining_mix"], trainable_parameters=["*"], learning_rate=1e-3,
                     batch_size=bs, loss_target="full_sequence", max_length=mix.block_size, save_checkpoint=False)
         base.update(kw)
         return PhaseConfig(**base)
+    warmup = (phase(mix_tokens=p2_tokens) if p2_tokens
+              else phase(datasets=["arabic_squad"], loss_target="answer_only", steps=4))
     return TrainingConfig(
         phases=PhasesConfig(
-            embedding_alignment=phase(trainable_parameters=["embed_tokens", "lm_head"]),
-            warmup=phase(steps=p2_steps) if p2_on_mix else phase(datasets=["arabic_squad"], loss_target="answer_only", steps=p2_steps),
-            sft=phase(datasets=["arcd"], loss_target="answer_only", enabled=sft_enabled,
+            embedding_alignment=phase(trainable_parameters=["embed_tokens", "lm_head"], mix_tokens=p1_tokens),
+            warmup=warmup,
+            sft=phase(datasets=["arcd"], loss_target="answer_only", enabled=sft_enabled, steps=4,
                       early_stopping=EarlyStoppingConfig(enabled=False)),
         ),
         pretraining_mix=mix,
@@ -106,43 +109,43 @@ def _training_cfg(mix, p1_steps=3, p2_steps=4, bs=2, p2_on_mix=True, sft_enabled
 
 
 # --------------------------------------------------------------------------
-# Fill: shares hold in tokens, not documents
+# Tokenize the whole pool + exact-share budget
 # --------------------------------------------------------------------------
 
-def test_fill_holds_token_shares_under_different_fertilities(tmp_path):
+def test_tokenize_pool_covers_every_doc_and_shares_hold_under_different_fertilities(tmp_path):
     cfg, pool = _pool(tmp_path, total_words=20000, docs_per_source=250)
-    # Budgets ≈ 100 docs per tokenizer so one-document granularity is ~1 %.
-    for tok, budget in ((_WordTok(), 8000), (_CharTok(), 50000)):
-        docs, stats = fill_token_budget(pool, cfg, tok, budget, log_every=0)
-        by = {s.name: s for s in stats}
-        for s in stats:
-            assert s.tokens >= s.target_tokens
-            assert s.tokens - s.target_tokens < 700  # overshoot ≤ one (char-tokenized) doc
-        total = sum(s.tokens for s in stats)
-        assert abs(by["web"].tokens / total - 0.7) < 0.03
-        assert docs[0].ids[-1] == 2  # EOS separator guaranteed
-    word_stats = fill_token_budget(pool, cfg, _WordTok(), 8000, log_every=0)[1]
-    char_stats = fill_token_budget(pool, cfg, _CharTok(), 8000, log_every=0)[1]
-    # Same token budget → the char tokenizer takes far fewer documents.
-    assert char_stats[0].docs_taken < word_stats[0].docs_taken
-    assert char_stats[0].fertility > 4 * word_stats[0].fertility
+    shares = {s.name: s.share for s in cfg.sources}
+    for tok in (_WordTok(), _CharTok()):
+        docs, stats = tokenize_pool(pool, cfg, tok, log_every=0)
+        for name, st in stats.items():
+            assert st.docs_available == len(docs[name])
+            assert st.available_tokens == sum(int(d.ids.shape[0]) for d in docs[name])
+            assert docs[name][0].ids[-1] == 2  # EOS separator guaranteed
+        budget = exact_share_budget({n: s.available_tokens for n, s in stats.items()}, shares)
+        # the binding source supplies exactly its share; nobody is asked for more than it has
+        assert all(round(shares[n] * budget) <= stats[n].available_tokens for n in shares)
+        assert any(abs(shares[n] * budget - stats[n].available_tokens) < 1 for n in shares)
+        selected = select_docs(docs, stats, budget)
+        total = sum(st.tokens for st in stats.values())
+        for n, st in stats.items():
+            assert st.tokens >= st.target_tokens and st.tokens <= st.available_tokens
+            assert abs(st.tokens / total - shares[n]) < 0.03
+        assert len(selected) == sum(st.docs_taken for st in stats.values())
+    # fertility drives docs, not tokens
+    _, w = tokenize_pool(pool, cfg, _WordTok(), log_every=0)
+    _, c = tokenize_pool(pool, cfg, _CharTok(), log_every=0)
+    assert c["web"].fertility > 4 * w["web"].fertility and c["web"].docs_available == w["web"].docs_available
 
 
-def test_fill_is_a_nested_prefix_of_one_fixed_order(tmp_path):
-    cfg, pool = _pool(tmp_path)
-    small, _ = fill_token_budget(pool, cfg, _WordTok(), 1500, log_every=0)
-    large, _ = fill_token_budget(pool, cfg, _WordTok(), 3000, log_every=0)
-    small_web = [d.ids.tolist() for d in small if d.source == "web"]
-    large_web = [d.ids.tolist() for d in large if d.source == "web"]
-    assert large_web[: len(small_web)] == small_web
+def test_source_doc_order_is_fixed_per_source():
     assert source_doc_order(10, 42, "web").tolist() == source_doc_order(10, 42, "web").tolist()
     assert source_doc_order(10, 42, "web").tolist() != source_doc_order(10, 42, "wiki").tolist()
 
 
-def test_fill_raises_when_pool_is_too_small(tmp_path):
-    cfg, pool = _pool(tmp_path, total_words=1000, docs_per_source=20)
-    with pytest.raises(ValueError, match="pool is exhausted"):
-        fill_token_budget(pool, cfg, _CharTok(), 10_000_000, log_every=0)
+def test_exact_share_budget_math():
+    assert exact_share_budget({"a": 700, "b": 300}, {"a": 0.7, "b": 0.3}) == 1000
+    assert exact_share_budget({"a": 700, "b": 600}, {"a": 0.7, "b": 0.3}) == 1000   # b's surplus unused
+    assert exact_share_budget({"a": 350, "b": 300}, {"a": 0.7, "b": 0.3}) == 500    # a binds
 
 
 # --------------------------------------------------------------------------
@@ -155,8 +158,8 @@ def test_pack_blocks_shapes_tail_and_char_ids():
     assert ids.shape == (4, 8) and ids.dtype == np.int32 and tail == 37 - 32 and chars is None
     with pytest.raises(ValueError, match="< one block"):
         pack_blocks([EncodedDoc("a", np.arange(3))], block_size=8, seed=0)
-    cdocs = [EncodedDoc("a", np.arange(9), np.ones((9, 4), dtype=np.int64)),
-             EncodedDoc("a", np.arange(9), 2 * np.ones((9, 4), dtype=np.int64))]
+    cdocs = [EncodedDoc("a", np.arange(9), np.ones((9, 4), dtype=np.int16)),
+             EncodedDoc("a", np.arange(9), 2 * np.ones((9, 4), dtype=np.int16))]
     ids, chars, tail = pack_blocks(cdocs, block_size=6, seed=0)
     assert chars.shape == (3, 6, 4) and chars.dtype == np.int16 and tail == 0
 
@@ -171,33 +174,26 @@ def test_pack_blocks_is_seeded_and_uses_every_doc():
 
 
 # --------------------------------------------------------------------------
-# Cursor
+# Strict, disjoint slices
 # --------------------------------------------------------------------------
 
-def _corpus(n_blocks=10, block=4, sequential=True):
+def _corpus(n_blocks=10, block=4):
     ids = np.arange(n_blocks * block, dtype=np.int32).reshape(n_blocks, block)
-    return PackedCorpus(ids, None, {"n_blocks": n_blocks}, consume_sequentially=sequential)
+    return PackedCorpus(ids, None, {"n_blocks": n_blocks, "fertility_min": 1.0})
 
 
-def test_take_sequential_continues_and_wraps(caplog):
+def test_take_is_consecutive_disjoint_and_never_wraps():
     c = _corpus()
     d1, i1 = c.take("embedding_alignment", 6)
     d2, i2 = c.take("warmup", 3)
     assert (i1["block_start"], i1["block_end"]) == (0, 6) and (i2["block_start"], i2["block_end"]) == (6, 9)
     assert d1[0]["input_ids"].tolist() == [0, 1, 2, 3] and d2[0]["input_ids"].tolist() == list(range(24, 28))
-    assert not i2["wrapped"]
-    with caplog.at_level("WARNING"):
-        d3, i3 = c.take("sft", 5)
-    assert i3["wrapped"] and i3["block_start"] == 9 and "wrapping around" in caplog.text
-    assert d3[1]["input_ids"].tolist() == [0, 1, 2, 3]  # wrapped to block 0
-    assert c.consumption.keys() == {"embedding_alignment", "warmup", "sft"}
-
-
-def test_take_non_sequential_restarts_at_zero():
-    c = _corpus(sequential=False)
-    _, i1 = c.take("embedding_alignment", 4)
-    _, i2 = c.take("warmup", 4)
-    assert i1["block_start"] == 0 and i2["block_start"] == 0
+    assert i1["corpus_share"] == 0.6
+    with pytest.raises(ValueError, match="raise pretraining_mix.pool.total_words"):
+        c.take("sft", 2)  # only 1 block left
+    assert c.consumption.keys() == {"embedding_alignment", "warmup"}
+    with pytest.raises(ValueError, match="exceeds corpus"):
+        PackedBlockDataset(c.input_ids, None, 8, 12)
 
 
 def test_packed_block_dataset_emits_char_ids():
@@ -208,42 +204,46 @@ def test_packed_block_dataset_emits_char_ids():
 
 
 # --------------------------------------------------------------------------
-# Budget + build/cache
+# Build / shared cache
 # --------------------------------------------------------------------------
 
-def test_resolve_token_budget(tmp_path):
-    cfg, _ = _pool(tmp_path)
-    tc = _training_cfg(cfg, p1_steps=3, p2_steps=4, bs=2)
-    assert resolve_token_budget(tc) == (3 * 2 + 4 * 2) * 16
-    tc2 = _training_cfg(cfg, p2_on_mix=False)
-    assert resolve_token_budget(tc2) == 3 * 2 * 16
-    cfg.token_budget = 999
-    assert resolve_token_budget(_training_cfg(cfg)) == 999
-
-
-def test_build_packed_corpus_caches_and_records_shares(tmp_path, caplog):
+def test_build_packed_corpus_packs_whole_pool_and_is_shared_across_cells(tmp_path, caplog):
     cfg, pool = _pool(tmp_path)
-    tc = _training_cfg(cfg)
-    out = tmp_path / "cell" / "data"
-    corpus = build_packed_corpus(tc, _WordTok(), "word", out, pool_dir=pool)
-    m = json.load(open(out / "packed_manifest.json", encoding="utf-8"))
-    assert m["n_blocks"] == corpus.n_blocks >= (3 * 2 + 4 * 2)
-    assert m["token_budget"] == 224 and m["block_size"] == 16
-    assert abs(m["sources"][0]["achieved_share"] - 0.7) < 0.15
-    assert m["tokenizer"]["type"] == "word"
+    cell_a, cell_b = tmp_path / "exp1" / "cell" / "data", tmp_path / "exp2" / "cell" / "data"
+    corpus = build_packed_corpus(cfg, _WordTok(), "word", cell_data_dir=cell_a, pool_dir=pool)
+    m = corpus.manifest
+    assert m["n_tokens_packed"] <= m["exact_share_budget"] + 200  # ≤ one doc per source overshoot
+    assert sum(s["tokens"] for s in m["sources"]) >= m["exact_share_budget"]
+    assert abs(m["sources"][0]["achieved_share"] - 0.7) < 0.03
+    assert m["tokenizer"]["type"] == "word" and len(m["tokenizer"]["content_hash"]) == 16
+    packed = Path(m["pool_dir"]) / "packed" / m["fingerprint"]
+    assert packed.exists() and (packed / "packed_input_ids.npy").exists()
+    assert json.load(open(cell_a / "packed_manifest.json", encoding="utf-8"))["packed_dir"] == str(packed)
     with caplog.at_level("INFO"):
-        again = build_packed_corpus(tc, _WordTok(), "word", out, pool_dir=pool)
+        again = build_packed_corpus(cfg, _WordTok(), "word", cell_data_dir=cell_b, pool_dir=pool)
     assert "reusing packed corpus" in caplog.text and again.n_blocks == corpus.n_blocks
-    # a different tokenizer identity repacks
-    other = build_packed_corpus(tc, _CharTok(), "char", out, pool_dir=pool)
-    assert other.manifest["fingerprint"] != corpus.manifest["fingerprint"]
+    assert (cell_b / "packed_manifest.json").exists()
+
+
+def test_packed_cache_keys_on_tokenizer_content(tmp_path):
+    cfg, pool = _pool(tmp_path)
+    a = build_packed_corpus(cfg, _WordTok(), "word", pool_dir=pool)
+
+    class _WordTokV2(_WordTok):
+        def encode(self, text, max_length=None, padding=False, truncation=False):
+            ids = [5 + (hash(w) % (self._v - 5)) for w in text.split()]   # different learned "vocab"
+            return TokenizerOutput(input_ids=ids, attention_mask=[1] * len(ids), tokens=text.split())
+    b = build_packed_corpus(cfg, _WordTokV2(), "word", pool_dir=pool)   # same type / vocab_size / specials
+    assert a.manifest["fingerprint"] != b.manifest["fingerprint"]
+    c = build_packed_corpus(cfg, _CharTok(), "char", pool_dir=pool)
+    assert c.manifest["fingerprint"] not in (a.manifest["fingerprint"], b.manifest["fingerprint"])
 
 
 def test_build_packed_corpus_char_cnn(tmp_path):
     cfg, pool = _pool(tmp_path)
-    corpus = build_packed_corpus(_training_cfg(cfg), _CharCNNTok(), "charcnn", tmp_path / "d", pool_dir=pool)
+    corpus = build_packed_corpus(cfg, _CharCNNTok(), "charcnn", cell_data_dir=tmp_path / "d", pool_dir=pool)
     assert corpus.char_ids is not None and corpus.char_ids.shape[:2] == corpus.input_ids.shape
-    assert (tmp_path / "d" / "packed_char_ids.npy").exists()
+    assert (Path(corpus.manifest["pool_dir"]) / "packed" / corpus.manifest["fingerprint"] / "packed_char_ids.npy").exists()
 
 
 # --------------------------------------------------------------------------
@@ -262,13 +262,14 @@ def tiny_model_path(tmp_path_factory) -> Path:
     return path
 
 
-def test_run_all_phases_consumes_packed_mix_sequentially(tmp_path, tiny_model_path):
+def test_run_all_phases_draws_disjoint_slices(tmp_path, tiny_model_path):
     from arabic_eval.models.qwen3_adapter import Qwen3Adapter
     from arabic_eval.pipeline.experiment import _run_all_phases
 
     cfg, pool = _pool(tmp_path)
     cfg.cache_dir = str(pool.parent)  # build_pool() inside the pipeline must find the cached pool
-    tc = _training_cfg(cfg, p1_steps=3, p2_steps=4, bs=2)
+    tc = _training_cfg(cfg, p1_tokens=3 * 2 * 16, p2_tokens=4 * 2 * 16, bs=2)   # 6 + 8 blocks
+    assert (tc.phases.embedding_alignment.steps, tc.phases.warmup.steps) == (3, 4)
     adapter = Qwen3Adapter(str(tiny_model_path), device="cpu", dtype="float32")
     tok = _WordTok()
     adapter.adapt_to_tokenizer(tok)
@@ -276,12 +277,27 @@ def test_run_all_phases_consumes_packed_mix_sequentially(tmp_path, tiny_model_pa
                               tokenizer_type="word", data_dir=tmp_path / "cell" / "data")
     p1, p2 = history["embedding_alignment"], history["warmup"]
     assert p1["status"] == "ok" and p1["steps_completed"] == 3
-    assert p1["data"] == {**p1["data"], "dataset": "pretraining_mix", "block_start": 0, "block_end": 6, "n_tokens": 96}
-    assert p2["data"]["block_start"] == 6 and p2["data"]["block_end"] == 14 and not p2["data"]["wrapped"]
+    assert (p1["data"]["block_start"], p1["data"]["block_end"], p1["data"]["n_tokens"]) == (0, 6, 96)
+    assert (p2["data"]["block_start"], p2["data"]["block_end"]) == (6, 14)
     assert history["sft"] == {"status": "skipped"}
     assert history["pretraining_mix"]["consumption"].keys() == {"embedding_alignment", "warmup"}
     assert (tmp_path / "cell" / "data" / "packed_manifest.json").exists()
     assert np.isfinite(p1["final_train_loss"]) and np.isfinite(p2["final_train_loss"])
+
+
+def test_run_all_phases_raises_when_pool_too_small(tmp_path, tiny_model_path):
+    from arabic_eval.models.qwen3_adapter import Qwen3Adapter
+    from arabic_eval.pipeline.experiment import _run_all_phases
+
+    cfg, pool = _pool(tmp_path, total_words=1000, docs_per_source=20)
+    cfg.cache_dir = str(pool.parent)
+    tc = _training_cfg(cfg, p1_tokens=10 * 2 * 16, p2_tokens=1000 * 2 * 16, bs=2)
+    adapter = Qwen3Adapter(str(tiny_model_path), device="cpu", dtype="float32")
+    tok = _WordTok()
+    adapter.adapt_to_tokenizer(tok)
+    with pytest.raises(ValueError, match="raise pretraining_mix.pool.total_words"):
+        _run_all_phases(adapter, tok, tc, tmp_path / "cell" / "training",
+                        tokenizer_type="word", data_dir=tmp_path / "cell" / "data")
 
 
 def test_run_all_phases_char_cnn_branch_on_packed_mix(tmp_path, tiny_model_path):
@@ -290,7 +306,7 @@ def test_run_all_phases_char_cnn_branch_on_packed_mix(tmp_path, tiny_model_path)
 
     cfg, pool = _pool(tmp_path)
     cfg.cache_dir = str(pool.parent)
-    tc = _training_cfg(cfg, p1_steps=2, p2_steps=2, bs=2)
+    tc = _training_cfg(cfg, p1_tokens=2 * 2 * 16, p2_tokens=2 * 2 * 16, bs=2)
     adapter = Qwen3Adapter(str(tiny_model_path), device="cpu", dtype="float32")
     tok = _CharCNNTok()
     adapter.adapt_to_tokenizer(tok)

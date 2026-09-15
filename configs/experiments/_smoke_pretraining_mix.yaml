@@ -31,11 +31,13 @@ training:
   phases:
     embedding_alignment:
       datasets: ["pretraining_mix"]
+      mix_tokens: 61440             # = 30 steps × 4 × 512
       loss_target: "full_sequence"
       steps: 30
       batch_size: 4
     warmup:
       datasets: ["pretraining_mix"]
+      mix_tokens: 30720             # = 30 steps × 2 × 512, blocks [120, 180)
       loss_target: "full_sequence"
       steps: 30
       batch_size: 2

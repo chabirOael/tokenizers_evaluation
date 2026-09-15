@@ -24,15 +24,18 @@ training:
   fp16: false
   logging_steps: 50
   # Packed raw-text mix for Phase 1 / Phase 2. Inert until a phase sets
-  # ``datasets: ["pretraining_mix"]`` (then loss_target must be full_sequence
-  # and max_length must equal block_size). Stage A (pool) is cached under
-  # cache_dir/<fingerprint> and shared by every cell; Stage B (token-budget
-  # fill + packing) runs per cell with the active tokenizer.
+  # ``datasets: ["pretraining_mix"]`` + ``mix_tokens`` (then loss_target must
+  # be full_sequence, max_length must equal block_size, and
+  # mix_tokens == steps × batch_size × block_size — steps may be omitted).
+  # Stage A (pool, this block) is cached under cache_dir/<fingerprint> and
+  # shared by every cell; Stage B packs the WHOLE pool once per tokenizer
+  # (largest budget at which the shares hold exactly) under
+  # <pool>/packed/<tokenizer_fp>/. Phases draw disjoint consecutive slices
+  # of it — the pool must hold Σ mix_tokens for the lowest-fertility
+  # tokenizer (CharacterBERT ≈ 1 token/word) or packing raises.
   # Build / calibrate offline: scripts/build_pretraining_mix.py.
   pretraining_mix:
     block_size: 512
-    token_budget: null              # tokens under the active tokenizer; null = Σ(steps×batch_size)×block_size over phases using the mix
-    consume_sequentially: true      # warmup continues after embedding_alignment's last block
     seed: 42
     cache_dir: "outputs/data_cache/pretraining_mix"
     normalization:                  # parity with the un-normalized QA phases: NFKC + tatweel + whitespace only

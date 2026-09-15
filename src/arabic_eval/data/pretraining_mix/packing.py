@@ -1,28 +1,34 @@
-"""Stage B — per-cell token-budget fill + packing.
+"""Stage B — pack the whole pool once per tokenizer; phases draw disjoint slices.
 
-Given a built pool and the *active* tokenizer:
+Given a built pool and a tokenizer:
 
-1. ``fill_token_budget`` — for each source, walk its pool documents in a
-   fixed seeded order, tokenize, and take documents until
-   ``share × token_budget`` tokens are reached (overshoot ≤ one document).
-   For a given source every cell's selection is a *prefix of the same
-   order*, so a low-fertility tokenizer sees a superset of what a
-   high-fertility one sees: same distribution, nested cutoffs.
-2. ``pack_blocks`` — shuffle the selected documents (seeded), concatenate
-   with an EOS separator between documents, chunk into ``block_size``
-   blocks, drop the final partial block.
+1. ``tokenize_pool`` — tokenize *every* pool document of every source, in
+   a fixed seeded order (``source_doc_order``; identical for every
+   tokenizer, so a smaller pool is always a prefix of a larger one).
+2. ``exact_share_budget`` — the largest token budget at which the source
+   shares hold exactly: ``min_i(available_i / share_i)``. The pool is split
+   by share in *words*, and per-source fertility differs slightly under any
+   given tokenizer, so a few percent of the over-supplied sources stay
+   unused rather than bending the ratio.
+3. ``select_docs`` + ``pack_blocks`` — take each source's prefix up to its
+   share of the budget, shuffle the selected documents (seeded),
+   concatenate with an EOS separator, chunk into ``block_size`` blocks.
 
-``build_packed_corpus`` caches the result under ``{cell_output_dir}/data/
-pretraining_mix/`` keyed on (pool fingerprint, tokenizer identity, budget,
-block size, seed) and returns a ``PackedCorpus`` whose ``take`` hands each
-phase a contiguous block range (``consume_sequentially``: the next phase
-continues where the previous one stopped).
+The result is cached at ``<pool>/packed/<tokenizer_fingerprint>/`` and
+shared by every experiment — the fingerprint includes a *content hash* of
+the tokenizer (ids of a fixed probe paragraph), so two BPE-32K tokenizers
+with different learned vocabs never share an entry. Block order is fixed
+once per (pool, tokenizer): ``PackedCorpus.take`` hands each phase the
+next ``mix_tokens / block_size`` blocks, strictly consecutive and
+non-overlapping, and raises (never wraps) when the pool is too small.
 """
 from __future__ import annotations
 
 import hashlib
 import json
 import logging
+import os
+import shutil
 import time
 import zlib
 from dataclasses import dataclass, field
@@ -32,7 +38,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 from torch.utils.data import Dataset
 
-from ...config import PretrainingMixConfig, TrainingConfig
+from ...config import PretrainingMixConfig
 from ...tokenizers.base import BaseTokenizer
 from .pool import build_pool, iter_pool_docs, load_pool_manifest, pool_fingerprint
 
@@ -41,87 +47,90 @@ logger = logging.getLogger(__name__)
 PACKED_MANIFEST = "packed_manifest.json"
 INPUT_IDS_FILE = "packed_input_ids.npy"
 CHAR_IDS_FILE = "packed_char_ids.npy"
+PACKED_SUBDIR = "packed"
+
+# Fixed probe for the tokenizer content hash: diacritics, digits, Latin,
+# punctuation and a rare word so vocab / merge differences show up.
+_PROBE_TEXT = (
+    "تُعَدُّ اللغةُ العربيةُ من أكثرِ اللغاتِ انتشارًا؛ يتحدث بها نحو 400 مليون شخص. "
+    "قال المهندس: «سنطلق النسخة 2.0 من التطبيق Alpha غدًا»، فاستبشر الجميع خيرًا. "
+    "والمستشرقون المتخصصون بالبلاغة لم يستطيعوا تفسير الاستعارة المكنية بسهولة."
+)
 
 
 # --------------------------------------------------------------------------
-# Budget / identity
+# Identity
 # --------------------------------------------------------------------------
-
-def resolve_token_budget(training_cfg: TrainingConfig) -> int:
-    """Explicit ``token_budget`` or Σ(steps × batch_size) × block_size over
-    the enabled phases that consume the mix (micro-steps: ``run_phase``
-    draws one batch per step)."""
-    mix = training_cfg.pretraining_mix
-    if mix is None:
-        raise ValueError("training.pretraining_mix is not configured")
-    if mix.token_budget is not None:
-        return int(mix.token_budget)
-    phases = training_cfg.phases_using_mix()
-    blocks = sum(getattr(training_cfg.phases, p).steps * getattr(training_cfg.phases, p).batch_size
-                 for p in phases)
-    if blocks == 0:
-        raise ValueError(
-            "pretraining_mix.token_budget is null and no enabled phase lists "
-            "datasets: ['pretraining_mix'] — nothing to size the budget from"
-        )
-    return blocks * mix.block_size
-
 
 def tokenizer_identity(tokenizer: BaseTokenizer, tokenizer_type: str) -> Dict[str, Any]:
+    enc = tokenizer.encode(_PROBE_TEXT)
+    h = hashlib.sha256(json.dumps(list(enc.input_ids)).encode("utf-8"))
+    if enc.char_ids is not None:
+        h.update(json.dumps([list(r) for r in enc.char_ids]).encode("utf-8"))
     return {
         "type": tokenizer_type,
         "class": type(tokenizer).__name__,
         "vocab_size": int(tokenizer.vocab_size),
         "embedding_type": tokenizer.embedding_type,
         "special_tokens": {k: int(v) for k, v in tokenizer.special_tokens.items()},
+        "content_hash": h.hexdigest()[:16],
     }
 
 
-def packed_fingerprint(pool_fp: str, tok_id: Dict[str, Any], token_budget: int,
-                       block_size: int, seed: int, shares: Dict[str, float]) -> str:
+def packed_fingerprint(pool_fp: str, tok_id: Dict[str, Any], block_size: int,
+                       seed: int, shares: Dict[str, float]) -> str:
     payload = json.dumps(
-        {"pool": pool_fp, "tokenizer": tok_id, "token_budget": token_budget,
-         "block_size": block_size, "seed": seed, "shares": shares},
+        {"pool": pool_fp, "tokenizer": tok_id, "block_size": block_size, "seed": seed, "shares": shares},
         sort_keys=True, ensure_ascii=False,
     )
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
 
 
+def packed_dir(pool_dir: Path, fingerprint: str) -> Path:
+    return Path(pool_dir) / PACKED_SUBDIR / fingerprint
+
+
 # --------------------------------------------------------------------------
-# Fill
+# Tokenize the whole pool
 # --------------------------------------------------------------------------
 
 @dataclass
 class EncodedDoc:
     source: str
-    ids: np.ndarray                          # int64 [n_tokens]
-    char_ids: Optional[np.ndarray] = None    # int64 [n_tokens, max_char_len] (character_cnn only)
+    ids: np.ndarray                          # int32 [n_tokens]
+    char_ids: Optional[np.ndarray] = None    # int16 [n_tokens, max_char_len] (character_cnn only)
 
 
 @dataclass
-class SourceFillStats:
+class SourceTokenStats:
     name: str
     share: float
-    target_tokens: int
     docs_available: int = 0
+    available_tokens: int = 0
+    words: int = 0
+    target_tokens: int = 0
     docs_taken: int = 0
     tokens: int = 0
-    words: int = 0
     wall_sec: float = 0.0
 
     @property
     def fertility(self) -> float:
-        return self.tokens / self.words if self.words else 0.0
+        return self.available_tokens / self.words if self.words else 0.0
 
-    def to_json(self) -> Dict[str, Any]:
-        return {"name": self.name, "share": self.share, "target_tokens": self.target_tokens,
-                "docs_available": self.docs_available, "docs_taken": self.docs_taken,
-                "tokens": self.tokens, "words": self.words, "fertility": round(self.fertility, 4),
-                "wall_sec": self.wall_sec}
+    def to_json(self, total_taken: int) -> Dict[str, Any]:
+        return {
+            "name": self.name, "share": self.share,
+            "docs_available": self.docs_available, "available_tokens": self.available_tokens,
+            "words": self.words, "fertility": round(self.fertility, 4),
+            "target_tokens": self.target_tokens, "docs_taken": self.docs_taken, "tokens": self.tokens,
+            "unused_tokens": self.available_tokens - self.tokens,
+            "achieved_share": round(self.tokens / total_taken, 4) if total_taken else 0.0,
+            "wall_sec": self.wall_sec,
+        }
 
 
 def source_doc_order(n_docs: int, seed: int, source_name: str) -> np.ndarray:
-    """Fixed permutation of a source's pool — identical for every cell."""
+    """Fixed permutation of a source's pool — identical for every tokenizer."""
     rng = np.random.default_rng([int(seed), zlib.crc32(source_name.encode("utf-8"))])
     return rng.permutation(n_docs)
 
@@ -138,57 +147,78 @@ def encode_document(tokenizer: BaseTokenizer, text: str, eos_id: int) -> Tuple[n
                 f"row — cannot append a separator consistently"
             )
         ids.append(eos_id)
-    ids_arr = np.asarray(ids, dtype=np.int64)
-    char_arr = np.asarray(char_ids, dtype=np.int64) if char_ids is not None else None
-    if char_arr is not None and char_arr.shape[0] != ids_arr.shape[0]:
-        raise ValueError(
-            f"char_ids rows ({char_arr.shape[0]}) != input_ids length ({ids_arr.shape[0]})"
-        )
+    ids_arr = np.asarray(ids, dtype=np.int32)
+    char_arr = None
+    if char_ids is not None:
+        char_arr = np.asarray(char_ids, dtype=np.int64)
+        if char_arr.shape[0] != ids_arr.shape[0]:
+            raise ValueError(f"char_ids rows ({char_arr.shape[0]}) != input_ids length ({ids_arr.shape[0]})")
+        if char_arr.size and char_arr.max() > np.iinfo(np.int16).max:
+            raise ValueError("char id exceeds int16 range")
+        char_arr = char_arr.astype(np.int16)
     return ids_arr, char_arr
 
 
-def fill_token_budget(
+def tokenize_pool(
     pool_dir: Path,
     mix_cfg: PretrainingMixConfig,
     tokenizer: BaseTokenizer,
-    token_budget: int,
-    log_every: int = 1000,
-) -> Tuple[List[EncodedDoc], List[SourceFillStats]]:
+    log_every: int = 5000,
+) -> Tuple[Dict[str, List[EncodedDoc]], Dict[str, SourceTokenStats]]:
+    """Tokenize every pool document, per source, in the fixed seeded order."""
     eos_id = int(tokenizer.special_tokens["eos_token"])
-    docs: List[EncodedDoc] = []
-    stats: List[SourceFillStats] = []
+    docs: Dict[str, List[EncodedDoc]] = {}
+    stats: Dict[str, SourceTokenStats] = {}
     for src in mix_cfg.sources:
-        target = int(round(src.share * token_budget))
-        st = SourceFillStats(name=src.name, share=src.share, target_tokens=target)
+        st = SourceTokenStats(name=src.name, share=src.share)
         t0 = time.perf_counter()
         pool_docs = list(iter_pool_docs(pool_dir, src.name))
         st.docs_available = len(pool_docs)
-        order = source_doc_order(len(pool_docs), mix_cfg.seed, src.name)
-        for k, idx in enumerate(order):
-            if st.tokens >= target:
-                break
+        out: List[EncodedDoc] = []
+        for k, idx in enumerate(source_doc_order(len(pool_docs), mix_cfg.seed, src.name), start=1):
             _, text = pool_docs[idx]
             ids, char_ids = encode_document(tokenizer, text, eos_id)
-            docs.append(EncodedDoc(source=src.name, ids=ids, char_ids=char_ids))
-            st.docs_taken += 1
-            st.tokens += int(ids.shape[0])
+            out.append(EncodedDoc(source=src.name, ids=ids, char_ids=char_ids))
+            st.available_tokens += int(ids.shape[0])
             st.words += len(text.split())
-            if log_every and st.docs_taken % log_every == 0:
-                logger.info("[pack:%s] docs=%d tokens=%d/%d", src.name, st.docs_taken, st.tokens, target)
+            if log_every and k % log_every == 0:
+                logger.info("[pack:%s] tokenized %d/%d docs (%d tokens)", src.name, k, len(pool_docs), st.available_tokens)
         st.wall_sec = round(time.perf_counter() - t0, 1)
-        if st.tokens < target:
-            raise ValueError(
-                f"pretraining_mix: source {src.name!r} pool is exhausted at {st.tokens} tokens "
-                f"({st.docs_taken} docs) but the token budget needs {target} — raise "
-                f"pretraining_mix.pool.total_words (currently {mix_cfg.pool.total_words}) and rebuild "
-                f"the pool, or lower token_budget"
-            )
         logger.info(
-            "[pack:%s] took %d/%d docs → %d tokens (target %d, fertility %.2f) in %.0fs",
-            src.name, st.docs_taken, st.docs_available, st.tokens, target, st.fertility, st.wall_sec,
+            "[pack:%s] %d docs → %d tokens (%d words, fertility %.2f) in %.0fs",
+            src.name, len(out), st.available_tokens, st.words, st.fertility, st.wall_sec,
         )
-        stats.append(st)
+        docs[src.name] = out
+        stats[src.name] = st
     return docs, stats
+
+
+# --------------------------------------------------------------------------
+# Exact-share selection
+# --------------------------------------------------------------------------
+
+def exact_share_budget(available_tokens: Dict[str, int], shares: Dict[str, float]) -> int:
+    """Largest budget B such that every source can supply share_i × B."""
+    return int(min(available_tokens[n] / shares[n] for n in shares))
+
+
+def select_docs(
+    docs: Dict[str, List[EncodedDoc]],
+    stats: Dict[str, SourceTokenStats],
+    budget: int,
+) -> List[EncodedDoc]:
+    """Per source, the prefix of the fixed order reaching share × budget
+    tokens (overshoot ≤ one document, capped at what is available)."""
+    selected: List[EncodedDoc] = []
+    for name, st in stats.items():
+        st.target_tokens = int(round(st.share * budget))
+        for d in docs[name]:
+            if st.tokens >= st.target_tokens:
+                break
+            selected.append(d)
+            st.docs_taken += 1
+            st.tokens += int(d.ids.shape[0])
+    return selected
 
 
 # --------------------------------------------------------------------------
@@ -202,7 +232,7 @@ def pack_blocks(
     char_ids [n, L, C] int16 | None, n_dropped_tail_tokens)``."""
     rng = np.random.default_rng(seed)
     order = rng.permutation(len(docs))
-    ids = np.concatenate([docs[i].ids for i in order]) if docs else np.zeros(0, dtype=np.int64)
+    ids = np.concatenate([docs[i].ids for i in order]) if docs else np.zeros(0, dtype=np.int32)
     n_blocks = ids.shape[0] // block_size
     if n_blocks == 0:
         raise ValueError(f"pretraining_mix: {ids.shape[0]} tokens < one block of {block_size}")
@@ -215,8 +245,6 @@ def pack_blocks(
         if not all(d.char_ids is not None for d in docs):
             raise ValueError("pretraining_mix: mixed char_ids / no-char_ids documents")
         cat = np.concatenate([docs[i].char_ids for i in order])
-        if cat.max(initial=0) > np.iinfo(np.int16).max:
-            raise ValueError("char id exceeds int16 range")
         char_ids = cat[: n_blocks * block_size].reshape(n_blocks, block_size, -1).astype(np.int16)
     return input_ids, char_ids, tail
 
@@ -226,23 +254,23 @@ def pack_blocks(
 # --------------------------------------------------------------------------
 
 class PackedBlockDataset(Dataset):
-    """Contiguous block range ``[start, end)`` of a packed corpus; indices
-    beyond ``n_blocks`` wrap around (the phase then sees an epoch > 1)."""
+    """Contiguous block range ``[start, end)`` of a packed corpus."""
 
     def __init__(self, input_ids: np.ndarray, char_ids: Optional[np.ndarray], start: int, end: int) -> None:
         if end <= start:
             raise ValueError(f"empty block range [{start}, {end})")
+        if end > input_ids.shape[0]:
+            raise ValueError(f"block range [{start}, {end}) exceeds corpus of {input_ids.shape[0]} blocks")
         self._ids = input_ids
         self._chars = char_ids
         self._start = start
         self._end = end
-        self._n = int(input_ids.shape[0])
 
     def __len__(self) -> int:
         return self._end - self._start
 
     def __getitem__(self, i: int) -> Dict[str, Any]:
-        idx = (self._start + i) % self._n
+        idx = self._start + i
         ex: Dict[str, Any] = {"input_ids": np.asarray(self._ids[idx], dtype=np.int64)}
         if self._chars is not None:
             ex["char_ids"] = np.asarray(self._chars[idx], dtype=np.int64)
@@ -254,7 +282,6 @@ class PackedCorpus:
     input_ids: np.ndarray
     char_ids: Optional[np.ndarray]
     manifest: Dict[str, Any]
-    consume_sequentially: bool = True
     cursor: int = 0
     consumption: Dict[str, Dict[str, Any]] = field(default_factory=dict)
 
@@ -267,24 +294,27 @@ class PackedCorpus:
         return int(self.input_ids.shape[1])
 
     def take(self, phase_name: str, n_blocks_needed: int) -> Tuple[PackedBlockDataset, Dict[str, Any]]:
-        """Hand ``phase_name`` its next ``n_blocks_needed`` blocks."""
-        start = self.cursor if self.consume_sequentially else 0
+        """Hand ``phase_name`` the next ``n_blocks_needed`` blocks — strictly
+        after every block handed out so far. Raises when the packed corpus
+        cannot supply them; nothing is ever repeated."""
+        start = self.cursor
         end = start + n_blocks_needed
-        epochs = n_blocks_needed / self.n_blocks
-        wrapped = end > self.n_blocks
-        if wrapped:
-            logger.warning(
-                "[%s] pretraining_mix: needs %d blocks from offset %d but the corpus has %d — "
-                "wrapping around (%.2f epochs of the packed corpus)",
-                phase_name, n_blocks_needed, start, self.n_blocks, epochs,
+        if end > self.n_blocks:
+            raise ValueError(
+                f"[{phase_name}] pretraining_mix: needs {n_blocks_needed} blocks starting at block "
+                f"{start} but the packed corpus has {self.n_blocks} ({self.n_blocks * self.block_size} "
+                f"tokens at the exact-share budget). Phases draw disjoint ranges — lower mix_tokens "
+                f"or raise pretraining_mix.pool.total_words (this tokenizer needs ≥ "
+                f"{end * self.block_size} tokens ≈ {int(end * self.block_size / max(self.manifest.get('fertility_min', 1.0), 1e-9))} pool words) "
+                f"and rebuild the pool"
             )
-        if self.consume_sequentially:
-            self.cursor = end % self.n_blocks
+        self.cursor = end
         info = {
             "dataset": "pretraining_mix",
             "block_start": start, "block_end": end, "n_blocks": n_blocks_needed,
             "n_tokens": n_blocks_needed * self.block_size,
-            "corpus_blocks": self.n_blocks, "epochs": round(epochs, 4), "wrapped": wrapped,
+            "corpus_blocks": self.n_blocks,
+            "corpus_share": round(n_blocks_needed / self.n_blocks, 4),
         }
         self.consumption[phase_name] = info
         return PackedBlockDataset(self.input_ids, self.char_ids, start, end), info
@@ -294,70 +324,95 @@ class PackedCorpus:
 # Build / cache
 # --------------------------------------------------------------------------
 
+def _load_packed(directory: Path, manifest: Dict[str, Any]) -> PackedCorpus:
+    input_ids = np.load(directory / INPUT_IDS_FILE, mmap_mode="r")
+    char_path = directory / CHAR_IDS_FILE
+    char_ids = np.load(char_path, mmap_mode="r") if char_path.exists() else None
+    return PackedCorpus(input_ids, char_ids, manifest)
+
+
 def build_packed_corpus(
-    training_cfg: TrainingConfig,
+    mix_cfg: PretrainingMixConfig,
     tokenizer: BaseTokenizer,
     tokenizer_type: str,
-    out_dir: Path,
+    cell_data_dir: Optional[Path] = None,
     pool_dir: Optional[Path] = None,
 ) -> PackedCorpus:
-    """Build (or load) the packed corpus for one experiment cell."""
-    mix = training_cfg.pretraining_mix
-    if mix is None:
-        raise ValueError("training.pretraining_mix is not configured")
-    out_dir = Path(out_dir)
-    pool_dir = Path(pool_dir) if pool_dir is not None else build_pool(mix)
+    """Pack (or load) the whole pool for this tokenizer.
+
+    The packed corpus lives under the pool (``<pool>/packed/<fp>/``) and is
+    shared across experiments; ``cell_data_dir``, when given, receives a
+    copy of the manifest pointing at it so each cell stays self-describing.
+    """
+    pool_dir = Path(pool_dir) if pool_dir is not None else build_pool(mix_cfg)
     pool_manifest = load_pool_manifest(pool_dir) or {}
-    pool_fp = pool_manifest.get("fingerprint") or pool_fingerprint(mix)
-
-    token_budget = resolve_token_budget(training_cfg)
+    pool_fp = pool_manifest.get("fingerprint") or pool_fingerprint(mix_cfg)
     tok_id = tokenizer_identity(tokenizer, tokenizer_type)
-    shares = {s.name: s.share for s in mix.sources}
-    fp = packed_fingerprint(pool_fp, tok_id, token_budget, mix.block_size, mix.seed, shares)
+    shares = {s.name: s.share for s in mix_cfg.sources}
+    fp = packed_fingerprint(pool_fp, tok_id, mix_cfg.block_size, mix_cfg.seed, shares)
+    directory = packed_dir(pool_dir, fp)
+    manifest_path = directory / PACKED_MANIFEST
 
-    manifest_path = out_dir / PACKED_MANIFEST
-    if manifest_path.exists():
+    corpus: Optional[PackedCorpus] = None
+    if manifest_path.exists() and (directory / INPUT_IDS_FILE).exists():
         with open(manifest_path, encoding="utf-8") as f:
             existing = json.load(f)
-        if existing.get("fingerprint") == fp and (out_dir / INPUT_IDS_FILE).exists():
-            logger.info("pretraining_mix: reusing packed corpus at %s", out_dir)
-            input_ids = np.load(out_dir / INPUT_IDS_FILE, mmap_mode="r")
-            char_ids = np.load(out_dir / CHAR_IDS_FILE, mmap_mode="r") if (out_dir / CHAR_IDS_FILE).exists() else None
-            return PackedCorpus(input_ids, char_ids, existing, mix.consume_sequentially)
+        if existing.get("fingerprint") == fp:
+            logger.info("pretraining_mix: reusing packed corpus %s (%d blocks)", directory, existing["n_blocks"])
+            corpus = _load_packed(directory, existing)
 
-    logger.info(
-        "pretraining_mix: packing for %s (budget %d tokens, block %d) from pool %s",
-        tokenizer_type, token_budget, mix.block_size, pool_dir,
-    )
-    t0 = time.perf_counter()
-    docs, fill_stats = fill_token_budget(pool_dir, mix, tokenizer, token_budget)
-    input_ids, char_ids, tail = pack_blocks(docs, mix.block_size, mix.seed)
-    total_tokens = sum(s.tokens for s in fill_stats)
-    out_dir.mkdir(parents=True, exist_ok=True)
-    np.save(out_dir / INPUT_IDS_FILE, input_ids)
-    if char_ids is not None:
-        np.save(out_dir / CHAR_IDS_FILE, char_ids)
-    manifest = {
-        "fingerprint": fp,
-        "pool_dir": str(pool_dir),
-        "pool_fingerprint": pool_fp,
-        "tokenizer": tok_id,
-        "token_budget": token_budget,
-        "block_size": mix.block_size,
-        "seed": mix.seed,
-        "n_blocks": int(input_ids.shape[0]),
-        "n_tokens_packed": int(input_ids.shape[0] * mix.block_size),
-        "tail_tokens_dropped": tail,
-        "phases_using_mix": training_cfg.phases_using_mix(),
-        "sources": [s.to_json() | {"achieved_share": round(s.tokens / total_tokens, 4)} for s in fill_stats],
-        "wall_sec": round(time.perf_counter() - t0, 1),
-    }
-    with open(manifest_path, "w", encoding="utf-8") as f:
-        json.dump(manifest, f, ensure_ascii=False, indent=2)
-    logger.info(
-        "pretraining_mix: packed %d blocks × %d (%s) in %.0fs → %s",
-        manifest["n_blocks"], mix.block_size,
-        ", ".join(f"{s['name']}={s['achieved_share']:.3f}" for s in manifest["sources"]),
-        manifest["wall_sec"], out_dir,
-    )
-    return PackedCorpus(input_ids, char_ids, manifest, mix.consume_sequentially)
+    if corpus is None:
+        logger.info(
+            "pretraining_mix: packing the whole pool %s for %s (block %d)",
+            pool_dir, tokenizer_type, mix_cfg.block_size,
+        )
+        t0 = time.perf_counter()
+        docs, stats = tokenize_pool(pool_dir, mix_cfg, tokenizer)
+        budget = exact_share_budget({n: s.available_tokens for n, s in stats.items()}, shares)
+        selected = select_docs(docs, stats, budget)
+        input_ids, char_ids, tail = pack_blocks(selected, mix_cfg.block_size, mix_cfg.seed)
+        del docs, selected
+        total_taken = sum(s.tokens for s in stats.values())
+        manifest = {
+            "fingerprint": fp,
+            "pool_dir": str(pool_dir),
+            "pool_fingerprint": pool_fp,
+            "tokenizer": tok_id,
+            "block_size": mix_cfg.block_size,
+            "seed": mix_cfg.seed,
+            "exact_share_budget": budget,
+            "n_blocks": int(input_ids.shape[0]),
+            "n_tokens_packed": int(input_ids.shape[0] * mix_cfg.block_size),
+            "tail_tokens_dropped": tail,
+            "fertility_min": round(min(s.fertility for s in stats.values()), 4),
+            "sources": [s.to_json(total_taken) for s in stats.values()],
+            "wall_sec": round(time.perf_counter() - t0, 1),
+        }
+        # Atomic publish: another process packing the same tokenizer must
+        # never observe a half-written entry.
+        tmp = directory.with_name(f"{directory.name}.tmp-{os.getpid()}")
+        if tmp.exists():
+            shutil.rmtree(tmp)
+        tmp.mkdir(parents=True)
+        np.save(tmp / INPUT_IDS_FILE, input_ids)
+        if char_ids is not None:
+            np.save(tmp / CHAR_IDS_FILE, char_ids)
+        with open(tmp / PACKED_MANIFEST, "w", encoding="utf-8") as f:
+            json.dump(manifest, f, ensure_ascii=False, indent=2)
+        if directory.exists():
+            shutil.rmtree(directory)
+        os.replace(tmp, directory)
+        logger.info(
+            "pretraining_mix: packed %d blocks × %d = %d tokens (budget %d; %s) in %.0fs → %s",
+            manifest["n_blocks"], mix_cfg.block_size, manifest["n_tokens_packed"], budget,
+            ", ".join(f"{s['name']}={s['achieved_share']:.3f}" for s in manifest["sources"]),
+            manifest["wall_sec"], directory,
+        )
+        corpus = _load_packed(directory, manifest)
+
+    if cell_data_dir is not None:
+        cell_data_dir = Path(cell_data_dir)
+        cell_data_dir.mkdir(parents=True, exist_ok=True)
+        with open(cell_data_dir / PACKED_MANIFEST, "w", encoding="utf-8") as f:
+            json.dump({**corpus.manifest, "packed_dir": str(directory)}, f, ensure_ascii=False, indent=2)
+    return corpus

@@ -86,18 +86,20 @@ def _packed_mix_loader(
     phase_cfg: PhaseConfig,
     packed,
     tokenizer,
+    block_size: int,
 ) -> "tuple[DataLoader, Dict[str, Any]]":  # noqa: UP037
     """Train loader over the phase's slice of the packed pretraining mix.
 
-    Blocks were shuffled at pack time, so the loader runs ``shuffle=False``
-    and consumes ``steps × batch_size`` blocks in on-disk order — that is
-    what makes ``consume_sequentially`` (Phase 2 continues after Phase 1's
-    last block) meaningful. The collator is dispatched on
-    ``embedding_type`` exactly like ``build_qa_dataloader``; a packed
-    block carries ``input_ids`` (+ ``char_ids`` for character_cnn) and the
+    The phase draws ``mix_tokens / block_size`` blocks — the next unread
+    range of the corpus, so consecutive mix phases never overlap. Blocks
+    were shuffled at pack time, so the loader runs ``shuffle=False`` and
+    the config validator guarantees ``steps × batch_size`` equals the slice
+    length: every block is read exactly once. The collator is dispatched on
+    ``embedding_type`` exactly like ``build_qa_dataloader``; a packed block
+    carries ``input_ids`` (+ ``char_ids`` for character_cnn) and the
     collator derives full-sequence causal-LM labels from it.
     """
-    dataset, info = packed.take(phase_name, phase_cfg.steps * phase_cfg.batch_size)
+    dataset, info = packed.take(phase_name, phase_cfg.mix_tokens // block_size)
     collator = get_collator(
         tokenizer.embedding_type,
         pad_token_id=getattr(tokenizer, "pad_token_id", 0),
@@ -105,9 +107,9 @@ def _packed_mix_loader(
     )
     loader = DataLoader(dataset, batch_size=phase_cfg.batch_size, shuffle=False, collate_fn=collator)
     logger.info(
-        "[%s] pretraining_mix: blocks [%d, %d) of %d (%d tokens, %.2f epochs%s)",
+        "[%s] pretraining_mix: blocks [%d, %d) of %d (%d tokens, %.1f%% of the packed corpus)",
         phase_name, info["block_start"], info["block_end"], info["corpus_blocks"],
-        info["n_tokens"], info["epochs"], ", WRAPPED" if info["wrapped"] else "",
+        info["n_tokens"], 100 * info["corpus_share"],
     )
     return loader, info
 
@@ -124,10 +126,11 @@ def _run_all_phases(
     ``{"status": "skipped"}`` record.
 
     A phase whose ``datasets`` is ``["pretraining_mix"]`` trains on the
-    packed raw-text corpus (built once per cell into ``data_dir``, default
-    ``{output_dir}/../data/pretraining_mix``) instead of QA records; the
-    other phases keep the QA path. ``history[phase]["data"]`` records which
-    blocks each mix phase consumed.
+    packed raw-text corpus (packed once per tokenizer under the pool cache;
+    ``data_dir``, default ``{output_dir}/../data/pretraining_mix``, gets a
+    manifest pointing at it) instead of QA records; the other phases keep
+    the QA path. ``history[phase]["data"]`` records which blocks each mix
+    phase consumed.
     """
     history: Dict[str, Any] = {}
     packed = None
@@ -143,13 +146,17 @@ def _run_all_phases(
         if phase_cfg.datasets == ["pretraining_mix"]:
             if packed is None:
                 from arabic_eval.data.pretraining_mix.packing import build_packed_corpus
-                packed = build_packed_corpus(training_cfg, tokenizer, tokenizer_type, data_dir)
+                packed = build_packed_corpus(
+                    training_cfg.pretraining_mix, tokenizer, tokenizer_type, cell_data_dir=data_dir,
+                )
             if phase_cfg.clean_latin_rows:
                 logger.info(
                     "[%s] clean_latin_rows ignored for pretraining_mix (the pool's "
                     "Latin-letter-ratio rule already applied)", phase_name,
                 )
-            train_loader, data_info = _packed_mix_loader(phase_name, phase_cfg, packed, tokenizer)
+            train_loader, data_info = _packed_mix_loader(
+                phase_name, phase_cfg, packed, tokenizer, training_cfg.pretraining_mix.block_size,
+            )
         else:
             # Build the train loader from the phase's own corpus list.
             train_records = load_corpora(phase_cfg.datasets, splits="train")
