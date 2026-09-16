@@ -35,6 +35,8 @@ class DataConfig(BaseModel):
     preprocessing: Dict[str, Any] = Field(default_factory=lambda: {
         "normalize_unicode": True,
         "remove_diacritics": False,
+        "normalize_alef": False,
+        "remove_tatweel": True,
         "min_text_length": 10,
         "join_lone_waw": True,
     })

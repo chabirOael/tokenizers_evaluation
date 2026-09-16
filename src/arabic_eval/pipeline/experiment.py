@@ -35,6 +35,7 @@ from arabic_eval.evaluation.metrics import compute_mei
 from arabic_eval.evaluation.reporter import generate_report
 from arabic_eval.registry import model_registry, task_registry, tokenizer_registry
 from arabic_eval.tasks.lighteval import LightEvalBenchmarkTask
+from arabic_eval.tokenizers.provenance import write_training_provenance
 from arabic_eval.training.phases import PhaseResult, run_phase
 from arabic_eval.utils.io import ensure_dir, load_json, save_json
 from arabic_eval.utils.reproducibility import set_seed
@@ -324,6 +325,15 @@ def run_experiment(config: ExperimentConfig) -> Dict[str, Any]:
             **config.tokenizer.params,
         )
         tokenizer.save(config.tokenizer.save_path)
+        write_training_provenance(
+            config.tokenizer.save_path,
+            dataset_name=config.data.dataset_name,
+            preprocessing=config.data.preprocessing,
+            num_texts=len(train_texts),
+            entry_point="pipeline.run_experiment",
+            tokenizer_type=config.tokenizer.type,
+            tokenizer_params=config.tokenizer.params,
+        )
 
     # 3) Intrinsic eval
     results: Dict[str, Any] = {

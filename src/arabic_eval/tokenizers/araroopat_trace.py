@@ -40,6 +40,7 @@ from arabic_eval.tokenizers.araroopat import (
     PFX_CLITICP,
     PFX_DIGIT,
     PFX_PAT,
+    PFX_FUNC,
     PFX_PREP,
     PFX_PUNCT,
     PFX_ROOT,
@@ -59,7 +60,9 @@ from arabic_eval.tokenizers.araroopat_backend import (
     CorpusEntry,
     MorphAnalyzer,
     _dict_to_analysis,
+    _clitic_only_analysis,
     _particle_analysis,
+    canonical_particle,
     strip_fem_from_pattern,
     _is_arabic_root,
     _norm_clitic,
@@ -188,7 +191,7 @@ def _split_key(t: str) -> str:
     if t in (TOK_LIT_BEGIN, TOK_LIT_END):
         return "lit"
     for pfx, fam in ((PFX_CLITICP, "cliticp"), (PFX_CLITICE, "clitice"),
-                     (PFX_PREP, "prep"),
+                     (PFX_PREP, "prep"), (PFX_FUNC, "func"),
                      (PFX_CHAR, "char"), (PFX_DIGIT, "digit"),
                      (PFX_PUNCT, "punct"), (PFX_ROOT, "root"), (PFX_PAT, "pat")):
         if t.startswith(pfx):
@@ -197,7 +200,7 @@ def _split_key(t: str) -> str:
 
 
 def _inner(t: str) -> str:
-    for pfx in (PFX_CLITICP, PFX_CLITICE, PFX_PREP, PFX_CHAR, PFX_DIGIT, PFX_PUNCT, PFX_ROOT, PFX_PAT):
+    for pfx in (PFX_CLITICP, PFX_CLITICE, PFX_PREP, PFX_FUNC, PFX_CHAR, PFX_DIGIT, PFX_PUNCT, PFX_ROOT, PFX_PAT):
         if t.startswith(pfx):
             return t[len(pfx):-len(SFX)]
     return t
@@ -267,31 +270,56 @@ def _trace_enclitic_stack(text: str, enclitics: Tuple[str, ...]) -> List[Dict[st
 
 
 def _trace_dict_to_analysis(d: Dict[str, str], particles: frozenset,
-                            word: Optional[str] = None) -> Dict[str, Any]:
+                            word: Optional[str] = None,
+                            func_words: frozenset = frozenset()) -> Dict[str, Any]:
     """Explain every gate of ``_dict_to_analysis`` for one candidate dict."""
-    real = _dict_to_analysis(d, particles, word)
+    real = _dict_to_analysis(d, particles, word, func_words)
     t: Dict[str, Any] = {"candidate": d, "gates": [], "accepted": real is not None}
 
     def gate(name: str, ok: bool, detail: Dict[str, Any]) -> bool:
         t["gates"].append({"name": name, "ok": ok, **detail})
         return ok
 
-    # Closed-class prepositions short-circuit every other gate: no root to
-    # validate, one [PREP_*] token. The check is the inverse of the decoder
-    # join (input == proclitics + join_particle_enclitic(p, enc0)).
-    part = _particle_analysis(d, particles, word)
+    # Closed-class words short-circuit every other gate: no root to
+    # validate, one [PREP_*] / [FUNC_*] token. The check is the inverse of
+    # the decoder join (input == proclitics + join_particle_enclitic(p, enc0)),
+    # modulo alef variants. Prepositions are tried first.
     lemma_bare = strip_diacritics(d.get("lex") or "")
-    if gate("preposition intercept", part is not None, {
-        "lemma": lemma_bare, "in_inventory": lemma_bare in particles,
-        "particle": part.particle if part else None,
-        "proclitics": [c for c in (part.prc3, part.prc2, part.prc1, part.prc0) if c] if part else [],
-        "enclitic": part.enc0 if part else None,
+    for gate_name, inventory, kind in (("preposition intercept", particles, "prep"),
+                                       ("function-word intercept", func_words, "func")):
+        if kind == "func" and not func_words:
+            continue
+        part = _particle_analysis(d, inventory, word, kind=kind)
+        if gate(gate_name, part is not None, {
+            "lemma": lemma_bare, "in_inventory": canonical_particle(lemma_bare, inventory) is not None,
+            "particle": part.particle if part else None, "kind": kind,
+            "proclitics": [c for c in (part.prc3, part.prc2, part.prc1, part.prc0) if c] if part else [],
+            "enclitic": part.enc0 if part else None,
+        }):
+            t["analysis"] = {
+                "root": "", "pattern": "", "pattern_raw": d.get("pattern") or "", "stem": "",
+                "surface": word or d.get("diac") or "", "lemma": d.get("lex", ""), "pos": d.get("pos", ""),
+                "prc3": part.prc3, "prc2": part.prc2, "prc1": part.prc1, "prc0": part.prc0,
+                "enc0": part.enc0, "particle": part.particle, "particle_kind": kind, "fem": None,
+            }
+            t["matches_real"] = real is not None and all(
+                getattr(real, k) == v for k, v in t["analysis"].items()
+            )
+            return t
+
+    # Pronoun-hosted prepositions (له, بها): POS prep, lemma لِ/بِ/كَ, a
+    # pronoun in enc0 — emitted as clitic tokens only, no root to validate.
+    cw = _clitic_only_analysis(d, word)
+    if gate("clitic-only word (proclitic + pronoun)", cw is not None, {
+        "pos": d.get("pos", ""), "lemma": lemma_bare,
+        "proclitics": [c for c in (cw.prc3, cw.prc2, cw.prc1, cw.prc0) if c] if cw else [],
+        "enclitic": cw.enc0 if cw else None,
     }):
         t["analysis"] = {
             "root": "", "pattern": "", "pattern_raw": d.get("pattern") or "", "stem": "",
-            "surface": word or d.get("diac") or "", "lemma": d.get("lex", ""), "pos": d.get("pos", ""),
-            "prc3": part.prc3, "prc2": part.prc2, "prc1": part.prc1, "prc0": part.prc0,
-            "enc0": part.enc0, "particle": part.particle, "fem": None,
+            "surface": word or d.get("diac") or "", "lemma": d.get("lex", ""), "pos": "prep",
+            "prc3": cw.prc3, "prc2": cw.prc2, "prc1": cw.prc1, "prc0": None,
+            "enc0": cw.enc0, "particle": None, "clitic_only": True, "fem": None,
         }
         t["matches_real"] = real is not None and all(
             getattr(real, k) == v for k, v in t["analysis"].items()
@@ -399,13 +427,13 @@ def trace_validate_words(
     val_rows = []
     for w in unique_words:
         cands = raw_by_word[w]
-        real = MorphAnalyzer._first_valid(cands, w, backend.particles)
+        real = MorphAnalyzer._first_valid(cands, w, backend.particles, backend.func_words)
         backend._native_cache[w] = real   # same side effect as analyze_many()
         backend._analyze_cache[w] = real  # (overwritten below if the peeler rescues it)
         analyses[w] = real
         traced = []
         for ci, c in enumerate(cands):
-            tc = _trace_dict_to_analysis(c, backend.particles, w)
+            tc = _trace_dict_to_analysis(c, backend.particles, w, backend.func_words)
             tc["index"] = ci
             traced.append(tc)
             if tc["accepted"]:
@@ -414,7 +442,8 @@ def trace_validate_words(
             "word": w, "num_candidates": len(cands), "candidates": traced,
             "accepted_index": next((c["index"] for c in traced if c["accepted"]), None),
             "analyzed": real is not None,
-            "path": ("PREP" if real is not None and real.particle else
+            "path": (("FUNC" if real.particle_kind == "func" else "PREP") if real is not None and real.particle else
+                     "CLITIC" if real is not None and real.clitic_only else
                      "ROOT+PAT" if real is not None else "LIT (character fallback)"),
             "surface_fallback": real is not None and real.particle is not None and not any(
                 c.get("accepted") for c in traced),
@@ -536,11 +565,19 @@ def trace_probe_roundtrip(
             chunk_paths.append({"chunk": w, "path": "LIT", "why": "no valid analysis"})
             continue
         if a.particle:
-            needed = [f"{PFX_PREP}{a.particle}{SFX}"] + \
+            pfx = PFX_FUNC if a.particle_kind == "func" else PFX_PREP
+            needed = [f"{pfx}{a.particle}{SFX}"] + \
                 [f"{PFX_CLITICP}{c}{SFX}" for c in (a.prc3, a.prc2, a.prc1, a.prc0) if c] + \
                 ([f"{PFX_CLITICE}{a.enc0}{SFX}"] if a.enc0 else [])
             missing = [t_ for t_ in needed if t_ not in vocab]
-            chunk_paths.append({"chunk": w, "path": "PREP" if not missing else "LIT",
+            chunk_paths.append({"chunk": w, "path": ("FUNC" if pfx == PFX_FUNC else "PREP") if not missing else "LIT",
+                                "why": "" if not missing else f"{missing[0]} not in vocab"})
+            continue
+        if a.clitic_only:
+            needed = [f"{PFX_CLITICP}{c}{SFX}" for c in (a.prc3, a.prc2, a.prc1, a.prc0) if c] + \
+                ([f"{PFX_CLITICE}{a.enc0}{SFX}"] if a.enc0 else [])
+            missing = [t_ for t_ in needed if t_ not in vocab]
+            chunk_paths.append({"chunk": w, "path": "CLITIC" if not missing else "LIT",
                                 "why": "" if not missing else f"{missing[0]} not in vocab"})
             continue
         rt, pt = f"{PFX_ROOT}{a.root}{SFX}", f"{PFX_PAT}{a.pattern}{SFX}"
@@ -557,7 +594,7 @@ def trace_probe_roundtrip(
         "MorphAnalyzer's cache. That is what the shared _classify_char chunking buys.",
         "metric_string is the cleaned Arabic surface the morphological metrics see for each token "
         "(root letters for [ROOT_*], the cleaned inflected stem for [PAT_*], the clitic-stripped "
-        "surface for [PREP_*] — علي for عليه, so the tokens still concatenate to the word).",
+        "surface for [PREP_*] / [FUNC_*] — علي for عليه, so the tokens still concatenate to the word).",
     ])
 
     t0 = time.perf_counter()
@@ -834,13 +871,15 @@ def trace_training_with_tokenizer(
         proclitic_freq: Counter = Counter()
         enclitic_freq: Counter = Counter()
         particle_freq: Counter = Counter()
-        contrib: Dict[str, Dict[str, List[str]]] = {"root": {}, "pat": {}, "prc": {}, "enc": {}, "prep": {}}
+        func_freq: Counter = Counter()
+        contrib: Dict[str, Dict[str, List[str]]] = {"root": {}, "pat": {}, "prc": {}, "enc": {}, "prep": {}, "func": {}}
         for e in entries:
             if not e.analyzed:
                 continue
             if e.particle:
-                particle_freq[e.particle] += 1
-                contrib["prep"].setdefault(e.particle, []).append(e.word)
+                kind = "func" if e.particle_kind == "func" else "prep"
+                (func_freq if kind == "func" else particle_freq)[e.particle] += 1
+                contrib[kind].setdefault(e.particle, []).append(e.word)
             elif e.root and e.pattern:
                 root_freq[e.root] += 1
                 contrib["root"].setdefault(e.root, []).append(e.word)
@@ -865,9 +904,10 @@ def trace_training_with_tokenizer(
                     "proclitic_freq": table(proclitic_freq, "prc"),
                     "enclitic_freq": table(enclitic_freq, "enc"),
                     "preposition_freq": table(particle_freq, "prep"),
+                    "func_freq": table(func_freq, "func"),
                 }, t0, notes=[
-                    "Prepositions ([PREP_*]) contribute their clitics to the clitic tables but "
-                    "no root or pattern — they have none to preserve.",
+                    "Prepositions ([PREP_*]) and function words ([FUNC_*]) contribute their clitics to the "
+                    "clitic tables but no root or pattern — they have none to preserve.",
                     "Note the unit: entries are unique words, so a root seen in 3 distinct words "
                     "has freq 3 even if one of them occurred 50 times.",
                 ])
@@ -915,6 +955,7 @@ def trace_training_with_tokenizer(
                 {"family": "cliticp", "source": "proclitic_freq sorted by (-freq, surface)", "items": clitic_order(proclitic_freq)},
                 {"family": "clitice", "source": "enclitic_freq sorted by (-freq, surface)", "items": clitic_order(enclitic_freq)},
                 {"family": "prep", "source": "tok.prepositions (fixed order, corpus-independent)", "items": list(tok.prepositions)},
+                {"family": "func", "source": "tok.func_words (fixed order, corpus-independent)", "items": list(tok.func_words)},
                 {"family": "char", "source": "CHAR_INVENTORY (sorted letters + sorted diacritics)", "items": CHAR_INVENTORY},
                 {"family": "digit", "source": "DIGIT_INVENTORY", "items": DIGIT_INVENTORY},
                 {"family": "punct", "source": "PUNCT_INVENTORY", "items": PUNCT_INVENTORY},
@@ -927,7 +968,7 @@ def trace_training_with_tokenizer(
                       for t_, i in sorted(vocab.items(), key=lambda kv: kv[1])],
             "special_token_map": tok._special_token_map,
         }, t0, notes=[
-            "Fixed slots (specials, LIT markers, PREP, CHAR, DIGIT, PUNCT) are always present so the "
+            "Fixed slots (specials, LIT markers, PREP, FUNC, CHAR, DIGIT, PUNCT) are always present so the "
             "character fallback can encode any Arabic string; only clitics/roots/patterns depend on the corpus.",
             "The budget loop uses `break`, not `continue`: because items are sorted by frequency, the "
             "first item below min_freq ends the loop for everything after it too.",
@@ -1018,7 +1059,7 @@ def trace_training_with_tokenizer(
 
         # ---- Step 5: metadata -------------------------------------------
         t0 = time.perf_counter()
-        tok._build_metadata(root_freq, pat_freq, proclitic_freq, enclitic_freq, entries, particle_freq)
+        tok._build_metadata(root_freq, pat_freq, proclitic_freq, enclitic_freq, entries, particle_freq, func_freq)
         tr.step("metadata", "Provenance metadata (vocab_metadata.json)", A.AraRooPatTokenizer._build_metadata, {
             "roots": tok._metadata["roots"], "patterns": tok._metadata["patterns"],
             "proclitic_freq": tok._metadata["proclitic_freq"],
@@ -1137,9 +1178,14 @@ def trace_decode(tok: AraRooPatTokenizer, items: List[Any]) -> Dict[str, Any]:
     pending: Optional[Tuple[str, int]] = None  # (root, root_id)
     flushed = 0  # words appended to decode()'s ``out`` so far (shadow count)
     counters = Counter()
+    buffered_procs = False   # proclitics waiting for a host (shadow of decode()'s clitic_prefix)
+    _last_flushed = 0
     tiers: List[Dict[str, Any]] = []
     prev_out = ""
     for pos, tid in enumerate(ids):
+        if flushed > _last_flushed:
+            buffered_procs = False   # a flushed word consumed the buffer
+            _last_flushed = flushed
         t = tok._reverse_vocab.get(tid)
         fam = _split_key(t) if t is not None else None
         inner = _inner(t) if t is not None else None
@@ -1171,18 +1217,21 @@ def trace_decode(tok: AraRooPatTokenizer, items: List[Any]) -> Dict[str, Any]:
             if fam != "char":
                 counters["ignored_in_lit"] += 1
         elif fam == "cliticp":
-            note = "proclitic buffered — attaches to the front of the next word"
+            note = "proclitic buffered — attaches to the front of the next word"; buffered_procs = True
         elif fam == "clitice":
-            if flushed:
+            if buffered_procs:
+                note = "enclitic after buffered proclitics → closed into a clitic-only word (له = ل + ه)"; flushed += 1; buffered_procs = False
+            elif flushed:
                 note = "enclitic attached to the last flushed word (particle join / ة→ت rules apply)"
             else:
                 note = "enclitic with no flushed word yet — emitted standalone (buffered proclitics are NOT consumed)"
                 counters["leading_enclitic"] += 1; flushed += 1
-        elif fam == "prep":
+        elif fam in ("prep", "func"):
+            what = "preposition" if fam == "prep" else "function word"
             if pending:
-                note = "orphan root dumped, then preposition flushed"; counters["orphan_root"] += 1; pending = None; flushed += 1
+                note = f"orphan root dumped, then {what} flushed"; counters["orphan_root"] += 1; pending = None; flushed += 1
             else:
-                note = "preposition flushed as a word — a following enclitic joins with particle rules"
+                note = f"{what} flushed as a word — a following enclitic joins with particle rules"
             flushed += 1
         elif fam == "root":
             if pending:

@@ -419,6 +419,7 @@ def list_sources(tokenizers_dir: Path = TOKENIZERS_DIR) -> Dict[str, Any]:
                         "reconstruction_bytes": (d / "reconstruction.pkl").stat().st_size
                                                 if (d / "reconstruction.pkl").exists() else None,
                         "has_prepositions": bool(cfg.get("prepositions")),
+                        "has_func_words": bool(cfg.get("func_words")),
                         "config": {k: cfg.get(k) for k in (
                             "max_roots", "max_patterns", "min_root_freq", "min_pattern_freq",
                             "use_diacritized_surface", "clitic_peeler", "peel_bare_alef")},
@@ -536,7 +537,9 @@ def _pick(rng: random.Random, seq: List[Any], k: int) -> List[Any]:
 def _entry_summary(e: CorpusEntry) -> Dict[str, Any]:
     return {"analyzed": e.analyzed, "root": e.root, "pattern": e.pattern,
             "proclitics": list(e.proclitics or ()), "enclitics": list(e.enclitics or ()),
-            "particle": e.particle, "peeled": bool(getattr(e, "peeled", False))}
+            "particle": e.particle, "particle_kind": getattr(e, "particle_kind", "prep"),
+            "clitic_only": bool(getattr(e, "clitic_only", False)),
+            "peeled": bool(getattr(e, "peeled", False))}
 
 
 def _analysis_summary(a: Optional[B.Analysis]) -> Dict[str, Any]:
@@ -544,7 +547,7 @@ def _analysis_summary(a: Optional[B.Analysis]) -> Dict[str, Any]:
         return {"analyzed": False}
     return {"analyzed": True, "root": a.root or None, "pattern": a.pattern or None,
             "proclitics": list(a.proclitics), "enclitics": list(a.enclitics),
-            "particle": a.particle}
+            "particle": a.particle, "particle_kind": a.particle_kind, "clitic_only": bool(a.clitic_only)}
 
 
 def _agrees(entry: CorpusEntry, a: Optional[B.Analysis]) -> bool:
@@ -553,7 +556,8 @@ def _agrees(entry: CorpusEntry, a: Optional[B.Analysis]) -> bool:
         return True
     if es["analyzed"] != as_["analyzed"]:
         return False
-    return all(es[k] == as_[k] for k in ("root", "pattern", "proclitics", "enclitics", "particle"))
+    return all(es[k] == as_[k] for k in ("root", "pattern", "proclitics", "enclitics", "particle", "clitic_only")) and \
+        (not es["particle"] or es["particle_kind"] == as_["particle_kind"])
 
 
 class CorpusTraceJob:
@@ -666,7 +670,7 @@ class CorpusTraceJob:
         tok._backend = MorphAnalyzer(
             generator_timeout_ms=tok.generator_timeout_ms, bridge=self.bridge,
             particles=frozenset(tok.prepositions), enable_peeler=tok.clitic_peeler,
-            peel_bare_alef=tok.peel_bare_alef,
+            peel_bare_alef=tok.peel_bare_alef, func_words=frozenset(tok.func_words),
         )
         return tok
 
@@ -1078,7 +1082,8 @@ class CorpusTraceJob:
         proclitic_freq: Counter = Counter()
         enclitic_freq: Counter = Counter()
         particle_freq: Counter = Counter()
-        contrib: Dict[str, Dict[str, List[str]]] = {"root": {}, "pat": {}, "prc": {}, "enc": {}, "prep": {}}
+        func_freq: Counter = Counter()
+        contrib: Dict[str, Dict[str, List[str]]] = {"root": {}, "pat": {}, "prc": {}, "enc": {}, "prep": {}, "func": {}}
 
         def add_contrib(kind: str, key: str, word: str) -> None:
             lst = contrib[kind].setdefault(key, [])
@@ -1089,8 +1094,9 @@ class CorpusTraceJob:
             if not e.analyzed:
                 continue
             if e.particle:
-                particle_freq[e.particle] += 1
-                add_contrib("prep", e.particle, e.word)
+                kind = "func" if getattr(e, "particle_kind", "prep") == "func" else "prep"
+                (func_freq if kind == "func" else particle_freq)[e.particle] += 1
+                add_contrib(kind, e.particle, e.word)
             elif e.root and e.pattern:
                 root_freq[e.root] += 1
                 add_contrib("root", e.root, e.word)
@@ -1115,17 +1121,17 @@ class CorpusTraceJob:
             return rows
 
         sizes = {"root_freq": len(root_freq), "pat_freq": len(pat_freq), "proclitic_freq": len(proclitic_freq),
-                 "enclitic_freq": len(enclitic_freq), "preposition_freq": len(particle_freq)}
+                 "enclitic_freq": len(enclitic_freq), "preposition_freq": len(particle_freq), "func_freq": len(func_freq)}
         tr.step("freq", "Frequency tables (one count per unique word, not per occurrence)", A.AraRooPatTokenizer.train, {
             "root_freq": ftable(root_freq, "root"), "pat_freq": ftable(pat_freq, "pat"),
             "proclitic_freq": ftable(proclitic_freq, "prc", 10_000), "enclitic_freq": ftable(enclitic_freq, "enc", 10_000),
-            "preposition_freq": ftable(particle_freq, "prep", 10_000), "sizes": sizes,
+            "preposition_freq": ftable(particle_freq, "prep", 10_000), "func_freq": ftable(func_freq, "func", 10_000), "sizes": sizes,
             "_scale": self._scale(TOP_FREQ, sizes,
                                   f"Top {TOP_FREQ} roots (of {len(root_freq):,}) and patterns (of {len(pat_freq):,}) "
                                   f"by unique-word frequency, 6 contributing words each; clitic and preposition tables are complete. "
                                   f"The root and pattern tables below page through every candidate and can be searched."),
         }, t0, notes=[
-            "Prepositions ([PREP_*]) contribute their clitics to the clitic tables but no root or pattern.",
+            "Prepositions ([PREP_*]) and function words ([FUNC_*]) contribute their clitics to the clitic tables but no root or pattern.",
             "Unit: entries are unique words, so a root seen in 3 distinct words has freq 3 even if one occurred 50 times.",
         ])
 
@@ -1136,14 +1142,14 @@ class CorpusTraceJob:
         vocab = tok._vocab
         tr.step("vocab", "Assemble the vocab in deterministic ID order", A.AraRooPatTokenizer._build_vocab,
                 self._vocab_step_data(tok, root_freq, pat_freq, proclitic_freq, enclitic_freq), t0, notes=[
-            "Fixed slots (specials, LIT markers, PREP, CHAR, DIGIT, PUNCT) are always present; only clitics/roots/patterns depend on the corpus.",
+            "Fixed slots (specials, LIT markers, PREP, FUNC, CHAR, DIGIT, PUNCT) are always present; only clitics/roots/patterns depend on the corpus.",
             "The budget loop uses `break`, not `continue`: the first item below min_freq ends the loop for everything after it.",
         ])
 
         self._stage("categories", detail="encode-time category of every unique chunk")
         self.words.attach_vocab(tok, root_freq, pat_freq)
         self._log("categories: " + ", ".join(f"{k} {v:,}" for k, v in self.words.counts.items()))
-        self.freq = FreqIndex.from_counters(root_freq, pat_freq, proclitic_freq, enclitic_freq, particle_freq, contrib, vocab)
+        self.freq = FreqIndex.from_counters(root_freq, pat_freq, proclitic_freq, enclitic_freq, particle_freq, contrib, vocab, func_freq)
 
         # ---- step 4: reconstruction (real) -----------------------------
         self._stage("reconstruction", detail="_build_reconstruction over every entry (generator for unseen pairs)")
@@ -1237,7 +1243,7 @@ class CorpusTraceJob:
         # ---- step 5: metadata (real) -----------------------------------
         self._stage("metadata")
         t0 = time.perf_counter()
-        tok._build_metadata(root_freq, pat_freq, proclitic_freq, enclitic_freq, entries, particle_freq)
+        tok._build_metadata(root_freq, pat_freq, proclitic_freq, enclitic_freq, entries, particle_freq, func_freq)
         tr.step("metadata", "Provenance metadata (vocab_metadata.json)", A.AraRooPatTokenizer._build_metadata,
                 self._metadata_step_data(tok), t0,
                 notes=["Answers 'where did this token come from?' without re-running the pre-pass."])
@@ -1293,7 +1299,7 @@ class CorpusTraceJob:
         # load() drops the backend; rebuild it on the job's bridge with the loaded inventory.
         tok._backend = MorphAnalyzer(generator_timeout_ms=tok.generator_timeout_ms, bridge=self.bridge,
                                      particles=frozenset(tok.prepositions), enable_peeler=tok.clitic_peeler,
-                                     peel_bare_alef=tok.peel_bare_alef)
+                                     peel_bare_alef=tok.peel_bare_alef, func_words=frozenset(tok.func_words))
         backend: MorphAnalyzer = tok._backend
         bridge = self.bridge
         assert bridge is not None
@@ -1365,10 +1371,12 @@ class CorpusTraceJob:
             return [{"key": k_, "freq": v, "words": []} for k_, v in sorted(d.items(), key=lambda kv: (-kv[1], kv[0]))]
 
         preps_meta = meta.get("prepositions", {})
+        func_meta = meta.get("func_words", {})
         tr.step("freq", "Frequency tables (from vocab_metadata.json — kept tokens only)", A.AraRooPatTokenizer.train, {
             "root_freq": mrows(roots_meta, "example_words"), "pat_freq": mrows(pats_meta, "examples", True),
             "proclitic_freq": crows(meta.get("proclitic_freq", {})), "enclitic_freq": crows(meta.get("enclitic_freq", {})),
             "preposition_freq": [{"key": k_, "freq": v.get("freq", 0), "words": []} for k_, v in preps_meta.items()],
+            "func_freq": [{"key": k_, "freq": v.get("freq", 0), "words": []} for k_, v in func_meta.items()],
             "sizes": {"root_freq": len(roots_meta), "pat_freq": len(pats_meta)},
             "from_metadata": True,
             "_scale": self._scale(TOP_FREQ, {"roots": len(roots_meta), "patterns": len(pats_meta)},
@@ -1503,6 +1511,7 @@ class CorpusTraceJob:
                 {"family": "clitice", "source": "[CLITICE_ة] fixed first, then enclitic_freq sorted by (-freq, surface)",
                  "items": [B.TAA_MARBUTA] + [c for c in clitic_order(enclitic_freq) if c != B.TAA_MARBUTA]},
                 {"family": "prep", "source": "tok.prepositions (fixed order, corpus-independent)", "items": list(tok.prepositions)},
+                {"family": "func", "source": "tok.func_words (fixed order, corpus-independent)", "items": list(tok.func_words)},
                 {"family": "char", "source": "CHAR_INVENTORY (sorted letters + sorted diacritics)", "items": CHAR_INVENTORY},
                 {"family": "digit", "source": "DIGIT_INVENTORY", "items": DIGIT_INVENTORY},
                 {"family": "punct", "source": "PUNCT_INVENTORY", "items": PUNCT_INVENTORY},
@@ -1533,6 +1542,7 @@ class CorpusTraceJob:
             "roots": roots, "patterns": pats,
             "proclitic_freq": meta.get("proclitic_freq", {}), "enclitic_freq": meta.get("enclitic_freq", {}),
             "config": meta.get("config", {}), "prepositions": meta.get("prepositions", {}),
+            "func_words": meta.get("func_words", {}),
             "peeled": {"count": peeled.get("count"), "examples": (peeled.get("examples") or [])[:20]},
             "totals": {"roots": len(meta.get("roots", {})), "patterns": len(meta.get("patterns", {}))},
             "_scale": {"shown": META_TOP, "total": {"roots": len(meta.get("roots", {})), "patterns": len(meta.get("patterns", {}))},
@@ -1577,6 +1587,8 @@ CATEGORIES: List[Tuple[str, str]] = [
     ("root_pat", "ROOT+PAT"),
     ("root_pat_peeled", "ROOT+PAT (peeled)"),
     ("prep", "PREP"),
+    ("func", "FUNC"),
+    ("clitic", "CLITIC"),
     ("lit_no_analysis", "LIT: no analysis"),
     ("lit_root_cut", "LIT: root cut"),
     ("lit_pattern_cut", "LIT: pattern cut"),
@@ -1588,23 +1600,34 @@ _CAT_IDX = {k: i for i, (k, _) in enumerate(CATEGORIES)}
 
 def categorize(vocab: Dict[str, int], analyzed: bool, particle: Optional[str], root: Optional[str],
                pattern: Optional[str], proclitics: Tuple[str, ...], enclitics: Tuple[str, ...],
-               peeled: bool = False) -> Tuple[str, str, List[str]]:
+               peeled: bool = False, particle_kind: str = "prep",
+               clitic_only: bool = False) -> Tuple[str, str, List[str]]:
     """``(category, why, missing_tokens)`` for one alpha chunk — the exact rule of ``_emit_alpha``.
 
     ``enclitics`` is the emission-order tuple (fem ة + pronouns) — what both
     ``CorpusEntry.enclitics`` and ``Analysis.enclitics`` hold; for a particle
-    it is the pronoun list (particles have no ة).
+    it is the pronoun list (particles have no ة). ``particle_kind`` picks the
+    closed group (``prep`` → [PREP_*], ``func`` → [FUNC_*]); ``clitic_only``
+    marks a pronoun-hosted preposition (له) emitted as clitic tokens only.
     """
     if not analyzed:
         return "lit_no_analysis", "no accepted CAMeL analysis (native miss, peeler exhausted or every candidate rejected by a gate)", []
     cl_p = [f"{A.PFX_CLITICP}{c}{SFX}" for c in proclitics if c]
     cl_e = [f"{A.PFX_CLITICE}{c}{SFX}" for c in enclitics if c]
     if particle:
-        prep_tok = f"{A.PFX_PREP}{particle}{SFX}"
+        is_func = particle_kind == "func"
+        prep_tok = f"{A.PFX_FUNC if is_func else A.PFX_PREP}{particle}{SFX}"
         missing = [t for t in [prep_tok] + cl_p + cl_e if t not in vocab]
         if not missing:
+            if is_func:
+                return "func", "closed-class function word: one [FUNC_*] token, clitics outside", []
             return "prep", "closed-class particle: one [PREP_*] token, clitics outside", []
         return "lit_clitic_missing", f"{' '.join(missing)} not in the vocab — the all-or-nothing rule sends the whole chunk to LIT", missing
+    if clitic_only:
+        missing = [t for t in cl_p + cl_e if t not in vocab]
+        if not missing and cl_p and cl_e:
+            return "clitic", "pronoun-hosted preposition: proclitic + pronoun tokens, no host word", []
+        return "lit_clitic_missing", f"{' '.join(missing) or 'clitic-only word without both sides'} not in the vocab — the whole chunk goes to LIT", missing
     if not (root and pattern):
         return "lit_no_analysis", "analysis without root or pattern", []
     root_tok, pat_tok = f"{PFX_ROOT}{root}{SFX}", f"{PFX_PAT}{pattern}{SFX}"
@@ -1621,20 +1644,24 @@ def categorize(vocab: Dict[str, int], analyzed: bool, particle: Optional[str], r
 def categorize_analysis(vocab: Dict[str, int], a: Optional[B.Analysis]) -> Tuple[str, str, List[str]]:
     if a is None:
         return categorize(vocab, False, None, None, None, (), ())
-    return categorize(vocab, True, a.particle, a.root, a.pattern, a.proclitics, a.enclitics, bool(a.peeled))
+    return categorize(vocab, True, a.particle, a.root, a.pattern, a.proclitics, a.enclitics, bool(a.peeled),
+                      a.particle_kind, bool(a.clitic_only))
 
 
 def categorize_entry(vocab: Dict[str, int], e: CorpusEntry) -> Tuple[str, str, List[str]]:
     return categorize(vocab, e.analyzed, e.particle, e.root, e.pattern, tuple(e.proclitics or ()),
-                      tuple(e.enclitics or ()), bool(getattr(e, "peeled", False)))
+                      tuple(e.enclitics or ()), bool(getattr(e, "peeled", False)),
+                      getattr(e, "particle_kind", "prep"), bool(getattr(e, "clitic_only", False)))
 
 
 # Pre-pass paths: what the analyzer produced for a chunk, before any budget.
-# Exclusive (a peeled particle counts as "peeled"), so the four counts sum to
+# Exclusive (a peeled particle counts as "peeled"), so the five counts sum to
 # the number of unique chunks. Display order.
 PATHS: List[Tuple[str, str]] = [
     ("root_pat", "ROOT+PAT"),
     ("prep", "PREP"),
+    ("func", "FUNC"),
+    ("clitic", "CLITIC"),
     ("peeled", "peeled"),
     ("lit", "LIT"),
 ]
@@ -1642,20 +1669,24 @@ PATH_LABEL = dict(PATHS)
 _PATH_IDX = {k: i for i, (k, _) in enumerate(PATHS)}
 # Aliases the cards use: the validate card's "analyzed" / "rejected" counters.
 PATH_ALIASES: Dict[str, Tuple[str, ...]] = {
-    "analyzed": ("root_pat", "prep", "peeled"),
+    "analyzed": ("root_pat", "prep", "func", "clitic", "peeled"),
     "rejected": ("lit",),
 }
-_PATH_TOTALS_KEY = {"root_pat": "ROOT+PAT", "prep": "PREP", "peeled": "peeled", "lit": "LIT"}
+_PATH_TOTALS_KEY = {"root_pat": "ROOT+PAT", "prep": "PREP", "func": "FUNC", "clitic": "CLITIC",
+                    "peeled": "peeled", "lit": "LIT"}
 
 
-def prepass_path(analyzed: bool, particle: Optional[str], peeled: bool) -> str:
+def prepass_path(analyzed: bool, particle: Optional[str], peeled: bool, particle_kind: str = "prep",
+                 clitic_only: bool = False) -> str:
     """Exclusive pre-pass path of one entry (see ``PATHS``)."""
     if not analyzed:
         return "lit"
     if peeled:
         return "peeled"
     if particle:
-        return "prep"
+        return "func" if particle_kind == "func" else "prep"
+    if clitic_only:
+        return "clitic"
     return "root_pat"
 
 
@@ -1678,7 +1709,7 @@ class WordCategoryIndex:
     """
 
     # row layout (tuples; the encode-time category lives in ``self.cats``)
-    W, N, ROOT, PAT, PEELED, ANALYZED, PARTICLE, PRAW, STEM, SURF, PRC, ENC, PATH = range(13)
+    W, N, ROOT, PAT, PEELED, ANALYZED, PARTICLE, PRAW, STEM, SURF, PRC, ENC, PATH, KIND, CO = range(15)
 
     def __init__(self, entries: List[CorpusEntry], word_counts: Counter) -> None:
         intern: Dict[str, str] = {}
@@ -1691,11 +1722,13 @@ class WordCategoryIndex:
         rows: List[Tuple[Any, ...]] = []
         for e in entries:
             peeled = bool(getattr(e, "peeled", False))
+            kind = getattr(e, "particle_kind", "prep") or "prep"
+            co = bool(getattr(e, "clitic_only", False))
             rows.append((
                 e.word, word_counts.get(e.word, 0), I(e.root), I(e.pattern), peeled, bool(e.analyzed),
                 I(e.particle), I(getattr(e, "pattern_raw", None)), I(e.stem), e.surface or None,
                 tuple(I(c) for c in (e.proclitics or ()) if c), tuple(I(c) for c in (e.enclitics or ()) if c),
-                _PATH_IDX[prepass_path(e.analyzed, e.particle, peeled)],
+                _PATH_IDX[prepass_path(e.analyzed, e.particle, peeled, kind, co)], I(kind), co,
             ))
         rows.sort(key=lambda r: (-r[1], r[0]))
         self.rows = rows
@@ -1726,7 +1759,7 @@ class WordCategoryIndex:
         by_cat: Dict[str, List[int]] = {k: [] for k, _ in CATEGORIES}
         for i, r in enumerate(self.rows):
             cat, _, _ = categorize(vocab, r[self.ANALYZED], r[self.PARTICLE], r[self.ROOT], r[self.PAT],
-                                   r[self.PRC], r[self.ENC], r[self.PEELED])
+                                   r[self.PRC], r[self.ENC], r[self.PEELED], r[self.KIND] or "prep", r[self.CO])
             cats[i] = _CAT_IDX[cat]
             by_cat[cat].append(i)
         self.cats = cats
@@ -1741,7 +1774,7 @@ class WordCategoryIndex:
         self._filter_cache = None
 
     def path_totals(self) -> Dict[str, int]:
-        """The validate card's counters: ``{"ROOT+PAT", "PREP", "peeled", "LIT"}`` (exclusive, sum = total)."""
+        """The validate card's counters: ``{"ROOT+PAT", "PREP", "FUNC", "CLITIC", "peeled", "LIT"}`` (exclusive, sum = total)."""
         return {_PATH_TOTALS_KEY[k]: self.path_counts[k] for k, _ in PATHS}
 
     def _row_dict(self, i: int, full: bool = False) -> Dict[str, Any]:
@@ -1754,7 +1787,8 @@ class WordCategoryIndex:
                              "root": r[self.ROOT], "pattern": r[self.PAT], "peeled": r[self.PEELED],
                              "path": pk, "path_label": PATH_LABEL[pk]}
         if full:
-            d.update({"analyzed": r[self.ANALYZED], "particle": r[self.PARTICLE], "pattern_raw": r[self.PRAW],
+            d.update({"analyzed": r[self.ANALYZED], "particle": r[self.PARTICLE], "particle_kind": r[self.KIND],
+                      "clitic_only": r[self.CO], "pattern_raw": r[self.PRAW],
                       "stem": r[self.STEM], "surface": r[self.SURF],
                       "proclitics": list(r[self.PRC]), "enclitics": list(r[self.ENC])})
         return d
@@ -1876,8 +1910,9 @@ class FreqIndex:
     queries match the CAMeL slot string *or* the wazn, tashkeel ignored.
     """
 
-    KINDS = ("root", "pat", "prc", "enc", "prep")
-    _PFX = {"root": PFX_ROOT, "pat": PFX_PAT, "prc": A.PFX_CLITICP, "enc": A.PFX_CLITICE, "prep": A.PFX_PREP}
+    KINDS = ("root", "pat", "prc", "enc", "prep", "func")
+    _PFX = {"root": PFX_ROOT, "pat": PFX_PAT, "prc": A.PFX_CLITICP, "enc": A.PFX_CLITICE, "prep": A.PFX_PREP,
+            "func": A.PFX_FUNC}
 
     def __init__(self, tables: Dict[str, Dict[str, int]], words: Dict[str, Dict[str, List[str]]],
                  vocab: Dict[str, int], from_metadata: bool = False) -> None:
@@ -1903,13 +1938,14 @@ class FreqIndex:
     @classmethod
     def from_counters(cls, root_freq: Counter, pat_freq: Counter, proclitic_freq: Counter, enclitic_freq: Counter,
                       particle_freq: Counter, contrib: Dict[str, Dict[str, List[str]]],
-                      vocab: Dict[str, int]) -> "FreqIndex":
+                      vocab: Dict[str, int], func_freq: Optional[Counter] = None) -> "FreqIndex":
         return cls({"root": root_freq, "pat": pat_freq, "prc": proclitic_freq, "enc": enclitic_freq,
-                    "prep": particle_freq}, contrib, vocab)
+                    "prep": particle_freq, "func": func_freq or Counter()}, contrib, vocab)
 
     @classmethod
     def from_metadata(cls, meta: Dict[str, Any], vocab: Dict[str, int]) -> "FreqIndex":
         roots, pats, preps = meta.get("roots", {}), meta.get("patterns", {}), meta.get("prepositions", {})
+        funcs = meta.get("func_words", {})
 
         def ex_words(v: Dict[str, Any], key: str) -> List[str]:
             return [e_[1] if isinstance(e_, list) else e_ for e_ in (v.get(key) or [])][:6]
@@ -1917,7 +1953,8 @@ class FreqIndex:
         tables = {"root": {k: v.get("freq", 0) for k, v in roots.items()},
                   "pat": {k: v.get("freq", 0) for k, v in pats.items()},
                   "prc": dict(meta.get("proclitic_freq", {})), "enc": dict(meta.get("enclitic_freq", {})),
-                  "prep": {k: v.get("freq", 0) for k, v in preps.items()}}
+                  "prep": {k: v.get("freq", 0) for k, v in preps.items()},
+                  "func": {k: v.get("freq", 0) for k, v in funcs.items()}}
         words = {"root": {k: ex_words(v, "example_words") for k, v in roots.items()},
                  "pat": {k: ex_words(v, "examples") for k, v in pats.items()}}
         return cls(tables, words, vocab, from_metadata=True)
@@ -1984,7 +2021,8 @@ def encode_text(job: "CorpusTraceJob", text: str) -> Dict[str, Any]:
         cat_occ[cat] += n
         row = {"chunk": chunk, "count": n, "category": cat, "label": CATEGORY_LABEL[cat], "why": why, "missing": missing,
                "root": (a.root or None) if a else None, "pattern": (a.pattern or None) if a else None,
-               "particle": a.particle if a else None, "peeled": bool(a.peeled) if a else False,
+               "particle": a.particle if a else None, "particle_kind": a.particle_kind if a else None,
+               "clitic_only": bool(a.clitic_only) if a else False, "peeled": bool(a.peeled) if a else False,
                "proclitics": list(a.proclitics) if a else [], "enclitics": list(a.enclitics) if a else []}
         if job.words is not None:
             c = job.words.cached(chunk)
@@ -2028,11 +2066,12 @@ def trace_word_process(job: "CorpusTraceJob", word: str) -> Dict[str, Any]:
     a = analyses[chunk]
     cat, why, missing = categorize_analysis(tok._vocab, a)
     vocab = tok._vocab
-    check: Dict[str, Any] = {"root": None, "pattern": None, "particle": None, "clitics": []}
+    check: Dict[str, Any] = {"root": None, "pattern": None, "particle": None, "clitics": [], "clitic_only": False}
     if a is not None:
+        check["clitic_only"] = bool(a.clitic_only)
         if a.particle:
-            t_ = f"{A.PFX_PREP}{a.particle}{SFX}"
-            check["particle"] = {"token": t_, "in_vocab": t_ in vocab}
+            t_ = f"{A.PFX_FUNC if a.particle_kind == 'func' else A.PFX_PREP}{a.particle}{SFX}"
+            check["particle"] = {"token": t_, "in_vocab": t_ in vocab, "kind": a.particle_kind}
         else:
             if job.words is not None:
                 check["root"] = job.words.budget_reason("root", a.root, vocab)
@@ -2056,7 +2095,7 @@ def trace_word_process(job: "CorpusTraceJob", word: str) -> Dict[str, Any]:
     if prepass is not None:
         live = _analysis_summary(a)
         agrees_prepass = (prepass["analyzed"] == live["analyzed"]) and (
-            not live["analyzed"] or all(prepass[k] == live[k] for k in ("root", "pattern", "proclitics", "enclitics", "particle")))
+            not live["analyzed"] or all(prepass[k] == live[k] for k in ("root", "pattern", "proclitics", "enclitics", "particle", "clitic_only")))
     return {
         "word": word, "chunk": chunk, "other_chunks": chunks[1:],
         "prepass": prepass, "agrees_with_prepass": agrees_prepass,
@@ -2093,6 +2132,7 @@ class TokenIndex:
         meta = tok._metadata or {}
         roots_meta, pats_meta = meta.get("roots", {}), meta.get("patterns", {})
         prc, enc, preps = meta.get("proclitic_freq", {}), meta.get("enclitic_freq", {}), meta.get("prepositions", {})
+        funcs = meta.get("func_words", {})
         self.rows: List[Dict[str, Any]] = []
         for t_, i in sorted(tok._vocab.items(), key=lambda kv: kv[1]):
             fam = _split_key(t_)
@@ -2115,6 +2155,8 @@ class TokenIndex:
                 row["freq"] = enc.get(inner)
             elif fam == "prep":
                 row["freq"] = (preps.get(inner) or {}).get("freq")
+            elif fam == "func":
+                row["freq"] = (funcs.get(inner) or {}).get("freq")
             self.rows.append(row)
         self.by_id = {r["id"]: r for r in self.rows}
         self.families = Counter(r["family"] for r in self.rows)

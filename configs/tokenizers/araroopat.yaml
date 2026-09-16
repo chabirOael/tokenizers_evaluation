@@ -52,13 +52,13 @@ tokenizer:
     # أنلزمكموها had no analysis at all. The peeler strips exactly those
     # clitics and sends the residual to CAMeL; anything CAMeL models natively
     # (و/ف/ب/ل/ك/ال/س, a single pronoun) is never peeled. The interrogative
-    # is accepted as أ or bare ا (normalize_alef rewrites أ → ا upstream).
+    # is accepted as أ or, opt-in, bare ا (for alef-normalised text).
     # Lengthened forms get their own [CLITICE_كمو] / [CLITICE_همو] tokens —
     # no surface is rewritten. Changing this re-runs the corpus pre-pass
     # (cache key).
     clitic_peeler: true
     # Also accept a bare ا as the interrogative (the platform's preprocessing
-    # normalises أ → ا). Off by default: word-initial ا is also hamzat-wasl
+    # may normalise أ → ا; it is off since 2026-09-16). Off by default: word-initial ا is also hamzat-wasl
     # (Forms VII–X, imperatives), ابن/اسم and the article, and enabling it
     # doubled false peels on CAMeL-rejected corpus types (0.6 % → 1.2 %).
     peel_bare_alef: false
@@ -85,5 +85,117 @@ tokenizer:
       - لعل
       - كي
       - لولا
+      # CAMeL POS `prep` lemmas added 2026-09-16: مع went to LIT (2 radicals,
+      # معهم / معه too), تجاه and خلال got a root+wazn, بلا went to LIT.
+      # Pronoun-hosted لِ / بِ / كَ (له, بها, لنا, بهم) are NOT listed: they
+      # are emitted as clitic tokens only ([CLITICP_ل] [CLITICE_ه]) —
+      # PRONOUN_HOSTING_PROCLITICS in the backend, always on.
+      - مع
+      - تجاه
+      - خلال
+      - بلا
+
+    # Closed-class function words emitted as ONE [FUNC_*] token each (added
+    # 2026-09-16): pronouns, demonstratives, relatives, conjunctions,
+    # subordinators, interrogatives, negation / verbal / future particles.
+    # Same mechanics as the prepositions — matched on CAMeL's lemma or the
+    # bare surface, alef-insensitively (ان → أن), clitics outside:
+    # [CLITICP_و] [FUNC_هم], [FUNC_أن] [CLITICE_هم] for أنهم, [CLITICP_ل]
+    # [FUNC_قد] for لقد. Before this group these words cost four tokens on
+    # the character path (هم هي ما لا الذي هذا قد هل لم لن) or a bogus
+    # root+wazn (أو إذا لكن ثم كيف سوف); together ~8 % of all word
+    # occurrences. The list is a SURFACE list (هذه and الذين are listed,
+    # not derived from هذا / الذي); a surface may not also be a preposition.
+    # Order = vocab ID order (the range follows [PREP_*], before [CHAR_*]).
+    # Candidates come from scripts/discover_araroopat_func_words.py, which
+    # runs CAMeL over the corpus and lists every closed-class POS with
+    # counts; curate from its func_by_lemma.csv. Omit the key to use the
+    # backend default (FUNC_INVENTORY); changing it re-runs the pre-pass.
+    func_words:
+      # personal pronouns + the object-pronoun carrier إيا (إياه, إياك)
+      - هو
+      - هي
+      - هم
+      - هن
+      - هما
+      - أنا
+      - أنت
+      - أنتم
+      - أنتن
+      - أنتما
+      - نحن
+      - إيا
+      # demonstratives
+      - هذا
+      - هذه
+      - هذان
+      - هاتان
+      - هؤلاء
+      - ذلك
+      - تلك
+      - ذاك
+      - أولئك
+      # relatives
+      - الذي
+      - التي
+      - الذين
+      - اللذان
+      - اللتان
+      - اللاتي
+      - اللواتي
+      - اللائي
+      # conjunctions / subordinators
+      - أن
+      - إن
+      - أو
+      - أم
+      - ثم
+      - بل
+      - لكن
+      - إذا
+      - إذ
+      - حيث
+      - كما
+      - لو
+      - إما
+      - أما
+      - إلا
+      - ألا
+      - بينما
+      - حينما
+      - عندما
+      - كلما
+      - لأن
+      - كأن
+      - ليت
+      - إذن
+      - هكذا
+      - كذا
+      - مثلما
+      - طالما
+      - حسبما
+      - أينما
+      - فيما          # CAMeL reads it as a fused subordinator (lemma ما, no clitic split)
+      # closed-class nouns CAMeL cannot decompose (root NTWS); ذات keeps a
+      # possessive pronoun (ذاته, ذاتها, بذاتها — POSSESSIVE_FUNC_WORDS)
+      - ذات
+      # interrogatives
+      - ما
+      - ماذا
+      - لماذا
+      - كيف
+      - أين
+      - هل
+      - أي
+      - كم
+      - أيان
+      - أنى
+      # particles: negation, verbal, future
+      - لا
+      - لم
+      - لن
+      - لما
+      - قد
+      - سوف
 
   save_path: "outputs/tokenizers/araroopat_balanced"

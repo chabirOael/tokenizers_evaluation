@@ -8,9 +8,13 @@ data:
   eval_split: "test"
   max_train_samples: null
   max_eval_samples: 10000
-  preprocessing:
+  preprocessing:              # applies to the tokenizer-training corpus only (Phase 1–3 corpora, the
+                              # pretraining mix and the eval benchmarks are read raw) — keep it minimal
     normalize_unicode: true
     remove_diacritics: false
+    normalize_alef: false      # آ/أ/إ/ٱ → ا. Off since 2026-09-16: 13.4 % of the corpus words carry a hamza-alef
+                              # and every other text the model sees keeps it (train/eval skew when folded)
+    remove_tatweel: true
     min_text_length: 10
     join_lone_waw: true        # "و القمر" → "والقمر": a lone conjunction و is glued to the Arabic word after it
 

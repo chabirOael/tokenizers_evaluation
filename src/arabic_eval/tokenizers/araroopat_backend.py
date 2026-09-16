@@ -21,6 +21,7 @@ word would route to `[LIT_*]`).
 """
 from __future__ import annotations
 
+import functools
 import logging
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
@@ -52,14 +53,22 @@ class Analysis:
     ``clitic_surface``) at construction; empty/``"0"`` values are None.
 
     ``particle`` is set (and ``root`` / ``pattern`` are empty) when the
-    word is a closed-class preposition/particle from
-    ``PREPOSITION_INVENTORY`` — those get one ``[PREP_*]`` token instead
-    of a root+pattern decomposition. See ``_particle_analysis``.
+    word is a closed-class word from ``PREPOSITION_INVENTORY`` (one
+    ``[PREP_*]`` token) or ``FUNC_INVENTORY`` (one ``[FUNC_*]`` token)
+    instead of a root+pattern decomposition; ``particle_kind`` says which
+    (``"prep"`` / ``"func"``). See ``_particle_analysis``.
 
     ``fem`` is ``"ة"`` when the word carries the tāʾ marbūṭa suffix —
     written ة word-finally, ت before a pronoun (مدرسة / مدرسته). It is
     stripped from ``pattern`` and emitted as ``[CLITICE_ة]``; see
     ``strip_fem_from_pattern``.
+
+    ``clitic_only`` marks a word that is nothing but clitics: a pronoun-hosted
+    preposition (له = لِ + ه, بها, لنا, ولهم = و + ل + هم). CAMeL reads these
+    as POS ``prep`` with lemma لِ / بِ / كَ and the pronoun in ``enc0``; the
+    tokenizer emits the proclitic and enclitic tokens it already has and
+    nothing else — the same ``[CLITICP_ل]`` as in لكتاب, so the preposition
+    has one token whatever its host. See ``_clitic_only_analysis``.
 
     ``enc1`` is the second pronominal enclitic of a double-object verb
     (أعطيتكه = أعطيت + ك + ه). CAMeL's calima-msa-r13 has no ``enc1``
@@ -80,11 +89,13 @@ class Analysis:
     prc1: Optional[str] = None
     prc0: Optional[str] = None
     enc0: Optional[str] = None
-    particle: Optional[str] = None  # bare preposition surface, e.g. "من"
+    particle: Optional[str] = None  # bare closed-class surface, e.g. "من" / "هذا"
+    particle_kind: str = "prep"     # "prep" ([PREP_*]) or "func" ([FUNC_*]) when particle is set
     fem: Optional[str] = None       # TAA_MARBUTA when the ة suffix was factored out
     enc1: Optional[str] = None      # second object pronoun (peeler only)
     peeled: bool = False            # True when produced by the clitic peeler
     aspect: Optional[str] = None    # CAMeL `asp` for verbs: p / i / c
+    clitic_only: bool = False       # proclitic(s) + pronoun with no host (له, بها)
 
     @property
     def enclitics(self) -> Tuple[str, ...]:
@@ -465,7 +476,79 @@ def normalize_pattern(
 PREPOSITION_INVENTORY: Tuple[str, ...] = (
     "من", "إلى", "عن", "على", "في", "حتى", "منذ", "مذ",
     "خلا", "عدا", "حاشا", "متى", "لعل", "كي", "لولا",
+    # CAMeL POS ``prep`` lemmas added 2026-09-16 (مع went to LIT — 2 radicals;
+    # تجاه / خلال got a root+wazn; بلا went to LIT)
+    "مع", "تجاه", "خلال", "بلا",
 )
+
+# ---------------------------------------------------------------------------
+# Closed-class function words → one [FUNC_*] token (added 2026-09-16)
+# ---------------------------------------------------------------------------
+#
+# Pronouns, demonstratives, relatives, conjunctions, subordinators,
+# interrogatives and particles (CAMeL POS pron / pron_dem / pron_rel /
+# pron_interrog / conj / conj_sub / adv_interrog / part_neg / part_verb /
+# part_interrog / part_fut / part). Like the prepositions they have no
+# root or wazn to preserve, yet before this group they cost four tokens
+# on the LIT path (هم هي ما لا الذي هذا قد هل لم لن كم) or got a bogus
+# root+wazn (أو → [ROOT_##ن], إذا → [ROOT_#ذ#], لكن → [ROOT_لكن], ثم →
+# [ROOT_ثمم]). Together the class is ~8 % of all word occurrences in
+# ArabicText-Large. Same mechanics as [PREP_*]: intercept on lemma or bare
+# surface, clitics outside ([CLITICP_و] [FUNC_هم]; [FUNC_أن] [CLITICE_هم]
+# for أنهم; [CLITICP_ل] [FUNC_قد] for لقد), the vocab range sits between
+# [PREP_*] and [CHAR_*]. The inventory is a *surface* list (الذين and هذه
+# are listed, not derived from their lemma الذي / هذا). PREP is checked
+# first, so a surface in both inventories is a configuration error.
+#
+# This default is a provisional seed; the curated list lives in
+# configs/tokenizers/araroopat.yaml (``func_words:``) and is built from
+# scripts/discover_araroopat_func_words.py on the real corpus.
+# ---------------------------------------------------------------------------
+
+FUNC_INVENTORY: Tuple[str, ...] = (
+    # personal pronouns + the object-pronoun carrier إيا (إياه, إياك)
+    "هو", "هي", "هم", "هن", "هما", "أنا", "أنت", "أنتم", "أنتن", "أنتما", "نحن", "إيا",
+    # demonstratives
+    "هذا", "هذه", "هذان", "هاتان", "هؤلاء", "ذلك", "تلك", "ذاك", "أولئك",
+    # relatives
+    "الذي", "التي", "الذين", "اللذان", "اللتان", "اللاتي", "اللواتي", "اللائي",
+    # conjunctions / subordinators
+    "أن", "إن", "أو", "أم", "ثم", "بل", "لكن", "إذا", "إذ", "حيث", "كما", "لو", "إما", "أما",
+    "إلا", "ألا", "بينما", "حينما", "عندما", "كلما", "لأن", "كأن", "ليت", "إذن",
+    "هكذا", "كذا", "مثلما", "طالما", "حسبما", "أينما", "فيما",
+    # closed-class nouns CAMeL cannot decompose (root NTWS); ذات keeps its possessive
+    "ذات",
+    # interrogatives
+    "ما", "ماذا", "لماذا", "كيف", "أين", "هل", "أي", "كم", "أيان", "أنى",
+    # particles: negation, verbal, future
+    "لا", "لم", "لن", "لما", "قد", "سوف",
+)
+
+# Pronoun-hosted prepositions (added 2026-09-16). CAMeL analyses له / به /
+# لنا / بهم / لك as POS ``prep`` with lemma لِ / بِ / كَ and the pronoun in
+# ``enc0`` — a preposition that is already a proclitic token, plus a
+# pronoun that is already an enclitic token. These words are 12 % of all
+# word occurrences together with the other CAMeL prepositions, and every
+# one of them went to the character path (no root to validate). They are
+# emitted as clitic tokens only ([CLITICP_ل] [CLITICE_ه]; ولهم →
+# [CLITICP_و] [CLITICP_ل] [CLITICE_هم]), so لِ has the same token whether
+# its host is a noun (لكتاب) or a pronoun (له) — consistent with بما →
+# [CLITICP_ب] [FUNC_ما]. The decoder closes buffered proclitics into a word
+# of their own when an enclitic follows them directly.
+PRONOUN_HOSTING_PROCLITICS: Tuple[str, ...] = ("ل", "ب", "ك")
+
+# FUNC entries that keep a *possessive* enclitic (ذاته / ذاتها / بذاتها):
+# CAMeL reads ذات as a noun, so its pronoun is tagged ``*_poss`` and would
+# hit the noun guard of the intercept.
+POSSESSIVE_FUNC_WORDS: Tuple[str, ...] = ("ذات",)
+
+# Alef-insensitive lookup: the corpus, user text and CAMeL's lemmas spell
+# the hamza inconsistently (إلى / الى, أن / ان), and the platform's
+# ``normalize_alef`` fold (off by default since 2026-09-16, on before) used
+# to erase it entirely — [PREP_إلى] never fired on the alef-folded training
+# corpus while it did on the raw eval prompts. Matching folds آ/أ/إ/ٱ → ا
+# on both sides; the token keeps the inventory's canonical spelling, which
+# is also what decode emits. ى/ي stay strict (علي is the name Ali).
 
 # Preposition + enclitic spellings that are not plain concatenation.
 # Decode-side inverse of the enc0 split CAMeL makes at analysis time.
@@ -486,6 +569,24 @@ _ALEF_VARIANTS = str.maketrans({"أ": "ا", "إ": "ا", "آ": "ا", "ٱ": "ا"})
 
 def _alef_norm(s: str) -> str:
     return s.translate(_ALEF_VARIANTS)
+
+
+@functools.lru_cache(maxsize=64)
+def _alef_norm_index(inventory: frozenset) -> Dict[str, str]:
+    """alef-folded surface → canonical inventory spelling (first wins on a fold collision)."""
+    index: Dict[str, str] = {}
+    for item in sorted(inventory):
+        index.setdefault(_alef_norm(item), item)
+    return index
+
+
+def canonical_particle(surface: str, inventory: frozenset) -> Optional[str]:
+    """The inventory entry ``surface`` spells (modulo alef variants), or None."""
+    if not surface or not inventory:
+        return None
+    if surface in inventory:
+        return surface
+    return _alef_norm_index(inventory).get(_alef_norm(surface))
 
 
 def join_particle_enclitic(particle: str, enclitic: str) -> str:
@@ -517,45 +618,57 @@ def _particle_analysis(
     d: Dict[str, str],
     particles: frozenset,
     word: Optional[str] = None,
+    kind: str = "prep",
 ) -> Optional[Analysis]:
-    """Return a particle ``Analysis`` if ``d`` is a listed preposition, else None.
+    """Return a particle ``Analysis`` if ``d`` is a listed closed-class word, else None.
 
-    Acceptance is the exact inverse of the decoder: the (diacritic-free)
-    input must equal ``proclitics + join_particle_enclitic(p, enc0)`` for
-    some listed ``p``. Matching on the *input* rather than on CAMeL's
-    normalized surface keeps ي-spelled bare forms (علي — also the name
-    Ali; إلي) out of the particle path, so they decode back verbatim.
+    ``particles`` is one inventory (prepositions or function words) and
+    ``kind`` the token family it maps to. Acceptance is the exact inverse
+    of the decoder: the (diacritic-free) input must equal
+    ``proclitics + join_particle_enclitic(p, enc0)`` for some listed ``p``,
+    compared modulo alef variants (آ/أ/إ/ٱ ≡ ا). Matching on the *input*
+    rather than on CAMeL's normalized surface keeps ي-spelled bare forms
+    (علي — also the name Ali; إلي) out of the particle path, so they
+    decode back verbatim.
 
     Guards: a definite article or a *possessive* enclitic marks a noun
     reading (CAMeL tags pronouns on prepositions as ``*_pron``), so those
     are left to the normal root+pattern path.
     """
     surface = _strip_diac(word if word else (d.get("diac") or ""))
-    if not surface:
+    if not surface or not particles:
         return None
     prc = tuple(clitic_surface(_norm_clitic(d.get(k))) for k in ("prc3", "prc2", "prc1", "prc0"))
     enc_tag = _norm_clitic(d.get("enc0"))
     enc0 = clitic_surface(enc_tag)
-    if prc[3] == _AL_DET or (enc_tag and enc_tag.endswith("_poss")):
+    lemma_bare = _strip_diac(d.get("lex") or "")
+    if prc[3] == _AL_DET:
+        return None
+    if enc_tag and enc_tag.endswith("_poss") and not (
+        kind == "func" and canonical_particle(lemma_bare, particles) in POSSESSIVE_FUNC_WORDS
+    ):
         return None
 
     # Candidate particles: the lemma first (حاشا lemmatizes to حاش, and the
     # fused مِمَّن / عَمَّن carry the fused form as lemma), then the whole
-    # inventory as a surface fallback.
-    lemma_bare = _strip_diac(d.get("lex") or "")
+    # inventory as a surface fallback. Every candidate is the inventory's
+    # canonical spelling.
     ordered: List[str] = []
-    for cand in (lemma_bare, _PARTICLE_ASSIMILATION_INVERSE.get(lemma_bare), *particles):
-        if cand and cand in particles and cand not in ordered:
+    for cand in (canonical_particle(lemma_bare, particles),
+                 canonical_particle(_PARTICLE_ASSIMILATION_INVERSE.get(lemma_bare, ""), particles),
+                 *sorted(particles)):
+        if cand and cand not in ordered:
             ordered.append(cand)
 
     # CAMeL sometimes reports a proclitic that is really the first letter of
     # the particle (لعل → prc1=la_emph + lemma لَعَلَّ), so try the claimed
     # stack first and drop the innermost proclitic until the surface agrees.
     prc_list = [c for c in prc if c]
+    surface_norm = _alef_norm(surface)
     for particle in ordered:
         expected_tail = join_particle_enclitic(particle, enc0) if enc0 else particle
         for keep in range(len(prc_list), -1, -1):
-            if "".join(prc_list[:keep]) + expected_tail == surface:
+            if _alef_norm("".join(prc_list[:keep]) + expected_tail) == surface_norm:
                 kept = set(prc_list[:keep])
                 return Analysis(
                     root="",
@@ -571,8 +684,42 @@ def _particle_analysis(
                     prc0=prc[3] if prc[3] in kept else None,
                     enc0=enc0,
                     particle=particle,
+                    particle_kind=kind,
                 )
     return None
+
+
+def _clitic_only_analysis(d: Dict[str, str], word: Optional[str] = None) -> Optional[Analysis]:
+    """A pronoun-hosted preposition (له, بها, ولهم) as clitic tokens only, else None.
+
+    Accepts a CAMeL reading with POS ``prep``, a lemma in
+    ``PRONOUN_HOSTING_PROCLITICS``, a pronominal ``enc0`` and a free ``prc1``
+    slot, when the (alef-folded) input equals the claimed outer proclitics
+    + lemma + pronoun. The lemma becomes the innermost proclitic (``prc1``),
+    which is the slot CAMeL itself uses for لِ / بِ / كَ on a hosted word.
+    """
+    if (d.get("pos") or "") != "prep":
+        return None
+    lemma = _strip_diac(d.get("lex") or "")
+    if lemma not in PRONOUN_HOSTING_PROCLITICS:
+        return None
+    enc_tag = _norm_clitic(d.get("enc0"))
+    enc0 = clitic_surface(enc_tag)
+    if not enc0 or not enc_tag or not enc_tag.endswith("_pron"):
+        return None
+    prc = tuple(clitic_surface(_norm_clitic(d.get(k))) for k in ("prc3", "prc2", "prc1", "prc0"))
+    if prc[2] or prc[3]:
+        return None
+    surface = _strip_diac(word if word else (d.get("diac") or ""))
+    outer = "".join(c for c in prc[:2] if c)
+    if _alef_norm(outer + lemma + enc0) != _alef_norm(surface):
+        return None
+    return Analysis(
+        root="", pattern="", pattern_raw=d.get("pattern") or "", stem="",
+        surface=word or d.get("diac") or "", lemma=d.get("lex", ""), pos="prep",
+        prc3=prc[0], prc2=prc[1], prc1=lemma, prc0=None, enc0=enc0,
+        clitic_only=True,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -583,19 +730,25 @@ def _dict_to_analysis(
     d: Dict[str, str],
     particles: frozenset = frozenset(PREPOSITION_INVENTORY),
     word: Optional[str] = None,
+    func_words: frozenset = frozenset(),
 ) -> Optional[Analysis]:
     """Apply post-processing to a trimmed analysis dict from the bridge.
 
-    Listed prepositions short-circuit to a particle ``Analysis`` before
-    any gate (they have no root to validate). Otherwise returns None for
-    analyses we reject: NTWS/FOREIGN database markers, missing
-    root/pattern, roots with fewer than 3 radicals, and roots carrying
-    characters that are neither Arabic letters nor CAMeL's masked-radical
-    placeholder.
+    Listed prepositions, then listed function words, short-circuit to a
+    particle ``Analysis`` before any gate (they have no root to validate).
+    Otherwise returns None for analyses we reject: NTWS/FOREIGN database
+    markers, missing root/pattern, roots with fewer than 3 radicals, and
+    roots carrying characters that are neither Arabic letters nor CAMeL's
+    masked-radical placeholder.
     """
-    particle = _particle_analysis(d, particles, word)
+    particle = _particle_analysis(d, particles, word, kind="prep")
+    if particle is None and func_words:
+        particle = _particle_analysis(d, func_words, word, kind="func")
     if particle is not None:
         return particle
+    clitic_word = _clitic_only_analysis(d, word)
+    if clitic_word is not None:
+        return clitic_word
 
     root = d.get("root") or ""
     pattern_raw = d.get("pattern") or ""
@@ -693,7 +846,8 @@ def _dict_to_analysis(
 # Proclitic grammar, outermost first. Each slot is optional; the لِ+الـ
 # contraction (لل = ل + ال) is handled when enumerating. The interrogative
 # is also accepted as bare ا because the platform's default preprocessing
-# (normalize_alef) rewrites أ → ا before text reaches the tokenizer.
+# (normalize_alef, off by default since 2026-09-16) may rewrite أ → ا before
+# text reaches the tokenizer.
 PEEL_PRC3: Tuple[str, ...] = ("أ",)
 # Under the platform's alef normalisation the interrogative surfaces as a
 # bare alef. Opt-in only (`peel_bare_alef`): word-initial ا is also the
@@ -863,6 +1017,10 @@ def peel_compatible(cand: PeelCandidate, residual: Analysis) -> bool:
     pos = residual.pos or ""
     if (residual.root or "").count(WEAK_RADICAL_MARK) > MAX_MASKED_RADICALS_IN_PEEL:
         return False
+    if residual.clitic_only:
+        # A pronoun-hosted preposition never takes a peeled clitic: أبي is
+        # "my father" (noun أب + ي that CAMeL cannot root), not أ + بِ + ي.
+        return False
     if residual.particle:
         kind = "particle"
     elif _is_verb(pos):
@@ -980,9 +1138,11 @@ def merge_peeled(word: str, cand: PeelCandidate, residual: Analysis) -> Analysis
         prc3=slots[3], prc2=slots[2], prc1=slots[1], prc0=slots[0],
         enc0=enc0, enc1=enc1,
         particle=residual.particle,
+        particle_kind=residual.particle_kind,
         fem=residual.fem,
         peeled=True,
         aspect=residual.aspect,
+        clitic_only=residual.clitic_only,
     )
 
 
@@ -1013,6 +1173,7 @@ class MorphAnalyzer:
         particles: Optional[frozenset] = None,
         enable_peeler: bool = True,
         peel_bare_alef: bool = False,
+        func_words: Optional[frozenset] = None,
     ) -> None:
         # `generator_timeout_ms` used to drive a SIGALRM-based timeout
         # around per-call CAMeL generation. The bridge now bounds calls
@@ -1025,6 +1186,12 @@ class MorphAnalyzer:
         self.particles: frozenset = (
             frozenset(particles) if particles is not None
             else frozenset(PREPOSITION_INVENTORY)
+        )
+        # Closed-class function words that become one [FUNC_*] token (see
+        # FUNC_INVENTORY). Checked after the prepositions.
+        self.func_words: frozenset = (
+            frozenset(func_words) if func_words is not None
+            else frozenset(FUNC_INVENTORY)
         )
         # Fallback for clitic combinations the CAMeL database lacks (see
         # `peel_candidates`). Off → a native miss goes straight to None.
@@ -1075,7 +1242,7 @@ class MorphAnalyzer:
         if todo:
             results = self._bridge.analyze([w for _, w in todo])
             for (i, w), cands in zip(todo, results):
-                self._native_cache[w] = self._first_valid(cands, w, self.particles)
+                self._native_cache[w] = self._first_valid(cands, w, self.particles, self.func_words)
         for i, w in enumerate(words):
             out[i] = self._native_cache.get(w) if w else None
         return out
@@ -1092,12 +1259,12 @@ class MorphAnalyzer:
             for w, cands in zip(todo, results):
                 valid = []
                 for d in cands:
-                    a = _dict_to_analysis(d, self.particles, w)
+                    a = _dict_to_analysis(d, self.particles, w, self.func_words)
                     if a is not None:
                         valid.append(a)
                 if not valid:
                     # Same bare-particle fallback as the native path.
-                    a = self._first_valid([], w, self.particles)
+                    a = self._first_valid([], w, self.particles, self.func_words)
                     if a is not None:
                         valid.append(a)
                 self._candidates_cache[w] = valid
@@ -1249,6 +1416,7 @@ class MorphAnalyzer:
         candidates: List[Dict[str, str]],
         word: Optional[str] = None,
         particles: frozenset = frozenset(PREPOSITION_INVENTORY),
+        func_words: frozenset = frozenset(),
     ) -> Optional[Analysis]:
         """Walk top-scored candidates and return the first that survives validation.
 
@@ -1257,20 +1425,24 @@ class MorphAnalyzer:
         NTWS loanword analysis but a lower-scored "real" one exists.
 
         If no candidate survives but the bare surface itself is a listed
-        preposition, return a particle analysis anyway — the token must
-        not depend on CAMeL's database having an entry for it.
+        preposition or function word (modulo alef variants), return a
+        particle analysis anyway — the token must not depend on CAMeL's
+        database having an entry for it.
         """
         for cand in candidates:
-            a = _dict_to_analysis(cand, particles, word)
+            a = _dict_to_analysis(cand, particles, word, func_words)
             if a is not None:
                 return a
         if word:
             bare = _strip_diac(word)
-            if bare in particles:
-                return Analysis(
-                    root="", pattern="", pattern_raw="", stem="",
-                    surface=word, lemma=word, pos="", particle=bare,
-                )
+            for inventory, kind in ((particles, "prep"), (func_words, "func")):
+                canonical = canonical_particle(bare, inventory)
+                if canonical:
+                    return Analysis(
+                        root="", pattern="", pattern_raw="", stem="",
+                        surface=word, lemma=word, pos="", particle=canonical,
+                        particle_kind=kind,
+                    )
         return None
 
     # ------------------------------------------------------------------
@@ -1339,8 +1511,10 @@ class CorpusEntry:
     surface: Optional[str] = None
     proclitics: Tuple[str, ...] = ()
     enclitics: Tuple[str, ...] = ()
-    particle: Optional[str] = None       # set for [PREP_*] words; root/pattern None
+    particle: Optional[str] = None       # set for [PREP_*] / [FUNC_*] words; root/pattern None
+    particle_kind: str = "prep"          # which closed group ``particle`` belongs to
     peeled: bool = False                 # analysis came from the clitic peeler
+    clitic_only: bool = False            # proclitic(s) + pronoun, no host (له, بها); root/pattern None
 
     @classmethod
     def from_analysis(cls, word: str, a: Optional[Analysis]) -> "CorpusEntry":
@@ -1352,7 +1526,12 @@ class CorpusEntry:
             return cls(
                 word=word, analyzed=True, surface=a.surface,
                 proclitics=proclitics, enclitics=enclitics, particle=a.particle,
-                peeled=a.peeled,
+                particle_kind=a.particle_kind, peeled=a.peeled,
+            )
+        if a.clitic_only:
+            return cls(
+                word=word, analyzed=True, surface=a.surface,
+                proclitics=proclitics, enclitics=enclitics, peeled=a.peeled, clitic_only=True,
             )
         return cls(
             word=word,
@@ -1379,7 +1558,9 @@ class CorpusEntry:
             "proclitics": list(self.proclitics),
             "enclitics": list(self.enclitics),
             "particle": self.particle,
+            "particle_kind": self.particle_kind,
             "peeled": self.peeled,
+            "clitic_only": self.clitic_only,
         }
 
     @classmethod
@@ -1395,5 +1576,7 @@ class CorpusEntry:
             proclitics=tuple(d.get("proclitics") or ()),
             enclitics=tuple(d.get("enclitics") or ()),
             particle=d.get("particle"),
+            particle_kind=d.get("particle_kind") or "prep",
             peeled=bool(d.get("peeled", False)),
+            clitic_only=bool(d.get("clitic_only", False)),
         )

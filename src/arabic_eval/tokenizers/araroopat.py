@@ -31,6 +31,7 @@ from tqdm import tqdm
 
 from arabic_eval.registry import tokenizer_registry
 from arabic_eval.tokenizers.araroopat_backend import (
+    FUNC_INVENTORY,
     PREPOSITION_INVENTORY,
     TAA_MARBUTA,
     Analysis,
@@ -62,6 +63,7 @@ PFX_PAT = "[PAT_"
 PFX_CLITICP = "[CLITICP_"  # proclitic (article, conjunction, preposition, ...)
 PFX_CLITICE = "[CLITICE_"  # enclitic (object/possessive pronouns)
 PFX_PREP = "[PREP_"        # closed-class preposition/particle, one token each
+PFX_FUNC = "[FUNC_"        # closed-class function word (pronoun, conjunction, ...), one token each
 PFX_CHAR = "[CHAR_"
 PFX_PUNCT = "[PUNCT_"
 PFX_DIGIT = "[DIGIT_"
@@ -124,6 +126,38 @@ def _classify_char(ch: str) -> str:
 # Tokenizer
 # ---------------------------------------------------------------------------
 
+def _check_closed_inventories(prepositions: Tuple[str, ...], func_words: Tuple[str, ...]) -> None:
+    """The two closed groups must be duplicate-free and must not shadow each other.
+
+    Exact duplicates (within or across the groups) are an error: one
+    surface, one token. Across the groups a collision *modulo alef
+    variants* is an error too: the intercept checks [PREP_*] first, so an
+    alef-folded input would never reach the [FUNC_*] entry. Within one
+    group a fold collision is allowed (أن and إن are different words that
+    both belong here); an exact spelling always wins, and a folded input
+    (ان) resolves to the entry that sorts first by code point (أ < إ < آ).
+    """
+    from arabic_eval.tokenizers.araroopat_backend import _alef_norm
+    exact: Dict[str, str] = {}
+    folded: Dict[str, Tuple[str, str]] = {}
+    for group, items in (("prepositions", prepositions), ("func_words", func_words)):
+        for w in items:
+            if w in exact:
+                raise ValueError(
+                    f"araroopat: {group!r} entry {w!r} is already listed under {exact[w]!r}; "
+                    "each closed-class surface may be listed once."
+                )
+            exact[w] = group
+            key = _alef_norm(w)
+            prev = folded.get(key)
+            if prev and prev[0] != group:
+                raise ValueError(
+                    f"araroopat: {group!r} entry {w!r} collides with {prev[0]}:{prev[1]!r} modulo alef "
+                    "variants; [PREP_*] is matched first and would shadow the [FUNC_*] entry."
+                )
+            folded.setdefault(key, (group, w))
+
+
 @tokenizer_registry.register("araroopat")
 class AraRooPatTokenizer(BaseTokenizer):
     """Arabic Roots & Patterns tokenizer (see module docstring)."""
@@ -143,6 +177,14 @@ class AraRooPatTokenizer(BaseTokenizer):
         self.prepositions: Tuple[str, ...] = tuple(
             kwargs.get("prepositions") or PREPOSITION_INVENTORY
         )
+        # Closed-class function words emitted as a single [FUNC_*] token
+        # (pronouns, demonstratives, relatives, conjunctions, interrogatives,
+        # particles). Fixed order = vocab ID order; the range follows the
+        # [PREP_*] range. See FUNC_INVENTORY in the backend.
+        self.func_words: Tuple[str, ...] = tuple(
+            kwargs.get("func_words") or FUNC_INVENTORY
+        )
+        _check_closed_inventories(self.prepositions, self.func_words)
         # Closed-list clitic peeler for clitic *combinations* the CAMeL
         # database has no row for (interrogative أ, double object pronouns,
         # classical كمو/همو). Runs only on a native CAMeL miss. See
@@ -173,6 +215,7 @@ class AraRooPatTokenizer(BaseTokenizer):
                 particles=frozenset(self.prepositions),
                 enable_peeler=self.clitic_peeler,
                 peel_bare_alef=self.peel_bare_alef,
+                func_words=frozenset(self.func_words),
             )
         return self._backend
 
@@ -230,14 +273,17 @@ class AraRooPatTokenizer(BaseTokenizer):
         proclitic_freq: Counter = Counter()
         enclitic_freq: Counter = Counter()
         particle_freq: Counter = Counter()
+        func_freq: Counter = Counter()
         for e in entries:
             if not e.analyzed:
                 continue
             if e.particle:
-                particle_freq[e.particle] += 1
+                (func_freq if e.particle_kind == "func" else particle_freq)[e.particle] += 1
             elif e.root and e.pattern:
                 root_freq[e.root] += 1
                 pat_freq[e.pattern] += 1
+            elif e.clitic_only:
+                pass   # nothing but clitics: they count into the two tables below
             else:
                 continue
             for c in e.proclitics:
@@ -246,9 +292,9 @@ class AraRooPatTokenizer(BaseTokenizer):
                 enclitic_freq[c] += 1
 
         logger.info(
-            "Pre-pass stats: %d analyzed words (%d prepositions), %d unique roots, "
+            "Pre-pass stats: %d analyzed words (%d prepositions, %d function words), %d unique roots, "
             "%d unique patterns, %d proclitic surfaces, %d enclitic surfaces.",
-            sum(1 for e in entries if e.analyzed), sum(particle_freq.values()),
+            sum(1 for e in entries if e.analyzed), sum(particle_freq.values()), sum(func_freq.values()),
             len(root_freq), len(pat_freq),
             len(proclitic_freq), len(enclitic_freq),
         )
@@ -261,7 +307,7 @@ class AraRooPatTokenizer(BaseTokenizer):
 
         # ---- Step 5: provenance metadata ----
         self._build_metadata(root_freq, pat_freq, proclitic_freq, enclitic_freq,
-                             entries, particle_freq)
+                             entries, particle_freq, func_freq)
 
         logger.info("AraRooPat trained — vocab size: %d", self.vocab_size)
         logger.info(
@@ -272,17 +318,17 @@ class AraRooPatTokenizer(BaseTokenizer):
             sum(1 for t in self._vocab if t.startswith(PFX_CLITICP)),
             sum(1 for t in self._vocab if t.startswith(PFX_CLITICE)),
             sum(1 for t in self._vocab
-                if t.startswith((PFX_PREP, PFX_CHAR, PFX_PUNCT, PFX_DIGIT, "<", "[L"))),
+                if t.startswith((PFX_PREP, PFX_FUNC, PFX_CHAR, PFX_PUNCT, PFX_DIGIT, "<", "[L"))),
             len(self._reconstruction),
         )
 
     # Bump when the post-processing in araroopat_backend changes shape
     # (_dict_to_analysis, normalize_pattern, strip_proclitics_from_start, ...).
-    _CACHE_FORMAT = 4
+    _CACHE_FORMAT = 7   # 5: [FUNC_*] group + alef-insensitive matching; 6: clitic-only words; 7: no peel onto them (2026-09-16)
 
     def _cache_key(self) -> Tuple[Any, ...]:
         return (self._CACHE_FORMAT, tuple(self.prepositions), self.clitic_peeler,
-                self.peel_bare_alef)
+                self.peel_bare_alef, tuple(self.func_words))
 
     def _corpus_prepass(self, texts: List[str], cache_dir: Path) -> List[CorpusEntry]:
         """Analyze every distinct *alpha chunk* in the corpus once. Cache to disk.
@@ -418,6 +464,9 @@ class AraRooPatTokenizer(BaseTokenizer):
         # not frequency-sorted, so IDs don't depend on the corpus.
         for prep in self.prepositions:
             add(f"{PFX_PREP}{prep}{SFX}")
+        # Then: function words, same fixed-order rule.
+        for w in self.func_words:
+            add(f"{PFX_FUNC}{w}{SFX}")
         # Then: chars (Arabic letters + diacritics), in fixed order.
         for ch in CHAR_INVENTORY:
             add(f"{PFX_CHAR}{ch}{SFX}")
@@ -522,9 +571,11 @@ class AraRooPatTokenizer(BaseTokenizer):
         enclitic_freq: Counter,
         entries: List[CorpusEntry],
         particle_freq: Optional[Counter] = None,
+        func_freq: Optional[Counter] = None,
     ) -> None:
         """Provenance: which roots/patterns came from which words, with examples."""
         particle_freq = particle_freq or Counter()
+        func_freq = func_freq or Counter()
         # Build root → example words map (up to 5 each).
         # Hoist the two vocab-derived sets out of the loop: they were being
         # rebuilt per entry, which is O(entries x vocab). At 506k analyzed
@@ -577,8 +628,14 @@ class AraRooPatTokenizer(BaseTokenizer):
                        "freq": particle_freq.get(prep, 0)}
                 for prep in self.prepositions
             },
+            "func_words": {
+                w: {"id": self._vocab[f"{PFX_FUNC}{w}{SFX}"],
+                    "freq": func_freq.get(w, 0)}
+                for w in self.func_words
+            },
             "config": {
                 "prepositions": list(self.prepositions),
+                "func_words": list(self.func_words),
                 "max_roots": self.max_roots,
                 "max_patterns": self.max_patterns,
                 "min_root_freq": self.min_root_freq,
@@ -588,6 +645,14 @@ class AraRooPatTokenizer(BaseTokenizer):
                 "clitic_peeler": self.clitic_peeler,
                 "peel_bare_alef": self.peel_bare_alef,
             },
+            # Pronoun-hosted prepositions emitted as clitic tokens only.
+            "clitic_only": {
+                "count": sum(1 for e in entries if e.clitic_only),
+                "examples": [
+                    {"word": e.word, "proclitics": list(e.proclitics), "enclitics": list(e.enclitics)}
+                    for e in [x for x in entries if x.clitic_only][:50]
+                ],
+            },
             # Provenance for the clitic peeler: how many corpus words only
             # analyze because of it, with examples for auditing false peels.
             "peeled": {
@@ -595,7 +660,8 @@ class AraRooPatTokenizer(BaseTokenizer):
                 "examples": [
                     {"word": e.word, "proclitics": list(e.proclitics),
                      "enclitics": list(e.enclitics), "root": e.root,
-                     "pattern": e.pattern, "particle": e.particle}
+                     "pattern": e.pattern, "particle": e.particle,
+                     "particle_kind": e.particle_kind}
                     for e in [x for x in entries if x.peeled][:200]
                 ],
             },
@@ -678,10 +744,11 @@ class AraRooPatTokenizer(BaseTokenizer):
         a: Optional[Analysis] = backend.analyze(chunk)
 
         if a is not None and a.particle:
-            prep_tok = f"{PFX_PREP}{a.particle}{SFX}"
+            pfx = PFX_FUNC if a.particle_kind == "func" else PFX_PREP
+            prep_tok = f"{pfx}{a.particle}{SFX}"
             proc = a.proclitics
             enc = a.pronoun_enclitics
-            # Commit to the PREP path only if every token it needs exists;
+            # Commit to the PREP/FUNC path only if every token it needs exists;
             # a half-tokenized word (LIT clitic + PREP) would decode with a
             # space in it, so an OOV clitic sends the whole chunk to LIT.
             needed = [prep_tok] + [f"{PFX_CLITICP}{c}{SFX}" for c in proc] \
@@ -695,6 +762,22 @@ class AraRooPatTokenizer(BaseTokenizer):
                 # concatenate back into the word for aligned_token_offsets.
                 core = _strip_clitic_surfaces(strip_diacritics(a.surface or chunk), proc, enc)
                 toks.append(_clean_arabic(core) or _clean_arabic(a.particle))
+                for c in enc:
+                    self._emit_clitic(c, ids, toks, kind="e")
+                return
+            self._emit_lit(chunk, ids, toks)
+            return
+
+        if a is not None and a.clitic_only:
+            # Pronoun-hosted preposition (له, بها, ولهم): the clitic tokens
+            # and nothing else. Same all-or-nothing rule — an OOV clitic
+            # token sends the whole chunk to LIT.
+            proc = a.proclitics
+            enc = a.pronoun_enclitics
+            needed = [f"{PFX_CLITICP}{c}{SFX}" for c in proc] + [f"{PFX_CLITICE}{c}{SFX}" for c in enc]
+            if proc and enc and all(t in self._vocab for t in needed):
+                for c in proc:
+                    self._emit_clitic(c, ids, toks, kind="p")
                 for c in enc:
                     self._emit_clitic(c, ids, toks, kind="e")
                 return
@@ -807,7 +890,7 @@ class AraRooPatTokenizer(BaseTokenizer):
         pending_root_id: Optional[int] = None
         in_lit = False
         lit_buffer: List[str] = []
-        # Bare surface of the [PREP_*] just flushed as out[-1] (None once
+        # Bare surface of the [PREP_*] / [FUNC_*] just flushed as out[-1] (None once
         # anything else is emitted). Enclitics attach to prepositions with
         # orthographic adjustments (إلى+ه → إليه, من+ما → مما) that must
         # not fire on nouns (مستشفى+ه → مستشفاه, a different rule).
@@ -816,6 +899,15 @@ class AraRooPatTokenizer(BaseTokenizer):
         def attach_enclitic(s: str) -> None:
             """Append enclitic surface to the just-emitted word, or drop it."""
             nonlocal last_particle
+            if clitic_prefix:
+                # Proclitics with no host yet + an enclitic = a clitic-only
+                # word (له = ل + ه, ولهم = و + ل + هم). Close them into a
+                # word of their own rather than attaching the pronoun to
+                # the previous word.
+                out.append(join_proclitics(clitic_prefix) + s)
+                clitic_prefix.clear()
+                last_particle = None
+                return
             if out and last_particle is not None:
                 prefix = out[-1][: len(out[-1]) - len(last_particle)]
                 out[-1] = prefix + join_particle_enclitic(last_particle, s)
@@ -877,9 +969,12 @@ class AraRooPatTokenizer(BaseTokenizer):
                 attach_enclitic(tok[len(PFX_CLITICE):-len(SFX)])
                 continue
 
-            if tok.startswith(PFX_PREP):
+            if tok.startswith((PFX_PREP, PFX_FUNC)):
+                # Both closed groups decode the same way: the word itself,
+                # then a following enclitic joins with the particle rules.
                 dump_orphan_root()
-                prep = tok[len(PFX_PREP):-len(SFX)]
+                pfx = PFX_PREP if tok.startswith(PFX_PREP) else PFX_FUNC
+                prep = tok[len(pfx):-len(SFX)]
                 flush_word(prep)
                 last_particle = prep
                 continue
@@ -1010,6 +1105,7 @@ class AraRooPatTokenizer(BaseTokenizer):
                 "use_diacritized_surface": self.use_diacritized_surface,
                 "add_bos_eos": self.add_bos_eos,
                 "prepositions": list(self.prepositions),
+                "func_words": list(self.func_words),
                 "clitic_peeler": self.clitic_peeler,
                 "peel_bare_alef": self.peel_bare_alef,
             }, f, ensure_ascii=False, indent=2)
@@ -1030,6 +1126,8 @@ class AraRooPatTokenizer(BaseTokenizer):
         # no such tokens in vocab.json; keep them decodable/encodable as
         # they were (encode falls through to LIT when the token is absent).
         self.prepositions = tuple(cfg.get("prepositions") or ())
+        # Likewise for the [FUNC_*] range (added 2026-09-16).
+        self.func_words = tuple(cfg.get("func_words") or ())
         # Pre-peeler tokenizers have no [CLITICE_كمو]-style tokens; the
         # all-or-nothing clitic check in _emit_alpha keeps them consistent.
         self.clitic_peeler = bool(cfg.get("clitic_peeler", True))

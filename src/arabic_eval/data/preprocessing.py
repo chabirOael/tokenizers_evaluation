@@ -12,7 +12,11 @@ if TYPE_CHECKING:
 # Arabic diacritics (tashkeel) Unicode range
 _DIACRITICS = re.compile(r"[\u0617-\u061A\u064B-\u0652\u0670]")
 
-# Normalize various alef forms to bare alef
+# Alef variants (آ أ إ ٱ) → bare alef. OFF by default since 2026-09-16: the
+# fold rewrote 13.4 % of ArabicText-Large's words (إلى 65,533 vs الى 102 in
+# the raw corpus) into spellings that the Phase 1–3 corpora, the pretraining
+# mix and every eval benchmark never use — a train/eval skew for every
+# from-scratch tokenizer while the native Llama/Qwen tokenizers saw raw text.
 _ALEF_VARIANTS = re.compile(r"[\u0622\u0623\u0625\u0671]")
 
 # Normalize teh marbuta to heh
@@ -47,7 +51,7 @@ def normalize_arabic(
     text: str,
     normalize_unicode: bool = True,
     remove_diacritics: bool = False,
-    normalize_alef: bool = True,
+    normalize_alef: bool = False,
     remove_tatweel: bool = True,
     join_lone_waw: bool = False,
 ) -> str:
@@ -77,11 +81,26 @@ def preprocess_dataset(
     text_column: str = "text",
     normalize_unicode: bool = True,
     remove_diacritics: bool = False,
+    normalize_alef: bool = False,
+    remove_tatweel: bool = True,
     min_text_length: int = 10,
     join_lone_waw: bool = False,
     **kwargs,
 ) -> DatasetDict:
-    """Apply preprocessing to all splits in a DatasetDict."""
+    """Apply preprocessing to all splits in a DatasetDict.
+
+    Every ``normalize_arabic`` knob is plumbed explicitly (the YAML
+    ``data.preprocessing`` block maps 1:1 onto these arguments). An unknown
+    key is an error rather than a silent no-op: before 2026-09-16
+    ``normalize_alef`` was swallowed by ``**kwargs`` and the function-level
+    default (then ``True``) silently applied whatever the YAML said.
+    """
+    if kwargs:
+        raise ValueError(
+            f"preprocess_dataset: unknown preprocessing key(s) {sorted(kwargs)}; "
+            "known keys: normalize_unicode, remove_diacritics, normalize_alef, "
+            "remove_tatweel, min_text_length, join_lone_waw"
+        )
 
     def _process(example):
         text = example[text_column]
@@ -91,6 +110,8 @@ def preprocess_dataset(
             text,
             normalize_unicode=normalize_unicode,
             remove_diacritics=remove_diacritics,
+            normalize_alef=normalize_alef,
+            remove_tatweel=remove_tatweel,
             join_lone_waw=join_lone_waw,
         )
         example[text_column] = text

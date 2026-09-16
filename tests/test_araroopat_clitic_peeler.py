@@ -428,7 +428,7 @@ class TestEncodeDecode:
 
     def test_cache_key_changed_and_flags_persist(self, tmp_path, tok):
         assert AraRooPatTokenizer._CACHE_FORMAT >= 4
-        assert tok._cache_key()[2:] == (True, False)
+        assert tok._cache_key()[2:4] == (True, False)
         tok.save(tmp_path)
         loaded = AraRooPatTokenizer()
         loaded.load(tmp_path)

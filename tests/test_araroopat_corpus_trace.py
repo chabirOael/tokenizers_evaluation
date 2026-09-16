@@ -121,6 +121,16 @@ def test_categorize_mirrors_emit_alpha_rules():
     assert cat(True, "في", None, None, (), ()) == "prep"
     assert cat(True, "في", None, None, (), ("ه",)) == "lit_clitic_missing"
     assert cat(True, "على", None, None, (), ()) == "lit_clitic_missing"
+    # the func group has its own prefix and category; a func surface is never looked up as [PREP_*]
+    vocab["[FUNC_هذا]"] = 6
+    assert cat(True, "هذا", None, None, (), (), particle_kind="func") == "func"
+    assert cat(True, "هذا", None, None, (), ()) == "lit_clitic_missing"
+    assert cat(True, "في", None, None, (), (), particle_kind="func") == "lit_clitic_missing"
+    # clitic-only words: proclitic + pronoun tokens, nothing else
+    vocab["[CLITICP_ل]"] = 7; vocab["[CLITICE_ه]"] = 8
+    assert cat(True, None, None, None, ("ل",), ("ه",), clitic_only=True) == "clitic"
+    assert cat(True, None, None, None, ("ل",), ("هم",), clitic_only=True) == "lit_clitic_missing"
+    assert cat(True, None, None, None, ("ل",), (), clitic_only=True) == "lit_clitic_missing"
     assert cat(True, None, "", "", (), ()) == "lit_no_analysis"
     assert [k for k, _ in C.CATEGORIES] == list(C.CATEGORY_LABEL)
 
@@ -143,6 +153,8 @@ def _entries():
         E(word="مدرسته", analyzed=True, root="درس", pattern="مَ1ْ2َ3َ", pattern_raw="مَ1ْ2َ3َت", stem="مَدْرَسَ", surface="مَدْرَسَتِهِ", enclitics=("ة", "ه")),
         E(word="في", analyzed=True, particle="في", surface="في"),
         E(word="وعليه", analyzed=True, particle="على", surface="وعليه", proclitics=("و",), enclitics=("ه",)),
+        E(word="وهم", analyzed=True, particle="هم", particle_kind="func", surface="وهم", proclitics=("و",)),
+        E(word="له", analyzed=True, clitic_only=True, surface="له", proclitics=("ل",), enclitics=("ه",)),
         E(word="أتكتب", analyzed=True, root="كتب", pattern="تَ1ْ2ُ3", pattern_raw="تَ1ْ2ُ3", stem="تَكْتُب", surface="أَتَكْتُب", proclitics=("أ",), peeled=True),
         E(word="مايكروسوفت", analyzed=False),
         E(word="جوجل", analyzed=False),
@@ -157,22 +169,25 @@ def _fake_tok(vocab, max_roots=100, max_patterns=100, min_root_freq=1, min_patte
 
 def test_word_index_paths_records_and_query():
     from collections import Counter
-    counts = Counter({"الكتاب": 50, "كتب": 5, "قال": 40, "مدرسته": 3, "في": 900, "وعليه": 7, "أتكتب": 2, "مايكروسوفت": 20, "جوجل": 1})
+    counts = Counter({"الكتاب": 50, "كتب": 5, "قال": 40, "مدرسته": 3, "في": 900, "وعليه": 7, "وهم": 6, "له": 4, "أتكتب": 2, "مايكروسوفت": 20, "جوجل": 1})
     W = C.WordCategoryIndex(_entries(), counts)
     # exclusive pre-pass paths that sum to the number of unique chunks; a peeled particle would count as peeled
-    assert W.path_totals() == {"ROOT+PAT": 4, "PREP": 2, "peeled": 1, "LIT": 2} and W.analyzed_count == 7
+    assert W.path_totals() == {"ROOT+PAT": 4, "PREP": 2, "FUNC": 1, "CLITIC": 1, "peeled": 1, "LIT": 2} and W.analyzed_count == 9
     assert [r[W.W] for r in W.rows[:3]] == ["في", "الكتاب", "قال"]          # sorted by occurrences
     rec = W.record("مدرسته")
     assert rec == {**rec, "path": "root_pat", "path_label": "ROOT+PAT", "analyzed": True, "root": "درس", "pattern": "مَ1ْ2َ3َ",
                    "pattern_raw": "مَ1ْ2َ3َت", "stem": "مَدْرَسَ", "surface": "مَدْرَسَتِهِ", "proclitics": [], "enclitics": ["ة", "ه"],
                    "category": None, "count": 3}
     assert W.record("زرافة") is None and W.cached("في")["path"] == "prep" and "surface" not in W.cached("في")
+    assert W.cached("وهم")["path"] == "func" and W.record("وهم")["particle_kind"] == "func" and W.record("في")["particle_kind"] == "prep"
+    assert W.cached("له")["path"] == "clitic" and W.record("له")["clitic_only"] is True and W.record("في")["clitic_only"] is False
     # path filters, aliases, full records, paging, substring
     assert W.query(path="lit")["total"] == 2 and [r["word"] for r in W.query(path="lit")["rows"]] == ["مايكروسوفت", "جوجل"]
-    assert W.query(path="analyzed")["total"] == 7 and W.query(path="rejected")["total"] == 2
+    assert W.query(path="analyzed")["total"] == 9 and W.query(path="rejected")["total"] == 2
+    assert W.query(path="func")["total"] == 1 and W.query(path="clitic")["total"] == 1
     assert W.query(path="peeled", full=True)["rows"][0]["proclitics"] == ["أ"]
     q = W.query(path="analyzed", limit=3, offset=3)
-    assert q["total"] == 7 and [r["word"] for r in q["rows"]] == ["وعليه", "كتب", "مدرسته"]
+    assert q["total"] == 9 and [r["word"] for r in q["rows"]] == ["وعليه", "وهم", "كتب"]
     assert [r["word"] for r in W.query(q="كتب", path="root_pat")["rows"]] == ["كتب"]   # peeled أتكتب is on another path
     assert W.query(q="كتب")["total"] == 2 and W._filter_cache[0] == (None, None, "كتب", None)
     with pytest.raises(ValueError):
@@ -180,13 +195,13 @@ def test_word_index_paths_records_and_query():
     # categories need the vocab: cut the pattern of قال and keep everything else
     vocab = {"[ROOT_كتب]": 1, "[ROOT_ق#ل]": 2, "[ROOT_درس]": 3, "[PAT_1ِ2ا3]": 4, "[PAT_1َ2َ3َ]": 5, "[PAT_مَ1ْ2َ3َ]": 6,
              "[PAT_تَ1ْ2ُ3]": 7, "[CLITICP_ال]": 8, "[CLITICP_و]": 9, "[CLITICP_أ]": 10, "[CLITICE_ة]": 11, "[CLITICE_ه]": 12,
-             "[PREP_في]": 13, "[PREP_على]": 14}
+             "[PREP_في]": 13, "[PREP_على]": 14, "[FUNC_هم]": 15, "[CLITICP_ل]": 16}
     root_freq, pat_freq = Counter({"كتب": 3, "درس": 1, "ق#ل": 1}), Counter({"1ِ2ا3": 1, "1َ2َ3َ": 1, "1ا3َ": 1, "مَ1ْ2َ3َ": 1, "تَ1ْ2ُ3": 1})
     W.attach_vocab(_fake_tok(vocab), root_freq, pat_freq)
-    assert W.counts == {"root_pat": 3, "root_pat_peeled": 1, "prep": 2, "lit_no_analysis": 2, "lit_root_cut": 0, "lit_pattern_cut": 1, "lit_clitic_missing": 0}
+    assert W.counts == {"root_pat": 3, "root_pat_peeled": 1, "prep": 2, "func": 1, "clitic": 1, "lit_no_analysis": 2, "lit_root_cut": 0, "lit_pattern_cut": 1, "lit_clitic_missing": 0}
     assert W.cached("قال")["category"] == "lit_pattern_cut" and W.cached("قال")["path"] == "root_pat"
     s = W.summary()
-    assert [p["unique"] for p in s["paths"]] == [4, 2, 1, 2] and s["analyzed"] == 7 and s["path_aliases"]["analyzed"] == ["root_pat", "prep", "peeled"]
+    assert [p["unique"] for p in s["paths"]] == [4, 2, 1, 1, 1, 2] and s["analyzed"] == 9 and s["path_aliases"]["analyzed"] == ["root_pat", "prep", "func", "clitic", "peeled"]
     assert W.query(category="lit_pattern_cut", path="analyzed")["total"] == 1 and W.query(category="lit_pattern_cut", path="lit")["total"] == 0
     assert "never produced" in W.budget_reason("pattern", "1ُ2ُو3", vocab)["reason"]
 
@@ -198,7 +213,7 @@ def test_freq_index_search_kept_and_paging():
         Counter({"كتب": 9, "ق#ل": 4, "درس": 4, "س#ر": 1}), Counter({"مَ1ْ2ُو3": 7, "1ا2ِ3": 7, "1َ2َ3َ": 2, "مَ1ْ2ُو3َة": 1}),
         Counter({"ال": 20, "و": 3}), Counter({"ه": 5}), Counter({"في": 12}),
         {"root": {"كتب": ["الكتاب", "كتب"], "ق#ل": ["قال"]}, "pat": {"مَ1ْ2ُو3": ["مكتوب"]}}, vocab)
-    assert F.sizes == {"root": 4, "pat": 4, "prc": 2, "enc": 1, "prep": 1} and F.kept == {"root": 2, "pat": 2, "prc": 1, "enc": 1, "prep": 1}
+    assert F.sizes == {"root": 4, "pat": 4, "prc": 2, "enc": 1, "prep": 1, "func": 0} and F.kept == {"root": 2, "pat": 2, "prc": 1, "enc": 1, "prep": 1, "func": 0}
     page = F.query("root")
     assert [(r["rank"], r["key"], r["freq"], r["in_vocab"]) for r in page["rows"]] == [(1, "كتب", 9, True), (2, "درس", 4, False), (3, "ق#ل", 4, True), (4, "س#ر", 1, False)]
     assert page["max_freq"] == 9 and page["candidates"] == 4 and page["rows"][0]["words"] == ["الكتاب", "كتب"] and page["from_metadata"] is False
@@ -220,7 +235,9 @@ def test_freq_index_search_kept_and_paging():
     meta = {"roots": {"كتب": {"freq": 9, "example_words": ["الكتاب"]}}, "patterns": {"مَ1ْ2ُو3": {"freq": 7, "examples": [["x", "مكتوب"], "مطلوب"]}},
             "proclitic_freq": {"ال": 20}, "enclitic_freq": {}, "prepositions": {"في": {"freq": 12}}}
     G = C.FreqIndex.from_metadata(meta, vocab)
-    assert G.from_metadata and G.sizes == {"root": 1, "pat": 1, "prc": 1, "enc": 0, "prep": 1}
+    assert G.from_metadata and G.sizes == {"root": 1, "pat": 1, "prc": 1, "enc": 0, "prep": 1, "func": 0}
+    H = C.FreqIndex.from_metadata({**meta, "func_words": {"هذا": {"freq": 30}}}, {**vocab, "[FUNC_هذا]": 8})
+    assert H.sizes["func"] == 1 and H.query("func")["rows"][0] == {**H.query("func")["rows"][0], "key": "هذا", "freq": 30, "in_vocab": True}
     assert G.query("pat")["rows"][0]["words"] == ["مكتوب", "مطلوب"] and G.query("root")["rows"][0]["words"] == ["الكتاب"]
 
 
@@ -343,7 +360,10 @@ def test_corpus_job_train_cache_search_save_load():
             toks = [j2.tokenizer._reverse_vocab[i_] for i_ in j2.tokenizer.encode(w).input_ids]
             cat = C.CATEGORIES[W.cats[i]][0]
             is_lit, is_prep, is_rp = "[LIT_BEGIN]" in toks, any(t.startswith("[PREP_") for t in toks), any(t.startswith("[ROOT_") for t in toks)
-            assert (cat.startswith("lit") and is_lit and not is_rp) or (cat == "prep" and is_prep) or (cat.startswith("root_pat") and is_rp), (w, cat, toks)
+            is_func = any(t.startswith("[FUNC_") for t in toks)
+            is_clitic = bool(toks) and all(t.startswith(("[CLITICP_", "[CLITICE_")) for t in toks if t not in ("<s>", "</s>"))
+            assert (cat.startswith("lit") and is_lit and not is_rp) or (cat == "prep" and is_prep) or (cat == "func" and is_func) \
+                or (cat == "clitic" and is_clitic) or (cat.startswith("root_pat") and is_rp), (w, cat, toks)
         assert W.query("prep")["rows"] and all(r["category"] == "prep" for r in W.query("prep")["rows"])
         q = W.query(q="كتاب", limit=2); assert q["total"] >= 3 and len(q["rows"]) == 2 and W.query(q="كتاب", limit=2, offset=2)["rows"]
         with pytest.raises(ValueError):

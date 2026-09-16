@@ -125,7 +125,7 @@ looked up in the reconstruction table (`reconstructs 'X'` hits). Family chips, p
 `encode()` on any text (`POST /api/corpus/encode`): the token stream, its `decode()` round-trip,
 and every alpha chunk classified by the path it took — the exact all-or-nothing rule of
 `_emit_alpha` (`categorize` in `araroopat_corpus_trace.py`): `ROOT+PAT`, `ROOT+PAT (peeled)`,
-`PREP`, `LIT: no analysis`, `LIT: root cut`, `LIT: pattern cut`, `LIT: clitic / particle token
+`PREP`, `FUNC`, `LIT: no analysis`, `LIT: root cut`, `LIT: pattern cut`, `LIT: clitic / particle token
 missing`. Filter the chunks by path, expand any of them (**process ▾**, `GET
 /api/corpus/word_trace?word=`) to replay it live: CAMeL's candidates with every
 `_dict_to_analysis` gate (tab 01's cards), the peeler's slicings, the vocab check with the
@@ -137,7 +137,7 @@ occurrences, with a substring filter, a *peeled only* toggle, paging and the sam
 view. **Send to decode** copies any stream into the playground.
 
 **Every record, paged.** The corpus-scale cards keep their seeded samples but no longer stop
-there. In the *validate* card every counter (`analyzed`, `rejected → LIT`, `ROOT+PAT`, `PREP`,
+there. In the *validate* card every counter (`analyzed`, `rejected → LIT`, `ROOT+PAT`, `PREP`, `FUNC`,
 `peeled`, `LIT`) is a button that opens a **records browser** inside the card: every unique
 chunk on that pre-pass path, by occurrences, with the analysis the pre-pass stored, the
 category `encode()` gives it under the built vocab (an analyzed word can still land in LIT
@@ -145,15 +145,15 @@ when its root or pattern was cut by the budget), a substring filter, page sizes 
 first / prev / next / last, jump-to-page, and **process ▾** on every row. The *peel* card's
 `rescued` / `exhausted` counters open the same browser on the peeled / LIT paths; the
 *entries* card is the browser in full-record mode (all eleven `CorpusEntry` columns). The
-counters are **exclusive pre-pass paths** (`prepass_path`: lit → peeled → prep → root_pat), so
+counters are **exclusive pre-pass paths** (`prepass_path`: lit → peeled → prep / func → root_pat), so
 they sum to the number of unique chunks; a peeled particle counts as *peeled*. Backed by
 `WordCategoryIndex`, which now keeps every `CorpusEntry` field for every chunk (shared
 strings interned — ≈ 260 MB for the 1.09 M chunks of the full corpus, measured) so the 2.6 GB
 of `CorpusEntry` objects can still be dropped after the trace; the last filtered index list is
 cached so paging a substring search does not rescan the million rows. `GET
-/api/corpus/words?path=root_pat|prep|peeled|lit|analyzed|rejected&full=1&…`. The *freq* card's
+/api/corpus/words?path=root_pat|prep|func|peeled|lit|analyzed|rejected&full=1&…`. The *freq* card's
 `root_freq` and `pat_freq` tables are server-paged browsers over **every candidate**
-(`FreqIndex`, `GET /api/corpus/freq?kind=root|pat|prc|enc|prep&q=&kept=&limit=&offset=`): rank,
+(`FreqIndex`, `GET /api/corpus/freq?kind=root|pat|prc|enc|prep|func&q=&kept=&limit=&offset=`): rank,
 key with its wazn, frequency bar, **kept / cut** against the vocab (chips), contributing words,
 and a search box — roots with the token search's wildcard rule (`قول` finds `ق#ل`), patterns
 by CAMeL slots *or* wazn, tashkeel ignored (`مفعول`, `1ا2`). In saved mode the same browsers

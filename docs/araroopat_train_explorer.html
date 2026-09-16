@@ -16,6 +16,7 @@
   --pat:#26619C;  --pat-soft:#DEE8F3;
   --clitic:#0F6E62; --clitic-soft:#D7EFEB;
   --prep:#6B4FA3; --prep-soft:#E9E2F5;
+  --func:#9A4B7A; --func-soft:#F6E3EE;
   --lit:#6E807A; --lit-soft:#E5EAE8;
   --unk:#8A5D00; --unk-soft:#F6ECD6;
   --special:#7C8496; --special-soft:#E9EBF0;
@@ -38,6 +39,7 @@
     --pat:#84B4E8;  --pat-soft:#132436;
     --clitic:#48CBB6; --clitic-soft:#0D2A26;
     --prep:#B9A3E6; --prep-soft:#221A38;
+    --func:#E0A0C6; --func-soft:#33182A;
     --lit:#8CA098; --lit-soft:#1B2422;
     --unk:#E0B35C; --unk-soft:#2E2413;
     --special:#98A0B4; --special-soft:#1C1F28;
@@ -55,6 +57,7 @@
   --pat:#84B4E8;  --pat-soft:#132436;
   --clitic:#48CBB6; --clitic-soft:#0D2A26;
   --prep:#B9A3E6; --prep-soft:#221A38;
+  --func:#E0A0C6; --func-soft:#33182A;
   --lit:#8CA098; --lit-soft:#1B2422;
   --unk:#E0B35C; --unk-soft:#2E2413;
   --special:#98A0B4; --special-soft:#1C1F28;
@@ -179,6 +182,7 @@ td.ar,th.ar{text-align:right}
 .tok.root{background:var(--root-soft);color:var(--root)} .tok.pat{background:var(--pat-soft);color:var(--pat)}
 .tok.cliticp,.tok.clitice{background:var(--clitic-soft);color:var(--clitic)}
 .tok.prep{background:var(--prep-soft);color:var(--prep)}
+.tok.func{background:var(--func-soft);color:var(--func)}
 .tok.char,.tok.lit{background:var(--lit-soft);color:var(--lit)}
 .tok.digit{background:var(--digit-soft);color:var(--digit)} .tok.punct{background:var(--punct-soft);color:var(--punct)}
 .tok.special{background:var(--special-soft);color:var(--special)} .tok.unk{background:var(--unk-soft);color:var(--unk)}
@@ -238,7 +242,7 @@ td.ar,th.ar{text-align:right}
 /* vocab layout */
 .rangebar{display:flex;height:34px;border-radius:8px;overflow:hidden;border:1px solid var(--line);margin-bottom:10px}
 .rangebar div{display:flex;align-items:center;justify-content:center;font-family:var(--mono);font-size:10.5px;color:#fff;min-width:14px;transition:flex .6s ease}
-.rangebar .f-special{background:var(--special)} .rangebar .f-lit{background:var(--lit)} .rangebar .f-cliticp,.rangebar .f-clitice{background:var(--clitic)} .rangebar .f-prep{background:var(--prep)}
+.rangebar .f-special{background:var(--special)} .rangebar .f-lit{background:var(--lit)} .rangebar .f-cliticp,.rangebar .f-clitice{background:var(--clitic)} .rangebar .f-prep{background:var(--prep)} .rangebar .f-func{background:var(--func)}
 .rangebar .f-char{background:var(--lit);opacity:.75} .rangebar .f-digit{background:var(--digit)} .rangebar .f-punct{background:var(--punct)}
 .rangebar .f-root{background:var(--root)} .rangebar .f-pat{background:var(--pat)}
 .legend{display:flex;flex-wrap:wrap;gap:8px 14px;font-size:12px;color:var(--ink-2);margin-bottom:12px}
@@ -301,6 +305,11 @@ footer{border-top:1px solid var(--line);padding:18px 0 40px;color:var(--ink-3);f
 .cx-modebox .params{margin-top:4px}
 .params input[type=text],.cx-modebox select,#cx-search-q,#cx-save-name{border:1px solid var(--line);border-radius:6px;padding:6px 8px;font:inherit;font-size:12.5px;background:var(--paper);color:var(--ink);width:100%}
 #cx-probe{min-height:110px;font-size:18px}
+/* the two-column params grid must never grow past the card: a long unbreakable note (a JSON dump) once pushed
+   "max rows" and "cache policy" behind the neighbouring card */
+#p-corpus .params{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}
+#p-corpus .params label{min-width:0}
+#p-corpus .params .real{overflow-wrap:anywhere}
 #cx-steps{margin:22px 0 40px;display:flex;flex-direction:column;gap:16px}
 .cx-progress{margin-top:12px;border:1px solid var(--line);border-radius:var(--radius);padding:12px 14px;background:var(--sunken);font-size:12.5px}
 .cx-progress .stage{font-weight:600;color:var(--ink);display:flex;gap:10px;align-items:center;flex-wrap:wrap}
@@ -689,7 +698,8 @@ function patView(pat){
   }
   return c;
 }
-const famOfTok = t => t.startsWith('[ROOT_')?'root':t.startsWith('[PAT_')?'pat':t.startsWith('[CLITICP_')?'cliticp':t.startsWith('[CLITICE_')?'clitice':t.startsWith('[PREP_')?'prep':t.startsWith('[CHAR_')?'char':t.startsWith('[DIGIT_')?'digit':t.startsWith('[PUNCT_')?'punct':t.startsWith('[LIT')?'lit':t==='<unk>'?'unk':'special';
+const particleChip = (p, kind) => kind==='func' ? tok('[FUNC_'+p+']','func') : tok('[PREP_'+p+']','prep');
+const famOfTok = t => t.startsWith('[ROOT_')?'root':t.startsWith('[PAT_')?'pat':t.startsWith('[CLITICP_')?'cliticp':t.startsWith('[CLITICE_')?'clitice':t.startsWith('[PREP_')?'prep':t.startsWith('[FUNC_')?'func':t.startsWith('[CHAR_')?'char':t.startsWith('[DIGIT_')?'digit':t.startsWith('[PUNCT_')?'punct':t.startsWith('[LIT')?'lit':t==='<unk>'?'unk':'special';
 
 function table(cols, rows){
   const t = h('table', {}, h('thead', {}, h('tr', {}, ...cols.map(c => h('th', {class: c.ar?'ar':''}, c.label)))));
@@ -821,7 +831,7 @@ R.validate = d => {
       inner.append(h('div',{class:'subh'}, `candidate #${c.index} — raw dict from the server (12 trimmed fields)`), candidateDict(c.candidate));
       inner.append(h('div',{class:'subh'}, '_dict_to_analysis gates, in order'), gatesView(c.gates));
       if (c.accepted){
-        inner.append(h('div',{class:'subh'},'→ Analysis (emission order)'), h('div',{class:'tokrow ltr'}, ...[c.analysis.prc3,c.analysis.prc2,c.analysis.prc1,c.analysis.prc0].filter(Boolean).map(x=>tok('[CLITICP_'+x+']','cliticp')), ...(c.analysis.particle ? [tok('[PREP_'+c.analysis.particle+']','prep')] : [tok('[ROOT_'+c.analysis.root+']','root'), tok('[PAT_'+c.analysis.pattern+']','pat')]), c.analysis.fem?tok('[CLITICE_'+c.analysis.fem+']','clitice'):null, c.analysis.enc0?tok('[CLITICE_'+c.analysis.enc0+']','clitice'):null, c.analysis.enc1?tok('[CLITICE_'+c.analysis.enc1+']','clitice'):null),
+        inner.append(h('div',{class:'subh'},'→ Analysis (emission order)'), h('div',{class:'tokrow ltr'}, ...[c.analysis.prc3,c.analysis.prc2,c.analysis.prc1,c.analysis.prc0].filter(Boolean).map(x=>tok('[CLITICP_'+x+']','cliticp')), ...(c.analysis.particle ? [particleChip(c.analysis.particle, c.analysis.particle_kind)] : c.analysis.clitic_only ? [] : [tok('[ROOT_'+c.analysis.root+']','root'), tok('[PAT_'+c.analysis.pattern+']','pat')]), c.analysis.fem?tok('[CLITICE_'+c.analysis.fem+']','clitice'):null, c.analysis.enc0?tok('[CLITICE_'+c.analysis.enc0+']','clitice'):null, c.analysis.enc1?tok('[CLITICE_'+c.analysis.enc1+']','clitice'):null),
           h('div',{class:'kv',style:'margin-top:8px'}, ...['stem','surface','lemma','pos'].map(k => h('div',{}, h('span',{class:'k'},k), h('span',{class:'v'+(k==='pos'?' lat':'')}, c.analysis[k])))));
       } else {
         inner.append(h('div',{style:'margin-top:8px'}, badge('rejected: '+c.reject_reason,'bad')));
@@ -836,7 +846,7 @@ R.validate = d => {
 R.peel = d => {
   const out = h('div', {});
   if (!d.enabled) { out.append(h('p',{class:'muted'}, 'clitic_peeler is off — every native miss goes straight to the character fallback.')); return out; }
-  out.append(h('div',{}, h('span',{class:'stat'}, h('b',{},d.rescued), h('span',{},'rescued → ROOT+PAT / PREP')), h('span',{class:'stat'}, h('b',{},d.total-d.rescued), h('span',{},'exhausted → LIT fallback'))));
+  out.append(h('div',{}, h('span',{class:'stat'}, h('b',{},d.rescued), h('span',{},'rescued → ROOT+PAT / PREP / FUNC / CLITIC')), h('span',{class:'stat'}, h('b',{},d.total-d.rescued), h('span',{},'exhausted → LIT fallback'))));
   if (!d.words.length) out.append(h('p',{class:'muted'}, 'Nothing to peel: CAMeL analysed every word natively.'));
   const list = seq(''); list.style.setProperty('--stagger','80ms');
   for (const w of d.words){
@@ -878,7 +888,7 @@ R.freq = d => {
       {label:'key', render:r=>tok(r.key, fam)}, {label:'freq', render:r=>h('span',{}, mono(r.freq), h('span',{class:'bar', style:`width:${Math.round(100*r.freq/max)}px`}))},
       {label:'from words', ar:true, render:r=>h('span',{class:'tokrow'}, ...r.words.map(w=>h('span',{class:'run',style:'font-size:15px'},w)))}], rows) : h('p',{class:'muted small'},'empty'));
   };
-  return h('div', {class:'twocol'}, ft(d.root_freq,'root','root_freq'), ft(d.pat_freq,'pat','pat_freq'), ft(d.proclitic_freq,'cliticp','proclitic_freq'), ft(d.enclitic_freq,'clitice','enclitic_freq'), ft(d.preposition_freq||[],'prep','preposition_freq'));
+  return h('div', {class:'twocol'}, ft(d.root_freq,'root','root_freq'), ft(d.pat_freq,'pat','pat_freq'), ft(d.proclitic_freq,'cliticp','proclitic_freq'), ft(d.enclitic_freq,'clitice','enclitic_freq'), ft(d.preposition_freq||[],'prep','preposition_freq'), ft(d.func_freq||[],'func','func_freq'));
 };
 
 R.vocab = d => {
@@ -1041,8 +1051,8 @@ $('#text').addEventListener('keydown', e => { if ((e.ctrlKey||e.metaKey) && e.ke
 /* decode playground                                                   */
 /* ------------------------------------------------------------------ */
 const PG = {vocab:[], byToken:new Map(), byId:new Map(), fam:'root', frozen:false, timer:null};
-const PG_FAMS = ['root','pat','cliticp','clitice','prep','lit','char','digit','punct','special'];
-const PG_WEIGHTS = {root:.34, pat:.34, cliticp:.1, clitice:.06, prep:.04, punct:.04, digit:.03, lit:.02, char:.02, special:.01};
+const PG_FAMS = ['root','pat','cliticp','clitice','prep','func','lit','char','digit','punct','special'];
+const PG_WEIGHTS = {root:.32, pat:.32, cliticp:.1, clitice:.06, prep:.04, func:.04, punct:.04, digit:.03, lit:.02, char:.02, special:.01};
 
 function pgInit(t, opts={}){
   const vstep = t.steps.find(s=>s.id==='vocab'); if (!vstep) return;
@@ -1298,15 +1308,16 @@ async function cxLoadSources(){
   const names = new Set(s.caches.map(c=>c.name)); const def = s.default_cache.split('/').pop(); if (!names.has(def)) s.caches.push({name:def, bytes:null, is_default:true, missing:true});
   s.caches.forEach(c => cs.append(h('option', {value:c.name, selected: c.name===def ? '' : null}, c.missing ? `${c.name} (no cache file yet — a fresh pre-pass will create it)` : `${c.name} — ${(c.bytes/1e6).toFixed(0)} MB, ${new Date(c.mtime*1000).toLocaleString()}`)));
   $('#cx-dataset').value = s.dataset.name;
-  $('#cx-dataset-note').textContent = `${s.dataset.cached_locally ? 'cached locally in ' + s.dataset.cache_dir : 'NOT cached locally — first load downloads it'} · preprocessing ${JSON.stringify(s.dataset.preprocessing)}`;
+  $('#cx-dataset-note').textContent = `${s.dataset.cached_locally ? 'cached locally in ' + s.dataset.cache_dir : 'NOT cached locally — first load downloads it'} · preprocessing: ${Object.entries(s.dataset.preprocessing || {}).map(([k, v]) => `${k} = ${JSON.stringify(v)}`).join(', ')}`;
   const tiers = $('#cx-tiers'); tiers.innerHTML = '';
   Object.entries(s.tiers).forEach(([name, t]) => tiers.append(h('button', {class:'chip cx-tierchip'+(name==='balanced'?' cur':''), onclick:(e)=>{ $('#cx-max_roots').value = t.max_roots; $('#cx-max_patterns').value = t.max_patterns; document.querySelectorAll('.cx-tierchip').forEach(x=>x.classList.toggle('cur', x===e.currentTarget)); }}, `${name}: ${fmt(t.max_roots)} roots + ${fmt(t.max_patterns)} patterns`)));
 }
 function cxSavedInfo(){
   const d = (CX.sources?.saved||[]).find(x => x.name===$('#cx-saved').value); const box = $('#cx-savedinfo'); box.innerHTML = '';
   if (!d) return;
-  box.append(`config: ${Object.entries(d.config).map(([k,v])=>k+'='+v).join(' ')}`, h('br'), `metadata ${d.has_metadata?'✓':'✗'} · reconstruction ${d.has_reconstruction ? (d.reconstruction_bytes/1e6).toFixed(1)+' MB' : '✗'} · [PREP_*] inventory ${d.has_prepositions?'✓':'✗'}`);
+  box.append(`config: ${Object.entries(d.config).map(([k,v])=>k+'='+v).join(' ')}`, h('br'), `metadata ${d.has_metadata?'✓':'✗'} · reconstruction ${d.has_reconstruction ? (d.reconstruction_bytes/1e6).toFixed(1)+' MB' : '✗'} · [PREP_*] inventory ${d.has_prepositions?'✓':'✗'} · [FUNC_*] inventory ${d.has_func_words?'✓':'✗'}`);
   if (!d.has_prepositions) box.append(h('div', {style:'color:var(--warn);margin-top:4px'}, 'saved before the 2026-09-13 [PREP_*] / ة-enclitic changes: its [PAT_*] tokens still carry ة and it has no [PREP_*] range, so the current encode() routes more words to the character path (LIT) than at training time. Retrain to compare fairly.'));
+  else if (!d.has_func_words) box.append(h('div', {style:'color:var(--warn);margin-top:4px'}, 'saved before the 2026-09-16 [FUNC_*] group: pronouns, conjunctions and particles still take the character path (LIT) here. Retrain to compare fairly.'));
 }
 $('#cx-saved').addEventListener('change', cxSavedInfo);
 document.querySelectorAll('input[name=cx-mode]').forEach(r => r.addEventListener('change', () => {
@@ -1435,7 +1446,7 @@ RX.reconstruction = d => {
   return el;
 };
 RX.metadata = d => h('div', {}, d.peeled && d.peeled.count!==null && d.peeled.count!==undefined ? h('div',{style:'margin-bottom:8px'}, h('span',{class:'stat'}, h('b',{},fmt(d.totals.roots)), h('span',{},'roots')), h('span',{class:'stat'}, h('b',{},fmt(d.totals.patterns)), h('span',{},'patterns')), h('span',{class:'stat'}, h('b',{},fmt(d.peeled.count)), h('span',{},'words rescued by the peeler'))) : null, R.metadata(d),
-  d.peeled && d.peeled.examples && d.peeled.examples.length ? h('div',{}, h('div',{class:'subh'},'peeled examples (audit for false peels)'), table([{label:'word', ar:true, render:r=>ar(r.word)}, {label:'tokens', render:r=>h('span',{class:'tokrow ltr'}, ...r.proclitics.map(x=>tok('[CLITICP_'+x+']','cliticp')), ...(r.particle?[tok('[PREP_'+r.particle+']','prep')]:[tok('[ROOT_'+r.root+']','root'), tok('[PAT_'+r.pattern+']','pat')]), ...r.enclitics.map(x=>tok('[CLITICE_'+x+']','clitice')))}], d.peeled.examples)) : null);
+  d.peeled && d.peeled.examples && d.peeled.examples.length ? h('div',{}, h('div',{class:'subh'},'peeled examples (audit for false peels)'), table([{label:'word', ar:true, render:r=>ar(r.word)}, {label:'tokens', render:r=>h('span',{class:'tokrow ltr'}, ...r.proclitics.map(x=>tok('[CLITICP_'+x+']','cliticp')), ...(r.particle?[particleChip(r.particle, r.particle_kind)]:[tok('[ROOT_'+r.root+']','root'), tok('[PAT_'+r.pattern+']','pat')]), ...r.enclitics.map(x=>tok('[CLITICE_'+x+']','clitice')))}], d.peeled.examples)) : null);
 RX.verify = d => d.skipped ? h('div', {class:'cx-unavail'}, 'Skipped: ' + d.why) : R.verify(d);
 
 function cxScale(sc){
@@ -1528,8 +1539,8 @@ $('#cx-search-q').addEventListener('keydown', e => { if (e.key==='Enter'){ if (C
 
 /* ---------------- playground (own instance; same protocol as tab 01) ---------------- */
 const PGX = CX.pg;
-const PGX_FAMS = ['root','pat','cliticp','clitice','prep','lit','char','digit','punct','special'];
-const PGX_WEIGHTS = {root:.34, pat:.34, cliticp:.1, clitice:.06, prep:.04, punct:.04, digit:.03, lit:.02, char:.02, special:.01};
+const PGX_FAMS = ['root','pat','cliticp','clitice','prep','func','lit','char','digit','punct','special'];
+const PGX_WEIGHTS = {root:.32, pat:.32, cliticp:.1, clitice:.06, prep:.04, func:.04, punct:.04, digit:.03, lit:.02, char:.02, special:.01};
 function cxPgInit(t){
   const vstep = t.steps.find(s=>s.id==='vocab'); if (!vstep) return;
   PGX.vocab = vstep.data.vocab; PGX.byToken = new Map(PGX.vocab.map(v=>[v.token, v])); PGX.byId = new Map(PGX.vocab.map(v=>[v.id, v]));
@@ -1633,10 +1644,10 @@ $('#cx-save-btn').onclick = async () => {
 
 
 /* ---------------- word categories: shared bits ---------------- */
-const CAT_KIND = {root_pat:'ok', root_pat_peeled:'ok', prep:'info', lit_no_analysis:'warn', lit_root_cut:'bad', lit_pattern_cut:'bad', lit_clitic_missing:'bad'};
+const CAT_KIND = {root_pat:'ok', root_pat_peeled:'ok', prep:'info', func:'info', clitic:'info', lit_no_analysis:'warn', lit_root_cut:'bad', lit_pattern_cut:'bad', lit_clitic_missing:'bad'};
 const catBadge = (key, label) => badge(label || key, CAT_KIND[key] || 'neutral');
 const tokChips = (stream, onclick) => h('span', {class:'tokrow ltr'}, ...stream.map(s => { const c = tok(s.token, s.token==='<unk>'?'unk':s.family, s.id, s.metric_string!==undefined ? `pos ${s.pos} · metric_string="${s.metric_string}"` : ''); if (onclick){ c.style.cursor='pointer'; c.onclick=()=>onclick(s); } return c; }));
-const analysisChips = a => !a || !a.analyzed ? badge('no analysis','warn') : h('span',{class:'tokrow ltr'}, ...(a.proclitics||[]).map(x=>tok('[CLITICP_'+x+']','cliticp')), ...(a.particle ? [tok('[PREP_'+a.particle+']','prep')] : [tok('[ROOT_'+a.root+']','root'), tok('[PAT_'+a.pattern+']','pat')]), ...(a.enclitics||[]).map(x=>tok('[CLITICE_'+x+']','clitice')));
+const analysisChips = a => !a || !a.analyzed ? badge('no analysis','warn') : h('span',{class:'tokrow ltr'}, ...(a.proclitics||[]).map(x=>tok('[CLITICP_'+x+']','cliticp')), ...(a.particle ? [particleChip(a.particle, a.particle_kind)] : a.clitic_only ? [] : [tok('[ROOT_'+a.root+']','root'), tok('[PAT_'+a.pattern+']','pat')]), ...(a.enclitics||[]).map(x=>tok('[CLITICE_'+x+']','clitice')));
 
 /* The process one chunk went through, replayed live by /api/corpus/word_trace. */
 function cxProcessView(res){
@@ -1678,7 +1689,7 @@ function cxProcessView(res){
   if (!res.analysis.analyzed) out.append(h('p',{class:'small muted'}, 'nothing to check: without an analysis the chunk goes straight to [LIT_BEGIN] [CHAR_*]… [LIT_END].'));
   else {
     const rows = [];
-    if (vc.particle) rows.push({what:'particle', token:vc.particle.token, fam:'prep', ok:vc.particle.in_vocab, reason: vc.particle.in_vocab ? 'in the vocab' : 'not in the vocab'});
+    if (vc.particle) rows.push({what:'particle', token:vc.particle.token, fam:vc.particle.kind==='func'?'func':'prep', ok:vc.particle.in_vocab, reason: vc.particle.in_vocab ? 'in the vocab' : 'not in the vocab'});
     if (vc.root) rows.push({what:'root', token:vc.root.token, fam:'root', ok:vc.root.in_vocab, reason:vc.root.reason});
     if (vc.pattern) rows.push({what:'pattern', token:vc.pattern.token, fam:'pat', ok:vc.pattern.in_vocab, reason:vc.pattern.reason});
     for (const c of vc.clitics) rows.push({what:c.kind, token:c.token, fam:c.kind==='proclitic'?'cliticp':'clitice', ok:c.in_vocab, reason: c.in_vocab ? 'in the vocab' : 'not in the vocab'});
@@ -1747,14 +1758,14 @@ function cxEncRender(){
   for (const c of rows){
     const {btn, box} = traceCell(c.chunk);
     tb.append(h('tr',{}, h('td',{class:'ar'}, ar(c.chunk)), h('td',{}, mono(c.count)), h('td',{}, catBadge(c.category, c.label), c.peeled ? ' ' : '', c.peeled ? badge('peeled','info') : null), h('td',{class:'small', style:'max-width:360px'}, c.why),
-      h('td',{}, analysisChips({analyzed: !!(c.root||c.particle), proclitics:c.proclitics, particle:c.particle, root:c.root, pattern:c.pattern, enclitics:c.enclitics})),
+      h('td',{}, analysisChips({analyzed: !!(c.root||c.particle||c.clitic_only), proclitics:c.proclitics, particle:c.particle, particle_kind:c.particle_kind, clitic_only:c.clitic_only, root:c.root, pattern:c.pattern, enclitics:c.enclitics})),
       h('td',{class:'small muted'}, c.corpus ? `${CATEGORY_LABEL_JS[c.corpus.category]||c.corpus.category} · ×${fmt(c.corpus.count)}` : (CX.trace.mode==='train' ? 'not in corpus' : '')), h('td',{}, btn)));
     tb.append(h('tr',{class:'cx-procrow'}, h('td',{colspan:'7'}, box)));
   }
   tbl.append(tb); const wrap = h('div',{class:'tblwrap cx-hits'}, tbl); out.append(wrap); cxDecorate(out);
   const w = wirePane(res.wire, 'CAMeL calls made by encode()'); if (w) out.append(w);
 }
-const CATEGORY_LABEL_JS = {root_pat:'ROOT+PAT', root_pat_peeled:'ROOT+PAT (peeled)', prep:'PREP', lit_no_analysis:'LIT: no analysis', lit_root_cut:'LIT: root cut', lit_pattern_cut:'LIT: pattern cut', lit_clitic_missing:'LIT: clitic / particle token missing'};
+const CATEGORY_LABEL_JS = {root_pat:'ROOT+PAT', root_pat_peeled:'ROOT+PAT (peeled)', prep:'PREP', func:'FUNC', clitic:'CLITIC', lit_no_analysis:'LIT: no analysis', lit_root_cut:'LIT: root cut', lit_pattern_cut:'LIT: pattern cut', lit_clitic_missing:'LIT: clitic / particle token missing'};
 $('#cx-enc-run').onclick = cxEncode;
 $('#cx-enc-text').addEventListener('keydown', e => { if ((e.ctrlKey||e.metaKey) && e.key==='Enter') cxEncode(); });
 $('#cx-enc-send').onclick = () => { if (!ENC.res) return; $('#cx-pg-input').value = ENC.res.stream.map(s=>s.token).join(' '); cxPgParse(); $('#cx-pg').scrollIntoView({behavior:'smooth'}); };
@@ -1767,9 +1778,9 @@ async function cxWordsSummary(){
   if (!r.ok || s.error) throw new Error(s.error || ('HTTP '+r.status));
   CX.wordsSummary = s; return s;
 }
-const PATH_KIND = {root_pat:'ok', prep:'ok', peeled:'info', lit:'warn'};
+const PATH_KIND = {root_pat:'ok', prep:'ok', func:'ok', clitic:'ok', peeled:'info', lit:'warn'};
 const pathBadge = (key, label) => badge(label || key, PATH_KIND[key] || 'neutral');
-const PATH_OF_TOTAL = {'ROOT+PAT':'root_pat', PREP:'prep', peeled:'peeled', LIT:'lit'};
+const PATH_OF_TOTAL = {'ROOT+PAT':'root_pat', PREP:'prep', FUNC:'func', CLITIC:'clitic', peeled:'peeled', LIT:'lit'};
 function cxBrowser(opts){
   const st = {chip: opts.chip || '', q:'', offset:0, limit: opts.pageSize || 50, res:null};
   const root = h('div', {class:'cx-browser', hidden: opts.open ? null : ''});
@@ -1864,7 +1875,7 @@ RX.peel = d => {
   el.querySelectorAll('details.wordcard').forEach((det,i) => { const b = agreeBadge(d.words[i]||{}); if (b) det.querySelector('summary').append(b); });
   if (!d.enabled) return el;
   let row; const br = cxRecordsBrowser('peel', {chip:'peeled', onOpen: st => cxStatsSync(row)(st), intro:'Every chunk CAMeL rejected natively: rescued by the peeler (its merged analysis shown) or exhausted → character path. process ▾ replays the slicings and verdicts live.'});
-  row = cxStatsRow([{label:'rescued → ROOT+PAT / PREP', n:d.rescued, chip:'peeled'}, {label:'exhausted → LIT fallback', n:d.total-d.rescued, chip:'lit'}], br);
+  row = cxStatsRow([{label:'rescued → ROOT+PAT / PREP / FUNC / CLITIC', n:d.rescued, chip:'peeled'}, {label:'exhausted → LIT fallback', n:d.total-d.rescued, chip:'lit'}], br);
   el.replaceChild(row, el.firstElementChild);
   el.insertBefore(br.root, el.children[1]);
   const list = el.querySelector('.seq'); if (list) el.insertBefore(h('div',{class:'subh'}, `sample replay — the sample's ${d.words.length} native misses, replayed live`), list);
@@ -1898,7 +1909,7 @@ RX.freq = d => {
     return h('div', {}, h('div',{class:'subh'}, `${label} (${fmt((d.sizes||{})[kind==='root'?'root_freq':'pat_freq'])})` + (d.from_metadata ? ' — kept tokens only' : '')), br.root);
   };
   return h('div', {}, h('div',{class:'twocol'}, fb('root','root','root_freq','search roots… # or a weak letter = masked radical (قول finds ق#ل)'), fb('pat','pat','pat_freq','search patterns… CAMeL slots or wazn, tashkeel ignored (مفعول, 1ا2)')),
-    h('div',{class:'twocol', style:'margin-top:10px'}, ft(d.proclitic_freq,'cliticp','proclitic_freq'), ft(d.enclitic_freq,'clitice','enclitic_freq'), ft(d.preposition_freq||[],'prep','preposition_freq')));
+    h('div',{class:'twocol', style:'margin-top:10px'}, ft(d.proclitic_freq,'cliticp','proclitic_freq'), ft(d.enclitic_freq,'clitice','enclitic_freq'), ft(d.preposition_freq||[],'prep','preposition_freq'), ft(d.func_freq||[],'func','func_freq')));
 };
 
 /* ---------------- corpus words by category ---------------- */
