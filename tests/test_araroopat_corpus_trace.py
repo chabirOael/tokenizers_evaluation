@@ -10,6 +10,7 @@ index, save + saved-mode load.
 from __future__ import annotations
 
 import json
+import pickle
 import re
 import shutil
 import time
@@ -289,7 +290,17 @@ def test_corpus_job_train_cache_search_save_load():
                 for r in (s["data"].get(k) or []) if isinstance(r, dict) and r.get("matches_real") is False]
         assert mism == [] and t["all_ok"] is True
 
-        j2 = _run(base)  # second run: the cache written by j1 covers the corpus
+        jp = _run({**base, "texts": TEXTS + ["زرافة جميلة في الحديقة"]})  # three chunks the cache lacks
+        jobs.append(jp)
+        byp = {s["id"]: s["data"] for s in jp.trace["steps"]}
+        assert byp["cache"]["decision"] == "partial" and byp["cache"]["coverage"]["missing"] == 3
+        assert byp["cache"]["coverage"]["missing_examples"] == ["زرافة", "جميلة", "الحديقة"]
+        assert byp["ipc"]["total_unique"] == byp["validate"]["total"] and byp["ipc"]["total_batches"] == 1
+        assert byp["ipc"]["batches"][0]["words"] == ["زرافة", "جميلة", "الحديقة"]     # only the missing chunks went over the pipe
+        assert byp["verify"]["vocab_equal"] and byp["verify"]["reconstruction_equal"]   # the real train() agrees
+        assert jp.words.record("زرافة") is not None and jp.words.record("الكتاب") is not None
+
+        j2 = _run(base)  # the union cache written by jp still covers the original corpus
         jobs.append(j2)
         by2 = {s["id"]: s["data"] for s in j2.trace["steps"]}
         assert by2["cache"]["decision"] == "hit"
@@ -377,6 +388,42 @@ def test_corpus_job_train_cache_search_save_load():
             j.close()
         shutil.rmtree(cache_dir, ignore_errors=True)
         shutil.rmtree(saved_dir, ignore_errors=True)
+
+
+@pytest.mark.skipif(not _CAMEL_VENV.exists(), reason="needs .venv-camel with camel-tools")
+def test_real_prepass_partial_cache_reuse(tmp_path, monkeypatch):
+    from arabic_eval.tokenizers import araroopat as A
+    from arabic_eval.tokenizers.araroopat_backend import MorphAnalyzer
+    sent: list = []
+    real = MorphAnalyzer.analyze_many
+
+    def spy(self, words, batch_size=256):
+        sent.append(list(words))
+        return real(self, words, batch_size=batch_size)
+
+    monkeypatch.setattr(MorphAnalyzer, "analyze_many", spy)
+    params = {"max_roots": 100, "max_patterns": 100, "min_root_freq": 1, "min_pattern_freq": 1}
+    # (the tokenizers share the process-wide CamelBridge, reaped at exit — nothing to close here)
+    t1 = A.AraRooPatTokenizer(**params)
+    t1.train(TEXTS, cache_path=str(tmp_path))
+    n_first = sum(len(b) for b in sent)
+    assert n_first > 0 and (tmp_path / "corpus_analysis.pkl").exists()
+    extra = TEXTS + ["زرافة جميلة في الحديقة"]
+    sent.clear()
+    t2 = A.AraRooPatTokenizer(**params)
+    t2.train(extra, cache_path=str(tmp_path))
+    assert sent == [["زرافة", "جميلة", "الحديقة"]]          # only the three chunks the cache lacked
+    cached = pickle.load((tmp_path / "corpus_analysis.pkl").open("rb"))["entries"]
+    assert {"زرافة", "جميلة", "الكتاب"} <= {e.word for e in cached}   # the union was written back
+    sent.clear()
+    t3 = A.AraRooPatTokenizer(**params, cache_corpus_analysis=False)
+    t3.train(extra, cache_path=str(tmp_path))
+    assert sum(len(b) for b in sent) == n_first + 3               # a fresh run analyzes everything
+    assert t3._vocab == t2._vocab and t3._reconstruction == t2._reconstruction and t3._metadata["roots"] == t2._metadata["roots"]
+    sent.clear()
+    t4 = A.AraRooPatTokenizer(**params)
+    t4.train(extra, cache_path=str(tmp_path))
+    assert sent == [] and t4._vocab == t2._vocab                  # now a full hit
 
 
 @pytest.mark.skipif(not _CAMEL_VENV.exists(), reason="needs .venv-camel with camel-tools")

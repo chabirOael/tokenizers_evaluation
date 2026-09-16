@@ -36,6 +36,7 @@ class DataConfig(BaseModel):
         "normalize_unicode": True,
         "remove_diacritics": False,
         "min_text_length": 10,
+        "join_lone_waw": True,
     })
 
 

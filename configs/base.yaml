@@ -12,6 +12,7 @@ data:
     normalize_unicode: true
     remove_diacritics: false
     min_text_length: 10
+    join_lone_waw: true        # "و القمر" → "والقمر": a lone conjunction و is glued to the Arabic word after it
 
 model:
   type: "llama"

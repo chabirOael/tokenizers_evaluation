@@ -846,6 +846,8 @@ class CorpusTraceJob:
         key_found: Any = None
         cached_n = None
         coverage: Optional[Dict[str, Any]] = None
+        cached_by_word: Dict[str, CorpusEntry] = {}
+        to_analyze: List[str] = unique_words
         if req["cache_policy"] == "ignore":
             decision = "bypassed"
             reasons.append("cache_policy=ignore — the pre-pass runs again even if the file covers the corpus")
@@ -875,11 +877,15 @@ class CorpusTraceJob:
                         reasons.append(f"cached_words ⊇ unique_words → reuse, filtered to the {len(entries):,} "
                                        f"entries this corpus needs")
                     else:
-                        decision = "miss"
-                        reasons.append(f"cache does not cover this corpus: {len(missing):,} chunks missing "
-                                       f"(superset test) → the whole pre-pass re-runs")
+                        decision = "partial"
+                        cached_by_word = {e.word: e for e in cached}
+                        to_analyze = missing
+                        reasons.append(f"key matches but {len(missing):,} of {len(unique_words):,} chunks are not in the "
+                                       f"cache → only those go to CAMeL; the union is written back")
             except Exception as e:  # noqa: BLE001
                 decision = "miss"
+                cached_by_word = {}
+                to_analyze = unique_words
                 reasons.append(f"cache load failed ({type(e).__name__}: {e}) — re-running pre-pass")
         cache_ms = round((time.perf_counter() - t0) * 1000, 1)
         self._log(f"cache: {decision} ({'; '.join(reasons)}) in {cache_ms} ms")
@@ -887,7 +893,7 @@ class CorpusTraceJob:
             "cache_corpus_analysis": tok.cache_corpus_analysis,
             "default_cache_file": str(cache_file.relative_to(REPO_ROOT)),
             "default_cache_exists": cache_file.exists(),
-            "rule": "if cached_words ⊇ set(unique_words): reuse (filtered to current words) else re-run",
+            "rule": "key must match; chunks the cache holds are reused, chunks it lacks go to CAMeL (partial), the union is written back",
             "decision": decision, "reasons": reasons, "policy": req["cache_policy"],
             "write_cache": req["write_cache"],
             "key_expected": list(tok._cache_key()), "key_found": list(key_found) if key_found else None,
@@ -909,21 +915,22 @@ class CorpusTraceJob:
         batch_ms: List[float] = []
         prepass_ms = None
         cand_hist: Counter = Counter()
-        n_batches = (len(unique_words) + _BATCH_SIZE - 1) // _BATCH_SIZE
+        n_batches = (len(to_analyze) + _BATCH_SIZE - 1) // _BATCH_SIZE
         if entries is None:
-            self._stage("prepass", 0, len(unique_words), "CAMeL pre-pass, batches of 256 unique chunks")
+            self._stage("prepass", 0, len(to_analyze),
+                        "CAMeL pre-pass, batches of 256 unique chunks" + (" (only the chunks the cache lacks)" if decision == "partial" else ""))
             sampled_batches = sorted({0, n_batches // 2, max(0, n_batches - 1)})
             t_pp = time.perf_counter()
-            entries = []
+            new_entries: List[CorpusEntry] = []
             with tap:
-                for bi, start in enumerate(range(0, len(unique_words), _BATCH_SIZE)):
-                    batch = unique_words[start:start + _BATCH_SIZE]
+                for bi, start in enumerate(range(0, len(to_analyze), _BATCH_SIZE)):
+                    batch = to_analyze[start:start + _BATCH_SIZE]
                     tb = time.perf_counter()
                     analyses_b = backend.analyze_many(batch, batch_size=_BATCH_SIZE)
                     ms = round((time.perf_counter() - tb) * 1000, 2)
                     lines = tap.take()
                     for w, a in zip(batch, analyses_b):
-                        entries.append(CorpusEntry.from_analysis(w, a))
+                        new_entries.append(CorpusEntry.from_analysis(w, a))
                     if len(batch_ms) < BATCH_MS_CAP:
                         batch_ms.append(ms)
                     if bi in sampled_batches:
@@ -943,20 +950,23 @@ class CorpusTraceJob:
                             "source": "live pre-pass batch",
                         })
                     if bi % 4 == 0:
-                        self._tick(min(len(unique_words), start + len(batch)), len(unique_words))
+                        self._tick(min(len(to_analyze), start + len(batch)), len(to_analyze))
             prepass_ms = round((time.perf_counter() - t_pp) * 1000, 1)
-            self._log(f"pre-pass: {sum(1 for e in entries if e.analyzed):,} / {len(entries):,} analyzed "
-                      f"in {prepass_ms/1000:.0f} s; peeler {backend.peel_stats}")
+            merged = {**cached_by_word, **{e.word: e for e in new_entries}}
+            entries = [merged[w] for w in unique_words]   # corpus order, exactly what a fresh run yields
+            self._log(f"pre-pass: {sum(1 for e in new_entries if e.analyzed):,} / {len(new_entries):,} analyzed "
+                      f"in {prepass_ms/1000:.0f} s" + (f" ({len(cached_by_word):,} reused from the cache)" if decision == "partial" else "")
+                      + f"; peeler {backend.peel_stats}")
             if req["write_cache"]:
                 self._stage("write_cache", detail=str(cache_file.relative_to(REPO_ROOT)))
                 cache_dir.mkdir(parents=True, exist_ok=True)
                 with cache_file.open("wb") as f:
-                    pickle.dump({"key": tok._cache_key(), "entries": entries}, f)
+                    pickle.dump({"key": tok._cache_key(), "entries": list(merged.values())}, f)
                 with (cache_dir / "corpus_analysis.json").open("w", encoding="utf-8") as f:
                     json.dump([e.to_dict() for e in entries[:10000]], f, ensure_ascii=False, indent=2)
                 self._log(f"cache written: {cache_file}")
         cache_usable = decision == "hit" or (entries is not None and req["write_cache"]
-                                             and decision in ("miss", "bypassed"))
+                                             and decision in ("miss", "partial", "bypassed"))
 
         # ---- sample replay through the bridge (both hit and fresh) -----
         self._stage("replay", detail="re-analyzing a seeded sample of chunks live for the gate cards")
@@ -991,7 +1001,7 @@ class CorpusTraceJob:
             "total_batches": n_batches if prepass_ms is not None else 0,
             "total_unique": len(unique_words), "prepass_ms": prepass_ms, "batch_ms": batch_ms,
             "candidates_histogram": dict(sorted(cand_hist.items())),
-            "source": "live pre-pass" if prepass_ms is not None else "cache hit — no pre-pass IPC; the batch below is a sample replay",
+            "source": ("live pre-pass (only the chunks the cache lacked)" if decision == "partial" else "live pre-pass") if prepass_ms is not None else "cache hit — no pre-pass IPC; the batch below is a sample replay",
             "_scale": self._scale(len(ipc_batches), n_batches,
                                   (f"{n_batches:,} batches went over the pipe in {prepass_ms/1000:.0f} s; "
                                    f"3 are shown with their literal lines, plus the sample replay." if prepass_ms is not None else

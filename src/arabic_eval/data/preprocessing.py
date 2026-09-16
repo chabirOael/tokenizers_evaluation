@@ -22,6 +22,26 @@ _HEH = "\u0647"
 # Tatweel (kashida) stretching character
 _TATWEEL = "\u0640"
 
+# A و written as a word of its own, followed by whitespace and an Arabic word:
+# "و القمر" → "والقمر". Arabic letters only (no digits, tashkeel or punctuation)
+# on both sides of the test, so words that merely *end* in و (هو, أبو, نحو)
+# are never glued to what follows, and "و 2024" / "و HD" stay as they are.
+_AR_LETTER = "\u0621-\u063A\u0641-\u064A\u0671-\u06D3\u06FA-\u06FC"
+_TASHKEEL = "\u064B-\u0652\u0670"
+_LONE_WAW = re.compile(
+    rf"(?<![{_AR_LETTER}{_TASHKEEL}])(\u0648[{_TASHKEEL}]?)\s+(?=[{_AR_LETTER}])"
+)
+
+
+def join_lone_waw(text: str) -> str:
+    """Delete the whitespace after a lone conjunction و: ``و القمر`` → ``والقمر``.
+
+    Only a و that is a word by itself (nothing Arabic before it) and that is
+    followed by an Arabic letter is joined; its own tashkeel is kept. One
+    left-to-right pass over every match, so ``و و القمر`` becomes ``ووالقمر``.
+    """
+    return _LONE_WAW.sub(r"\1", text)
+
 
 def normalize_arabic(
     text: str,
@@ -29,6 +49,7 @@ def normalize_arabic(
     remove_diacritics: bool = False,
     normalize_alef: bool = True,
     remove_tatweel: bool = True,
+    join_lone_waw: bool = False,
 ) -> str:
     """Apply Arabic-specific text normalization."""
     if normalize_unicode:
@@ -43,6 +64,9 @@ def normalize_arabic(
     if remove_tatweel:
         text = text.replace(_TATWEEL, "")
 
+    if join_lone_waw:
+        text = _LONE_WAW.sub(r"\1", text)
+
     # Collapse whitespace
     text = re.sub(r"\s+", " ", text).strip()
     return text
@@ -54,6 +78,7 @@ def preprocess_dataset(
     normalize_unicode: bool = True,
     remove_diacritics: bool = False,
     min_text_length: int = 10,
+    join_lone_waw: bool = False,
     **kwargs,
 ) -> DatasetDict:
     """Apply preprocessing to all splits in a DatasetDict."""
@@ -66,6 +91,7 @@ def preprocess_dataset(
             text,
             normalize_unicode=normalize_unicode,
             remove_diacritics=remove_diacritics,
+            join_lone_waw=join_lone_waw,
         )
         example[text_column] = text
         return example

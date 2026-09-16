@@ -302,6 +302,13 @@ class AraRooPatTokenizer(BaseTokenizer):
         unique_words = list(word_counts.keys())
 
         cache_file = cache_dir / "corpus_analysis.pkl"
+        # A cache whose key matches is reused for every chunk it holds; only
+        # the chunks it lacks go to CAMeL, and the union is written back. An
+        # analysis is per word, so a partial cache is never stale — only
+        # incomplete. (Before 2026-09-16 one missing chunk re-ran the whole
+        # pre-pass: hours for the corpus after a preprocessing tweak.)
+        cached_by_word: Dict[str, CorpusEntry] = {}
+        to_analyze = unique_words
         if self.cache_corpus_analysis and cache_file.exists():
             try:
                 with cache_file.open("rb") as f:
@@ -313,34 +320,43 @@ class AraRooPatTokenizer(BaseTokenizer):
                 if not isinstance(payload, dict) or payload.get("key") != self._cache_key():
                     raise ValueError("cache format/key mismatch")
                 cached = payload["entries"]
-                cached_words = {e.word for e in cached}
-                if cached_words >= set(unique_words):
+                cached_by_word = {e.word: e for e in cached}
+                missing = [w for w in unique_words if w not in cached_by_word]
+                if not missing:
                     logger.info("Loaded cached corpus analysis (%d entries) from %s",
                                 len(cached), cache_file)
                     # Filter to current vocabulary universe; expand counts.
                     return [e for e in cached if e.word in word_counts]
-                logger.info("Cache exists but doesn't cover this corpus — re-running pre-pass.")
+                logger.info("Cache covers %d of %d unique chunks — analyzing only the %d missing ones.",
+                            len(unique_words) - len(missing), len(unique_words), len(missing))
+                to_analyze = missing
             except Exception as e:
                 logger.warning("Cache load failed (%s) — re-running pre-pass.", e)
+                cached_by_word = {}
+                to_analyze = unique_words
 
         # Run analyzer in batches via the bridge — saves one IPC round-trip
         # per cache miss vs the old per-word loop.
-        entries: List[CorpusEntry] = []
+        new_entries: List[CorpusEntry] = []
         analyzed_count = 0
         batch_size = 256
-        with tqdm(total=len(unique_words), desc="CAMeL pre-pass", unit="word") as pbar:
-            for start in range(0, len(unique_words), batch_size):
-                batch = unique_words[start:start + batch_size]
+        with tqdm(total=len(to_analyze), desc="CAMeL pre-pass", unit="word") as pbar:
+            for start in range(0, len(to_analyze), batch_size):
+                batch = to_analyze[start:start + batch_size]
                 analyses = backend.analyze_many(batch, batch_size=batch_size)
                 for word, a in zip(batch, analyses):
-                    entries.append(CorpusEntry.from_analysis(word, a))
+                    new_entries.append(CorpusEntry.from_analysis(word, a))
                     if a is not None:
                         analyzed_count += 1
                 pbar.update(len(batch))
 
         logger.info("Pre-pass: analyzed %d / %d words (%.1f%%)",
-                    analyzed_count, len(unique_words),
-                    100.0 * analyzed_count / max(len(unique_words), 1))
+                    analyzed_count, len(to_analyze),
+                    100.0 * analyzed_count / max(len(to_analyze), 1))
+        # Corpus order (unique_words) regardless of what came from the cache,
+        # so a partial reuse yields exactly the entries a fresh run would.
+        merged = {**cached_by_word, **{e.word: e for e in new_entries}}
+        entries: List[CorpusEntry] = [merged[w] for w in unique_words]
         if self.clitic_peeler:
             logger.info(
                 "Pre-pass: clitic peeler rescued %d words after a native CAMeL miss "
@@ -349,14 +365,18 @@ class AraRooPatTokenizer(BaseTokenizer):
             )
 
         if self.cache_corpus_analysis:
+            # Union of what the cache held and what was analyzed now, so the
+            # file keeps growing towards a superset of every corpus seen.
+            to_store = list(merged.values())
             cache_dir.mkdir(parents=True, exist_ok=True)
             with cache_file.open("wb") as f:
-                pickle.dump({"key": self._cache_key(), "entries": entries}, f)
+                pickle.dump({"key": self._cache_key(), "entries": to_store}, f)
             # JSON view for quick inspection.
             with (cache_dir / "corpus_analysis.json").open("w", encoding="utf-8") as f:
                 json.dump([e.to_dict() for e in entries[:10000]], f,
                           ensure_ascii=False, indent=2)
-            logger.info("Cached corpus analysis to %s (+ first-10k JSON view)", cache_file)
+            logger.info("Cached corpus analysis to %s (%d entries, + first-10k JSON view)",
+                        cache_file, len(to_store))
 
         return entries
 

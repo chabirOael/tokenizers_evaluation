@@ -88,7 +88,7 @@ Two sources, mirroring what is on disk:
 
 | Source | What happens | Cost |
 |---|---|---|
-| **Train on the corpus** | the real pre-pass rule: `outputs/tokenizers/<cache dir>/corpus_analysis.pkl` is reused when its key matches and it covers every chunk (`cached_words ⊇ unique_words`), otherwise every unique chunk goes through CAMeL and the cache is written; then the real `_build_vocab` / `_build_reconstruction` / `_build_metadata` | cache hit: ≈ 8 min (5 s load, ≈ 6.5 min NFKC + chunk + count over 669 K texts, 8 s pickle, ≈ 1 min build) + ≈ 7 min if *verify* is on (an un-instrumented `train()` re-chunks the corpus); fresh pre-pass: hours |
+| **Train on the corpus** | the real pre-pass rule: `outputs/tokenizers/<cache dir>/corpus_analysis.pkl` is reused when its key matches — every chunk it holds is taken from it and only the chunks it lacks go through CAMeL (decision `hit` / `partial` / `miss`), then the union is written back; then the real `_build_vocab` / `_build_reconstruction` / `_build_metadata` | cache hit: ≈ 8 min (5 s load, ≈ 6.5 min NFKC + chunk + count over 669 K texts, 8 s pickle, ≈ 1 min build) + ≈ 7 min if *verify* is on (an un-instrumented `train()` re-chunks the corpus); fresh pre-pass: hours |
 | **Load a saved tokenizer** | `load()` of a `save()` directory | seconds |
 
 `cache policy` (`auto` / `ignore`) and `write cache` are exposed separately (the real

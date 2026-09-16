@@ -1395,7 +1395,7 @@ RX.config = d => {
   return out;
 };
 RX.cache = d => {
-  const kind = d.decision==='hit' ? 'ok' : d.decision==='miss' ? 'warn' : 'neutral';
+  const kind = d.decision==='hit' ? 'ok' : d.decision==='miss' ? 'warn' : d.decision==='partial' ? 'info' : 'neutral';
   const out = h('div', {}, h('div',{style:'margin-bottom:10px'}, badge('decision: '+d.decision, kind), ' ', d.policy ? badge('policy '+d.policy,'neutral') : null, ' ', badge('write_cache '+d.write_cache,'neutral')));
   out.append(h('ul', {class:'small', style:'margin:0 0 10px;padding-left:20px'}, ...(d.reasons||[]).map(r=>h('li',{},r))));
   out.append(kv({cache_file: d.default_cache_file, exists: d.default_cache_exists, bytes: d.file_bytes ? (d.file_bytes/1e6).toFixed(1)+' MB' : '—', mtime: d.file_mtime ? new Date(d.file_mtime*1000).toLocaleString() : '—', load_ms: d.load_ms, cached_entries: fmt(d.cached_entries), key_expected: d.key_expected, key_found: d.key_found ?? '—', rule: d.rule}));
