@@ -466,14 +466,18 @@ def build_packed_corpus(
 # --------------------------------------------------------------------------
 
 def qa_blend_fingerprint(tok_id: Dict[str, Any], qa_cfg: QABlendConfig, block_size: int,
-                         clean_latin_rows: bool) -> str:
-    payload = json.dumps(
-        {
-            "tokenizer": tok_id, "datasets": list(qa_cfg.datasets), "split": qa_cfg.split,
-            "block_size": block_size, "seed": qa_cfg.seed, "clean_latin_rows": clean_latin_rows,
-        },
-        sort_keys=True, ensure_ascii=False,
-    )
+                         clean_latin_rows: bool, corpus_params: Optional[Dict[str, Any]] = None) -> str:
+    """``corpus_params`` (``training.corpus_params`` restricted to the blend's
+    datasets) only enters the payload when non-empty, so entries packed
+    before it existed keep their fingerprint."""
+    payload_dict: Dict[str, Any] = {
+        "tokenizer": tok_id, "datasets": list(qa_cfg.datasets), "split": qa_cfg.split,
+        "block_size": block_size, "seed": qa_cfg.seed, "clean_latin_rows": clean_latin_rows,
+    }
+    relevant = {n: p for n, p in (corpus_params or {}).items() if n in qa_cfg.datasets and p}
+    if relevant:
+        payload_dict["corpus_params"] = relevant
+    payload = json.dumps(payload_dict, sort_keys=True, ensure_ascii=False)
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
 
 
@@ -485,6 +489,7 @@ def pack_qa_blend(
     tokenizer_type: str,
     clean_latin_rows: bool = False,
     cell_data_dir: Optional[Path] = None,
+    corpus_params: Optional[Dict[str, Any]] = None,
 ) -> PackedCorpus:
     """Pack (or load) the *whole* QA train split(s) for this tokenizer.
 
@@ -500,7 +505,7 @@ def pack_qa_blend(
     from ..finetune_corpora import _format_qa_full, filter_latin_records, load_corpora
 
     tok_id = tokenizer_identity(tokenizer, tokenizer_type)
-    fp = qa_blend_fingerprint(tok_id, qa_cfg, block_size, clean_latin_rows)
+    fp = qa_blend_fingerprint(tok_id, qa_cfg, block_size, clean_latin_rows, corpus_params)
     directory = Path(cache_dir) / QA_BLEND_SUBDIR / fp
     manifest_path = directory / QA_BLEND_MANIFEST
 
@@ -514,7 +519,7 @@ def pack_qa_blend(
 
     if corpus is None:
         t0 = time.perf_counter()
-        records = load_corpora(list(qa_cfg.datasets), splits=qa_cfg.split)
+        records = load_corpora(list(qa_cfg.datasets), splits=qa_cfg.split, corpus_params=corpus_params)
         n_loaded = len(records)
         if clean_latin_rows:
             records = filter_latin_records(records)

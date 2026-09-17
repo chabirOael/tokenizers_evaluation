@@ -135,7 +135,12 @@ training:
       # Mix in the synthetic MCQ corpus derived from Arabic-SQuAD so the
       # model sees the eval-time MCQ format during SFT (closes the
       # train/eval format-mismatch). The MCQ corpus is fully disjoint from
-      # every eval benchmark by construction.
+      # every eval benchmark by construction. Without a ``mixture`` the
+      # corpora are concatenated and shuffled (ratio = pool sizes: 24 %
+      # extractive / 76 % MCQ here). Add ``mixture: {total_examples, shares:
+      # {extractive, mcq, free_form}, …}`` and the free-form corpora
+      # (cidar / bactrian_x_ar / aya_ar) for an exact ratio and size — see
+      # configs/experiments/native_llama_3phase_sft_mixture.yaml.
       datasets: ["tydiqa_arabic", "arcd", "arabic_squad_mcq"]
       trainable_parameters: ["*"]
       steps: 2000

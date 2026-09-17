@@ -58,6 +58,7 @@ _PHASE_NAMES: List[str] = ["embedding_alignment", "warmup", "sft"]
 def _phase_eval_loader(
     phase_cfg: PhaseConfig,
     tokenizer,
+    corpus_params=None,
 ):
     """Build the eval loader for SFT (TyDiQA-val + ARCD-val by default).
 
@@ -67,7 +68,7 @@ def _phase_eval_loader(
     es = phase_cfg.early_stopping
     if es is None or not es.enabled:
         return None
-    eval_records = load_corpora(list(es.eval_splits.keys()), es.eval_splits)
+    eval_records = load_corpora(list(es.eval_splits.keys()), es.eval_splits, corpus_params=corpus_params)
     if not eval_records:
         raise RuntimeError(
             f"Eval split is empty for phase with early_stopping enabled "
@@ -196,14 +197,37 @@ def _run_all_phases(
                     phase_cfg.qa_blend, training_cfg.pretraining_mix.block_size,
                     Path(training_cfg.pretraining_mix.cache_dir), tokenizer, tokenizer_type,
                     clean_latin_rows=phase_cfg.clean_latin_rows, cell_data_dir=data_dir,
+                    corpus_params=training_cfg.corpus_params,
                 )
             train_loader, data_info = _packed_mix_loader(
                 phase_name, phase_cfg, packed, tokenizer, training_cfg.pretraining_mix.block_size,
                 qa_packed=qa_packed,
             )
+        elif phase_cfg.mixture is not None:
+            # Ratio-controlled composition: exact per-category counts drawn
+            # from the phase's corpora (see data/sft_mixture.py). The full
+            # manifest (with the record ids drawn) lands beside the cell.
+            from arabic_eval.data.sft_mixture import build_mixture_dataloader, manifest_summary
+            train_loader, manifest = build_mixture_dataloader(
+                phase_cfg.mixture, phase_cfg.datasets, tokenizer,
+                batch_size=phase_cfg.batch_size,
+                max_length=phase_cfg.max_length,
+                loss_target=phase_cfg.loss_target,
+                corpus_params=training_cfg.corpus_params,
+                clean_latin_rows=phase_cfg.clean_latin_rows,
+            )
+            manifest_path = data_dir.parent / f"{phase_name}_mixture_manifest.json"
+            save_json({"phase": phase_name, **manifest}, manifest_path)
+            logger.info("[%s] mixture manifest → %s", phase_name, manifest_path)
+            data_info = {
+                "datasets": list(phase_cfg.datasets),
+                "n_records": manifest["total_examples"],
+                "mixture": manifest_summary(manifest),
+                "mixture_manifest_path": str(manifest_path),
+            }
         else:
             # Build the train loader from the phase's own corpus list.
-            train_records = load_corpora(phase_cfg.datasets, splits="train")
+            train_records = load_corpora(phase_cfg.datasets, splits="train", corpus_params=training_cfg.corpus_params)
             if phase_cfg.clean_latin_rows:
                 n_before = len(train_records)
                 train_records = filter_latin_records(train_records)
@@ -226,7 +250,7 @@ def _run_all_phases(
             )
             data_info = {"datasets": list(phase_cfg.datasets), "n_records": len(train_records)}
 
-        eval_loader = _phase_eval_loader(phase_cfg, tokenizer)
+        eval_loader = _phase_eval_loader(phase_cfg, tokenizer, corpus_params=training_cfg.corpus_params)
 
         result: PhaseResult = run_phase(
             phase_name=phase_name,

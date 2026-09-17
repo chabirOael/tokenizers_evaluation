@@ -271,8 +271,21 @@ def patched_env(monkeypatch, tmp_path):
             for i in range(n)
         ]
 
-    def _fake_load_corpus(name, split):
-        return _fake_records(name, 32 if split == "train" else 8)
+    def _fake_load_corpus(name, split, **params):
+        n = 32 if split == "train" else 8
+        if name == "arabic_squad_mcq":
+            return [
+                QARecord(id=f"mcq-{i}", question=f"سؤال{i}", context="", answer="أ", source=name,
+                         prompt_template="mcq_letter", choices=["أول", "ثاني", "ثالث", "رابع"])
+                for i in range(n)
+            ]
+        if name in ("cidar", "bactrian_x_ar", "aya_ar"):
+            return [
+                QARecord(id=f"{name}-{i}", question=f"اكتب فقرة {i}", context="", answer=f"فقرة طويلة عن الموضوع {i}",
+                         source=name, prompt_template="instruction")
+                for i in range(n)
+            ]
+        return _fake_records(name, n)
 
     monkeypatch.setattr(
         "arabic_eval.data.finetune_corpora.load_corpus",
@@ -394,6 +407,33 @@ class TestPhaseOrchestration:
         training = results["training"]
         for ph in ("embedding_alignment", "warmup", "sft"):
             assert training[ph]["status"] == "skipped", f"{ph} should be skipped"
+
+    def test_sft_mixture_composes_exact_set_and_writes_manifest(self, tmp_path):
+        """Phase 3 with a ``mixture``: exact per-category counts, derived
+        steps, manifest beside the cell and its summary in all_metrics."""
+        from arabic_eval.config import MixtureConfig
+        cfg = _exp_config(tmp_path)
+        sft = cfg.training.phases.sft
+        sft.datasets = ["tydiqa_arabic", "arcd", "arabic_squad_mcq", "cidar", "bactrian_x_ar"]
+        sft.mixture = MixtureConfig(total_examples=40, shares={"extractive": 0.5, "mcq": 0.25, "free_form": 0.25})
+        sft.steps = 20   # 40 / batch 2 — must agree with the derivation
+        cfg.training.corpus_params = {"aya_ar": {"include_datasets": ["Aya-Dataset"]}}
+        results = run_experiment(cfg)
+        sft_hist = results["training"]["sft"]
+        assert sft_hist["status"] == "ok" and sft_hist["steps_completed"] == 20
+        data = sft_hist["data"]
+        assert data["n_records"] == 40 and data["datasets"][0] == "tydiqa_arabic"
+        mix = data["mixture"]
+        assert {c: v["kept"] for c, v in mix["categories"].items()} == {"extractive": 20, "mcq": 10, "free_form": 10}
+        assert mix["datasets"]["arcd"]["kept"] == 10 and mix["datasets"]["tydiqa_arabic"]["kept"] == 10
+        assert mix["datasets"]["cidar"]["kept"] == 5 and "ids" not in mix["datasets"]["cidar"]
+        assert mix["categories"]["free_form"]["loss_token_share"] > mix["categories"]["mcq"]["loss_token_share"]
+        manifest_path = Path(data["mixture_manifest_path"])
+        assert manifest_path == tmp_path / "data" / "sft_mixture_manifest.json" and manifest_path.exists()
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        assert manifest["phase"] == "sft" and len(manifest["datasets"]["cidar"]["ids"]) == 5
+        # The other phases are untouched by the mixture.
+        assert results["training"]["warmup"]["data"] == {"datasets": ["arabic_squad"], "n_records": 32}
 
     def test_phase_checkpoints_saved_when_enabled(self, tmp_path):
         cfg = _exp_config(tmp_path)

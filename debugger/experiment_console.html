@@ -580,6 +580,15 @@ const HINTS = {
   'training.phases.*.qa_blend.share': ['Fraction of the phase blocks that are QA text, in (0, 1). Comes OUT of mix_tokens, not on top.', '0.07'],
   'training.phases.*.qa_blend.split': ['Only train is allowed (validation feeds Phase 3 early-stop).', 'train'],
   'training.phases.*.qa_blend.seed': ['Seed for shuffling and interleaving the QA blocks.', '42'],
+  'training.phases.*.mixture': ['Only on a QA phase: draw exactly total_examples records at the given per-category shares (extractive / mcq / free_form — the category of a corpus is fixed by its loader). Quotas count records that survive tokenization. null = concatenate the corpora as-is.', 'total_examples 30000 · shares extractive 0.4 / mcq 0.3 / free_form 0.3'],
+  'training.phases.*.mixture.total_examples': ['Examples the phase trains on, one exact pass: steps = total_examples / batch_size (leave steps null). Must be a multiple of batch_size.', '30000 → 7500 steps at batch 4'],
+  'training.phases.*.mixture.shares': ['Fraction of total_examples per category; must sum to 1 and name exactly the categories of the listed datasets.', 'extractive: 0.4\nmcq: 0.3\nfree_form: 0.3'],
+  'training.phases.*.mixture.within_category': ['How a category quota splits across its corpora: equal = same count each, capacity-aware (a small corpus like ARCD gives all it has, the rest goes to the others); proportional = by pool size.', 'equal'],
+  'training.phases.*.mixture.weights': ['Optional per-corpus weights inside a category; overrides within_category for the corpora named.', 'cidar: 2\nbactrian_x_ar: 1'],
+  'training.phases.*.mixture.upsample': ['Off: a category that cannot fill its quota is an error naming the numbers. On: its corpora repeat a further seeded permutation.', 'off'],
+  'training.phases.*.mixture.drop_truncated_answers': ['On: skip records whose full text hits max_length (the answer is cut) and top up, so the model only sees complete answers.', 'off'],
+  'training.phases.*.mixture.seed': ['Seed of the per-corpus permutations and the final shuffle.', '42'],
+  'training.corpus_params': ['Per-corpus loader parameters, one corpus per key. Only aya_ar takes any today: include_datasets = sub-datasets of the Aya standard_arabic split (dataset_name column).', 'aya_ar: {include_datasets: [Aya-Dataset, "Dolly-v2 (T)"]}'],
   'training.phases.*.early_stopping': ['Phase 3 only: evaluate the answer-only loss on TyDiQA-val + ARCD-val periodically and stop when it stagnates.', 'patience 5 × eval every 200 steps = stop after 1000 flat steps'],
   'training.phases.*.early_stopping.enabled': ['Turn the periodic eval + stop rule on or off.', 'on'],
   'training.phases.*.early_stopping.metric': ['Only eval_loss is supported.', 'eval_loss'],
@@ -912,21 +921,28 @@ function phaseCard(name, title){
     const derived = (bs && p.mix_tokens && p.batch_size) ? p.mix_tokens / (p.batch_size * bs) : null;
     rows.append(h('div', {class:'row wide hint'}, `pretraining_mix: steps = mix_tokens / (batch_size × block_size) = ${derived==null?'?':derived}${Number.isInteger(derived)?'':' (must be an integer)'}; loss_target must be full_sequence and max_length must equal block_size (${bs ?? 'no pretraining_mix block'}).`));
   }
+  if (p.mixture && p.mixture.total_examples && p.batch_size){
+    const d = p.mixture.total_examples / p.batch_size;
+    rows.append(h('div', {class:'row wide hint'}, `mixture: steps = total_examples / batch_size = ${d}${Number.isInteger(d)?'':' (total_examples must be a multiple of batch_size)'}; quotas = shares × total_examples, counted after tokenization; dry-run with scripts/plan_sft_mixture.py --config <file>.`));
+  }
   body.append(rows);
+  if (!usesMix) body.append(control(`${path}.mixture`, node.properties.mixture, {label:'mixture (ratio-controlled composition of the phase set)', wide:true}));
   body.append(control(`${path}.qa_blend`, node.properties.qa_blend, {label:'qa_blend', wide:true}));
   if (name==='sft' || p.early_stopping) body.append(control(`${path}.early_stopping`, node.properties.early_stopping, {label:'early_stopping', wide:true}));
   const en = h('input', {type:'checkbox', onchange: e => { p.enabled = e.target.checked; markDirty(); renderForm(); }}); en.checked = !!p.enabled;
   const toggle = h('label', {class:'sw', onclick: e => e.stopPropagation()}, en, h('span', {class:'hint'}, p.enabled?'enabled':'disabled'));
   const ds = (p.datasets||[]).join('+') || '—';
-  return section(path, title, body, {sub:true, extra: toggle, badge: `${ds} · ${p.steps ?? '?'} steps · lr ${p.learning_rate}`});
+  const mixBadge = p.mixture ? ` · mixture ${p.mixture.total_examples} @ ${Object.entries(p.mixture.shares||{}).map(([k,v])=>`${k} ${v}`).join(' / ')}` : '';
+  return section(path, title, body, {sub:true, extra: toggle, badge: `${ds} · ${p.steps ?? '?'} steps · lr ${p.learning_rate}${mixBadge}`});
 }
 function trainingSection(){
   const body = h('div', {class:'form'});
-  body.append(objectBody('training', S.schema.properties.training, {skip:['phases','pretraining_mix']}));
+  body.append(objectBody('training', S.schema.properties.training, {skip:['phases','pretraining_mix','corpus_params']}));
   body.append(phaseCard('embedding_alignment', 'Phase 1 — embedding_alignment'));
   body.append(phaseCard('warmup', 'Phase 2 — warmup'));
   body.append(phaseCard('sft', 'Phase 3 — sft'));
   body.append(control('training.pretraining_mix', S.schema.$defs.TrainingConfig.properties.pretraining_mix, {label:'pretraining_mix (Phase 1/2 packed raw-text corpus)', wide:true}));
+  body.append(control('training.corpus_params', S.schema.$defs.TrainingConfig.properties.corpus_params, {label:'corpus_params (per-corpus loader parameters, e.g. aya_ar.include_datasets)', wide:true}));
   return section('training', 'training — 3-phase pipeline', body, {help: fieldInfo(S.schema.properties.training).description});
 }
 function experimentSection(){

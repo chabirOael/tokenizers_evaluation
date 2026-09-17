@@ -331,7 +331,7 @@ def _patch_corpora(monkeypatch, records_by_name: Dict[str, List[QARecord]]):
     import arabic_eval.data.finetune_corpora as fc
     seen = {}
 
-    def fake(names, splits):
+    def fake(names, splits, corpus_params=None):
         seen["names"], seen["splits"] = list(names), splits
         return [r for n in names for r in records_by_name[n]]
     monkeypatch.setattr(fc, "load_corpora", fake)

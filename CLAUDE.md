@@ -6,7 +6,7 @@ A universal platform for evaluating Arabic tokenizers by measuring LLM downstrea
 
 - **Tokenizer-training corpus**: `Jr23xd23/ArabicText-Large` (HuggingFace) — used for tokenizer training + intrinsic eval
 - **Phase 1 + 2 corpus**: `Mostafa3zazi/Arabic_SQuAD` (machine-translated SQuAD-v1, 48,344 train rows)
-- **Phase 3 corpus**: TyDiQA-Arabic (`google-research-datasets/tydiqa` `secondary_task` filtered to Arabic — 14,805 train / 921 val rows) + ARCD (`hsseinmz/arcd` `plain_text` — 693 train / 702 val rows)
+- **Phase 3 corpus**: TyDiQA-Arabic (`google-research-datasets/tydiqa` `secondary_task` filtered to Arabic — 14,805 train / 921 val rows) + ARCD (`hsseinmz/arcd` `plain_text` — 693 train / 702 val rows) + the synthetic `arabic_squad_mcq` (48,344). Optional **free-form instruction corpora** (added 2026-09-17, pinned Hub revisions): CIDAR (`arbml/CIDAR`, 9,967 after exact-dup removal), Bactrian-X Arabic (`MBZUAI/Bactrian-X` `data/ar.json.gz`, 67,017) and the Aya collection (`CohereForAI/aya_collection_language_split` `standard_arabic`, sub-dataset allowlist, default `Aya-Dataset` + `Dolly-v2 (T)` = 19,803 Arab-script rows). A phase `mixture` block sets the total example count and the extractive / MCQ / free-form ratio — see *Phase 3 mixture*.
 - **Primary LLM**: LLaMA 3.2-1B (`meta-llama/Llama-3.2-1B`). Also supported: Llama-3.2-3B (same adapter/tokenizer, `llama_3b_3phase_with_sft.yaml`) and **Qwen3-4B-Base** (`Qwen/Qwen3-4B-Base`, registry key `qwen3` + native tokenizer wrapper `native_qwen3`, `qwen3_4b_3phase_{with,no}_sft.yaml`)
 - **Eval benchmarks**: four LightEval log-likelihood MCQ benchmarks — ACVA, Alghafa, Culture-Arabic-MMLU, Arabic-Exam. Eval is **full benchmark** (no SFT split — training is task-agnostic).
 - **Vocab sizes tested**: 16K, 32K, 50K for subword tokenizers; fixed char vocab for character-level; fixed 260-id byte vocab for Charformer; 128256 for native_llama (matches model embedding matrix)
@@ -142,7 +142,7 @@ Every training run executes the same three phases regardless of tokenizer / mode
 
 Each phase is independently toggleable via its own `enabled` flag. Phase 3 additionally runs periodic eval on TyDiQA-val + ARCD-val for stagnation early-stop (patience=5, min_delta=5e-4, min_steps_before_stop=500, restore-best-at-end=true). Phases 1 and 2 can instead train on the packed raw-text **pretraining mix** (`datasets: ["pretraining_mix"]`, full-sequence loss) — see *Pretraining Mix* below.
 
-**Per-phase params (all adjustable):** `enabled`, `datasets` (registry keys: `arabic_squad`, `tydiqa_arabic`, `arcd`), `trainable_parameters` (substring list; `["*"]` = all), `steps`, `learning_rate`, `batch_size`, `gradient_accumulation_steps`, `optimizer`, `weight_decay`, `max_length`, `loss_target` (`"full_sequence"` | `"answer_only"`), `lr_scheduler` (`"cosine"` | `"constant"` | `"linear"`), `warmup_steps`, `max_grad_norm`, `save_checkpoint`. Phase 3 also has `early_stopping`. Defaults in `configs/base.yaml`.
+**Per-phase params (all adjustable):** `enabled`, `datasets` (registry keys: `arabic_squad`, `tydiqa_arabic`, `arcd`, `arabic_squad_mcq`, `cidar`, `bactrian_x_ar`, `aya_ar`, `pretraining_mix`), `mixture` (see *Phase 3 mixture*), `trainable_parameters` (substring list; `["*"]` = all), `steps`, `learning_rate`, `batch_size`, `gradient_accumulation_steps`, `optimizer`, `weight_decay`, `max_length`, `loss_target` (`"full_sequence"` | `"answer_only"`), `lr_scheduler` (`"cosine"` | `"constant"` | `"linear"`), `warmup_steps`, `max_grad_norm`, `save_checkpoint`. Phase 3 also has `early_stopping`. Defaults in `configs/base.yaml`.
 
 **Why this design.** The previous "10% SFT on benchmark + 90% eval" was empirically destructive: each from-scratch tokenizer's vocab indices were silently mapped onto Llama's first N pretrained rows by `resize_token_embeddings`, and 10% benchmark-specific SFT couldn't drift those mappings far enough to find real signal. The 3-phase pipeline (a) deliberately aligns embeddings before any other training (Phase 1), (b) teaches QA format on a regular translated dataset before exposure to native Arabic complexity (Phase 2), and (c) does the decisive SFT on native Arabic QA in Phase 3. The whole pipeline runs identically across all conditions so the only experimental variable is the tokenizer + its embedding/lm_head weights.
 
@@ -151,6 +151,36 @@ Each phase is independently toggleable via its own `enabled` flag. Phase 3 addit
 **Answer-only loss masking** uses an LCP (longest common prefix) helper at [src/arabic_eval/data/answer_only_masking.py](src/arabic_eval/data/answer_only_masking.py) — necessary because Llama auto-appends `</s>` to standalone encodings, so naive `labels[:len(prompt)] = -100` would eat the first answer token.
 
 **Tied embeddings on Llama-3.2-1B** — `lm_head.weight is model.embed_tokens.weight`, so `lm_head` is absent from `named_parameters()`. The freezing helper ([src/arabic_eval/training/freezing.py](src/arabic_eval/training/freezing.py)) warns when a substring matches no parameter while others do (the tied-weight case) and continues — training `embed_tokens` IS training `lm_head`.
+
+## Phase 3 mixture — ratio-controlled SFT set with free-form corpora (`src/arabic_eval/data/sft_mixture.py`, added 2026-09-17)
+
+Without a `mixture`, a QA phase concatenates its `datasets` and shuffles: the ratio is whatever the pool sizes dictate (the default Phase 3 pool is 24 % extractive / 76 % synthetic MCQ, and 2 000 steps × batch 4 see 8 000 of its 63 842 records). With one, the phase trains on **exactly `total_examples` records at an exact per-category ratio**:
+
+```yaml
+training:
+  corpus_params:                          # optional per-corpus loader params (only aya_ar takes any)
+    aya_ar: {include_datasets: ["Aya-Dataset", "Dolly-v2 (T)"]}
+  phases:
+    sft:
+      datasets: ["tydiqa_arabic", "arcd", "arabic_squad_mcq", "cidar", "bactrian_x_ar", "aya_ar"]
+      mixture:
+        total_examples: 30000
+        shares: {extractive: 0.40, mcq: 0.30, free_form: 0.30}
+        within_category: "equal"          # equal (capacity-aware) | proportional; weights: {corpus: w} overrides
+        upsample: false                   # true = a short category repeats a further seeded permutation
+        drop_truncated_answers: false     # true = skip records whose answer is cut at max_length, top up
+        seed: 42
+      steps: null                         # derived: total_examples / batch_size (7 500); validated if set
+```
+
+- **Categories are facts of the registry, not config.** `CORPUS_CATEGORY` in `config.py` maps every corpus to `extractive` (`qa` template: arabic_squad, tydiqa_arabic, arcd), `mcq` (`mcq_letter`: arabic_squad_mcq) or `free_form` (`instruction`: cidar, bactrian_x_ar, aya_ar); a test pins `DatasetName` ↔ `CORPUS_CATEGORY` ↔ `_LOADERS` in sync. `shares` must sum to 1 and name exactly the categories of the listed datasets (a listed corpus without a share, or a share without a corpus, is a validation error).
+- **Quotas.** `shares × total_examples` by largest remainder; inside a category the quota is **water-filled** across the corpora — `equal` gives each the same count but a corpus smaller than its slice gives all it has and the rest re-splits (ARCD 693 + TyDiQA 11 307 for a 12 000 extractive quota); `proportional` weights by pool size; `weights` overrides per corpus. **Quotas count kept records**: each corpus is walked in a seeded permutation (sorted by id first, so loader row order is irrelevant) and tokenized as it goes, records the answer-only LCP masking drops (max_length ate the answer) do not count, and a corpus that runs dry hands its deficit to the others of its category. A category that still cannot fill its quota is a `MixtureShortfallError` naming the numbers and the largest `total_examples` these shares admit (`min_cat(capacity / share)`, 38 744 for the default six corpora at 40/30/30) — unless `upsample: true`. Only the records used are tokenized (the old path tokenized the whole 63 842-record pool every run).
+- **`steps` mirrors `mix_tokens`:** derived as `total_examples / batch_size` when null (one exact pass; early-stop may end it sooner), an error when set inconsistently; `total_examples` must divide by `batch_size`. `mixture` is refused on a `pretraining_mix` phase and works on Phase 2 too (nothing is sft-specific). `clean_latin_rows` filters each pool before capacity is computed (Bactrian-X 67 K → ~50 K, CIDAR 11 % Latin rows).
+- **Shares are in examples; the loss is in tokens.** Measured with the native Llama tokenizer at max_length 512 on the reference config: extractive 40 % of examples = **12 %** of loss tokens, MCQ 30 % = **0.7 %**, free-form 30 % = **87 %** (a free-form answer is ~100–145 tokens against 1 for an MCQ letter and ~13 for an extractive span). The manifest reports `loss_token_share` per category next to `example_share`; read both before interpreting a ratio ablation.
+- **Provenance.** `all_metrics.json["training"]["sft"]["data"]["mixture"]` carries the per-category (`share`, `quota`, `kept`, `example_share`, `loss_tokens`, `loss_token_share`, `capacity`) and per-corpus (`available`, `after_latin_filter`, `weight`, `planned`, `drawn`, `dropped_truncation`, `dropped_cut_answer`, `kept`, `repeated`, `passes`, `revision`) numbers; `<cell>/data/sft_mixture_manifest.json` is the same plus the **record ids drawn** per corpus, so any set can be reconstructed without re-running. **Dry run first:** `scripts/plan_sft_mixture.py --config <yaml>` prints the plan (pool sizes, quotas, ceiling) and, with a tokenizer (`native_*` needs none; from-scratch ones `--tokenizer-path`), the drop counts and loss-token shares; `--plan-only` skips tokenization.
+- **The free-form loaders** (`finetune_corpora.py`, `prompt_template="instruction"`: `[السياق: {input}\n]السؤال: {instruction}\nالإجابة: {output}` — the `السياق:` line only with an input; `INSTRUCTION_LABEL` is the one-line switch to `التعليمات:`). Every one reads a **pinned revision** (`PINNED_REVISIONS`, recorded in the manifest). `cidar`: `\r\n` normalized, 33 exact `(instruction, output)` duplicates dropped, 18 repeated `index` values get the row position appended. `bactrian_x_ar`: the repo is a loading-script dataset that `datasets` ≥ 3 refuses, so `data/ar.json.gz` is fetched with `hf_hub_download` (52 002 Alpaca + 15 015 Dolly; 641 `input: null` → empty; `input` becomes `context`; 25 % of rows contain Latin letters). `aya_ar`: the `standard_arabic` split is 5.86 M rows, 84 % templated Wiki-split simplification plus SODA dialogue, event linking and translated HotpotQA / NQ / CNN-DM; only `Aya-Dataset` (4 995 human-written Standard Arabic rows) and `Dolly-v2 (T)` (29 616) are free-form, and **half of Dolly is `script: Latn`** (English / `<unk>` garbage) — the loader keeps `Arab`-script rows only (14 808) and splits the literal `\nContext:` label 4 522 of them embed into `context`. The three 1.34 GB shards are read once with pyarrow filters and the filtered subset is cached as Parquet under `outputs/data_cache/sft_corpora/aya_ar/<fp>.parquet` (fingerprint: revision + allowlist). `training.corpus_params` is threaded through every `load_corpus` call site (phases, early-stop splits, `qa_blend` — whose cache fingerprint includes the params only when non-empty, so existing packed entries keep their key).
+- **Contamination scan** (`scripts/scan_sft_contamination.py`, one-off per new corpus): normalized exact-match of the corpus question and word-8-gram containment of every benchmark question against the four benchmarks. Run 2026-09-17 on the three free-form corpora: exact hits ≤ 12 per (corpus, benchmark) and 8-gram hits ≤ 14, all generic trivia (`ما هو أطول نهر في العالم`, `لماذا السماء زرقاء`, capital-of questions) or shared Wikipedia / hadith passages, against 9 000–23 000 benchmark rows — no systematic leakage; the ids are in `outputs/data_cache/sft_corpora/contamination_scan.json` if you want to exclude them.
+- **Not changed:** the early-stop signal is still TyDiQA-val + ARCD-val (extractive); Phase 1/2 defaults; the non-mixture path (byte-identical for every existing YAML). Reference config: [configs/experiments/native_llama_3phase_sft_mixture.yaml](configs/experiments/native_llama_3phase_sft_mixture.yaml). Tests: `tests/test_sft_mixture.py` (quota arithmetic, water-fill, spill-over, truncation top-up, upsample, determinism, manifest, every validator, the three loaders on fixture rows) and the mixture cell in `tests/test_e2e_sweep.py`.
 
 ## Pretraining Mix — packed raw-text corpus for Phase 1 / Phase 2 (`src/arabic_eval/data/pretraining_mix/`)
 
@@ -189,6 +219,13 @@ Any phase can train on a packed raw-text mix instead of QA records by setting `d
 
 # Compare results across experiments
 python scripts/compare_results.py outputs/experiments/*/
+
+# Overlap between Phase 3 corpora and the four benchmarks (one-off per new corpus).
+.venv/bin/python scripts/scan_sft_contamination.py --corpora cidar bactrian_x_ar aya_ar
+
+# Dry-run a phase's mixture (quotas, truncation drops, loss-token shares) without training.
+.venv/bin/python scripts/plan_sft_mixture.py --config configs/experiments/native_llama_3phase_sft_mixture.yaml
+.venv/bin/python scripts/plan_sft_mixture.py --config <yaml> --plan-only    # pool sizes + quotas only
 
 # Rebuild the per-row eval dump of a finished experiment (eval only, no training).
 # --max-rows gives a fast preview; --sweep walks every cell.
@@ -615,7 +652,8 @@ Every phase shares the same fields; SFT additionally has `early_stopping`. See `
 | Field | Type | Notes |
 |---|---|---|
 | `enabled` | bool | per-phase toggle |
-| `datasets` | list of `DatasetName` | registry keys: `arabic_squad` \| `tydiqa_arabic` \| `arcd`. Single string is auto-coerced to a one-element list. |
+| `datasets` | list of `DatasetName` | registry keys: `arabic_squad` \| `tydiqa_arabic` \| `arcd` \| `arabic_squad_mcq` \| `cidar` \| `bactrian_x_ar` \| `aya_ar` (\| `pretraining_mix`, alone). Single string is auto-coerced to a one-element list. |
+| `mixture` | nested config (QA phases only) | `total_examples`, `shares` per category, `within_category`, `weights`, `upsample`, `drop_truncated_answers`, `seed`; derives `steps`. See *Phase 3 mixture*. |
 | `trainable_parameters` | list of substrings | matched against `named_parameters()`. `["*"]` = all. Mixing `"*"` with other entries is rejected. |
 | `steps`, `learning_rate`, `batch_size`, `gradient_accumulation_steps`, `weight_decay`, `max_length`, `warmup_steps`, `max_grad_norm` | scalars | per-phase numeric params |
 | `optimizer` | `"adamw"` | only AdamW supported |
@@ -674,6 +712,8 @@ outputs/experiments/<name>/
                             #   ll / char / pmi scores, gold + prediction, truncation flags.
                             #   ~18 MB per cell across the four benchmarks. Read by the
                             #   experiment console's Eval-rows tab; pd.read_parquet elsewhere.
+  data/sft_mixture_manifest.json   # Only when Phase 3 has a mixture: quotas, per-corpus drop / kept counts,
+                            #   loss-token shares and the record ids drawn (summary without ids in all_metrics.json)
   data/pretraining_mix/     # Only when a phase uses the packed mix: packed_manifest.json pointing at the
                             #   shared entry outputs/data_cache/pretraining_mix/<pool>/packed/<tokenizer_fp>/
                             #   (+ qa_blend_manifest.json → outputs/data_cache/pretraining_mix/qa_blend/<fp>/ when blended)

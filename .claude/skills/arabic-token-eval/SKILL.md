@@ -40,6 +40,17 @@ After training, eval runs on **every task in `sweep.tasks`** (default ACVA + Alg
 - Always `close()` an abandoned HF streaming iterator — otherwise the interpreter aborts at exit.
 - `build_pretraining_mix.py --calibrate N` is how thresholds get justified: it writes the drop-reason table + `dropped_dialect.csv` without touching the real pool.
 
+### Phase 3 can be a ratio-controlled mixture with free-form corpora
+
+`PhaseConfig.mixture` (`data/sft_mixture.py`, 2026-09-17) makes a QA phase train on exactly `total_examples` records at exact per-category shares (`extractive` / `mcq` / `free_form`), drawn from its `datasets`. Free-form corpora: `cidar`, `bactrian_x_ar`, `aya_ar` (`prompt_template="instruction"`, pinned Hub revisions). Things to keep straight:
+
+- A corpus' category comes from its loader's template (`CORPUS_CATEGORY` in `config.py`), never from YAML. Adding a corpus = `DatasetName` + `CORPUS_CATEGORY` + `_LOADERS` (a test pins the three in sync) and a `prompt_template` the category map knows.
+- Quotas count records that **survive tokenization**; the draw walks a seeded permutation per corpus and a dry corpus spills its deficit to its category mates. Don't "fix" a shortfall by wrapping silently — the error names the numbers and the `total_examples` ceiling; `upsample: true` is the explicit opt-in.
+- `steps` derives from `total_examples / batch_size` exactly like `mix_tokens` derives it for the packed mix. Don't add a second knob that lets the two disagree.
+- Shares are in examples; the loss weights tokens. On the reference config free-form is 30 % of examples and 87 % of loss tokens. Always read `loss_token_share` next to `example_share` in the manifest before interpreting a ratio ablation; `scripts/plan_sft_mixture.py` prints both without training.
+- `training.corpus_params` is the only per-corpus knob (today `aya_ar.include_datasets`); it is threaded through every `load_corpus` call site, including the `qa_blend` packer whose fingerprint adds it only when non-empty.
+- Aya's `standard_arabic` split is 5.86 M mostly templated rows; only `Aya-Dataset` and `Dolly-v2 (T)` are free-form, and half of Dolly is `script: Latn` garbage the loader drops. Verify a new sub-dataset on real rows before adding it to the allowlist.
+
 ### The 8 tokenizers split into 4 architectural families
 
 | Family | Members | Embedding type | Unit |
@@ -366,5 +377,9 @@ evaluation:
 - **"Just write the test fixture to match what `_parse_example` does so the tests pass."** No — that's how the Alghafa bug stayed live for months. Synthetic test fixtures must be authored against the dataset's true convention (and ideally cross-checked against LightEval's adapter), then the parser is implemented to match the fixture.
 
 - **"Switch all benchmarks to word-scoring everywhere — letter-scoring is broken."** No — letter-scoring is fine for genuinely 4/5-way MCQ where each letter is rare in training and the prior matters less. The pathology is specifically on **2-way and 3-way** tasks where the unigram letter prior dominates the decision (the ACVA observation, replicated for Alghafa's binary/sentiment sub-configs). The dispatch should be per-sub-config (`AlghafaTask.WORD_SCORED_CONFIGS` is the single source of truth), not blanket.
+
+- **"Let the model see 50 K SFT examples by bumping `steps` — the mixture will wrap."** No — `steps` is derived from `total_examples / batch_size` and validated; a category short of its quota is an error, not a repeat. Raise `total_examples` (the error prints the ceiling at these shares), change the shares, or set `upsample: true` explicitly so the repetition is recorded in the manifest.
+
+- **"30 % free-form is a modest share, the ratio ablation is fair."** It is 30 % of *examples*; measured 87 % of *loss tokens* under the native tokenizer. Report `loss_token_share` alongside `example_share` (both in the manifest) — a ratio study that only quotes the example share misreads what the gradient saw.
 
 - **"Bring back per-benchmark SFT — the 3-phase pipeline doesn't expose the model to the actual benchmark format during training."** That's by design. The previous 10/90 split silently mapped from-scratch tokenizer indices onto Llama's pretrained rows and 10% benchmark SFT couldn't drift them far enough to be useful. The 3-phase pipeline alternative — Phase 1 embedding alignment + Phase 2 translated QA + Phase 3 native QA — is task-agnostic precisely so every condition (native + 8 from-scratch tokenizers) trains on the *same* data and the only experimental variable is the tokenizer. If you want to compare a per-benchmark SFT regime against the 3-phase one, that's a new experiment, not a pipeline rewrite.

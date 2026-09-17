@@ -72,6 +72,16 @@ training:
   fp16: false
   logging_steps: 50                                  # log frequency inside each phase
 
+  # Per-corpus loader parameters, forwarded to load_corpus(name, split, **params)
+  # wherever that corpus is loaded (a phase, an early-stop split, a qa_blend).
+  # Only aya_ar takes any today: the sub-datasets of the Aya standard_arabic
+  # split to keep (dataset_name column; the rest of its 5.86 M rows is
+  # templated text simplification / dialogue / translated QA, not free-form).
+  corpus_params: {}
+  # corpus_params:
+  #   aya_ar:
+  #     include_datasets: ["Aya-Dataset", "Dolly-v2 (T)"]
+
   phases:
 
     # =====================================================================
@@ -149,9 +159,29 @@ training:
     # =====================================================================
     sft:
       enabled: true
-      datasets:                                      # multi-corpus list — concatenated + shuffled
-        - "tydiqa_arabic"
-        - "arcd"
+      datasets:                                      # multi-corpus list — concatenated + shuffled (no mixture)
+        - "tydiqa_arabic"                            #   extractive: arabic_squad | tydiqa_arabic | arcd
+        - "arcd"                                     #   mcq: arabic_squad_mcq
+                                                     #   free_form: cidar | bactrian_x_ar | aya_ar
+      # Ratio-controlled composition (null = concatenate the corpora as-is).
+      # Draws exactly total_examples records: shares × total_examples per
+      # category (the category of a corpus is fixed by its loader — a listed
+      # corpus whose category has no share, or a share with no corpus, is an
+      # error); inside a category "equal" water-fills across the corpora
+      # (a small corpus gives all it has, the rest goes to the others),
+      # "proportional" splits by pool size, weights: {corpus: w} overrides.
+      # Quotas count records that survive tokenization. steps is then
+      # derived as total_examples / batch_size (one exact pass; leave steps
+      # null or set it consistently). Dry run: scripts/plan_sft_mixture.py.
+      mixture: null
+      # mixture:
+      #   total_examples: 30000
+      #   shares: {extractive: 0.40, mcq: 0.30, free_form: 0.30}
+      #   within_category: "equal"                   # equal | proportional
+      #   weights: null                              # {cidar: 2, bactrian_x_ar: 1}
+      #   upsample: false                            # true = a short category repeats a further seeded permutation
+      #   drop_truncated_answers: false              # true = only complete answers (skip records that hit max_length)
+      #   seed: 42
       trainable_parameters: ["*"]
       steps: 2000
       learning_rate: 2.0e-5

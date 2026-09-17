@@ -1,0 +1,82 @@
+# Native Llama tokenizer + 3-phase pipeline with a RATIO-CONTROLLED Phase 3.
+#
+# Identical to native_llama_3phase_with_sft.yaml except for Phase 3, which
+# draws an exact 30 000-example training set at 40 % extractive / 30 % MCQ /
+# 30 % free-form from six corpora instead of concatenating three:
+#
+#   extractive  tydiqa_arabic (14 805) + arcd (693)     ← native Arabic QA
+#   mcq         arabic_squad_mcq (48 344)               ← synthetic, teaches the eval letter format
+#   free_form   cidar (9 967) + bactrian_x_ar (67 017) + aya_ar (19 803 with the
+#               default Aya-Dataset + Dolly-v2 (T) allowlist)
+#
+# Quotas: 12 000 / 9 000 / 9 000. Inside a category the split is "equal"
+# with capacity-aware water-filling — ARCD gives all 693, TyDiQA the other
+# 11 307; each free-form corpus 3 000. Quotas count records that survive
+# tokenization (answer-only masking drops a record when max_length eats its
+# answer), so the ratio is exact. steps is derived: 30 000 / 4 = 7 500
+# micro-steps (one pass; early-stop may end it sooner). The manifest
+# outputs/experiments/<name>/data/sft_mixture_manifest.json lists the
+# record ids drawn, the per-corpus drop counts and the LOSS-TOKEN share of
+# each category (a free-form answer is ~100–300 tokens against 1 for an MCQ
+# letter, so 30 % of examples is far more than 30 % of the gradient).
+#
+# Dry run before training: scripts/plan_sft_mixture.py --config <this file>
+
+experiment:
+  name: "native_llama_3phase_sft_mixture"
+  output_dir: "outputs/experiments/native_llama_3phase_sft_mixture"
+  seed: 42
+
+tokenizer:
+  type: "native_llama"
+  vocab_size: null
+  load_path: null
+  save_path: "outputs/tokenizers/native_llama"
+
+model:
+  type: "llama"
+  name_or_path: "meta-llama/Llama-3.2-1B"
+  dtype: "bfloat16"
+  device: "auto"
+
+training:
+  corpus_params:
+    aya_ar:
+      include_datasets: ["Aya-Dataset", "Dolly-v2 (T)"]   # sub-datasets of the standard_arabic split (dataset_name column)
+  phases:
+    embedding_alignment:
+      enabled: false           # pretrained embeddings: Phase 1 only damages them (see native_llama_3phase_with_sft.yaml)
+    sft:
+      datasets: ["tydiqa_arabic", "arcd", "arabic_squad_mcq", "cidar", "bactrian_x_ar", "aya_ar"]
+      mixture:
+        total_examples: 30000
+        shares: {extractive: 0.40, mcq: 0.30, free_form: 0.30}
+        within_category: "equal"        # equal (capacity-aware) | proportional; or set weights
+        weights: null                   # e.g. {cidar: 2, bactrian_x_ar: 1, aya_ar: 1}
+        upsample: false                 # a corpus short of its quota is an error, not a repeat
+        drop_truncated_answers: false   # true = only complete answers (skip records that hit max_length, top up)
+        seed: 42
+      steps: null                       # derived: total_examples / batch_size = 7500
+
+sweep:
+  tokenizers:
+    - type: "native_llama"
+      vocab_sizes: [null]
+  tasks:
+    - type: "acva"
+      params:
+        num_fewshot: 0
+    - type: "alghafa"
+      params: {}
+    - type: "arabic_exam"
+      params: {}
+
+evaluation:
+  intrinsic_metrics: true
+  morphological_metrics: true
+  morph_sample_size: 500
+  downstream_metrics: true
+  failure_reports: true
+  score_normalization: "char+pmi"
+  num_fewshot: 3
+  num_eval_samples: null

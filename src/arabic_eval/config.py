@@ -10,14 +10,33 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 # Registry keys understood by data/finetune_corpora.py. Adding a new
-# corpus means editing both this Literal and the loader registry.
+# corpus means editing this Literal, ``CORPUS_CATEGORY`` below and the
+# loader registry (a test pins the three in sync).
 DatasetName = Literal[
     "arabic_squad",
     "tydiqa_arabic",
     "arcd",
     "arabic_squad_mcq",   # synthetic MCQ derived from arabic_squad
+    "cidar",              # arbml/CIDAR — culturally-aligned Arabic instructions (free-form)
+    "bactrian_x_ar",      # MBZUAI/Bactrian-X ar — translated Alpaca + Dolly instructions (free-form)
+    "aya_ar",             # CohereForAI/aya_collection_language_split standard_arabic, sub-dataset allowlist (free-form)
     "pretraining_mix",   # packed raw-text mix (training.pretraining_mix); full-sequence loss only
 ]
+
+# The shape of every QA corpus, fixed by the loader (its ``prompt_template``):
+# ``qa`` → extractive, ``mcq_letter`` → mcq, ``instruction`` → free_form. A
+# phase ``mixture`` expresses its ratio over these categories; a corpus can
+# never be re-categorised from YAML. ``pretraining_mix`` has no category.
+MixtureCategory = Literal["extractive", "mcq", "free_form"]
+CORPUS_CATEGORY: Dict[str, str] = {
+    "arabic_squad": "extractive",
+    "tydiqa_arabic": "extractive",
+    "arcd": "extractive",
+    "arabic_squad_mcq": "mcq",
+    "cidar": "free_form",
+    "bactrian_x_ar": "free_form",
+    "aya_ar": "free_form",
+}
 
 
 # ---------------------------------------------------------------------------
@@ -149,6 +168,72 @@ class QABlendConfig(BaseModel):
         return self
 
 
+class MixtureConfig(BaseModel):
+    """Ratio-controlled composition of a QA phase's training set.
+
+    The phase draws exactly ``total_examples`` records from its ``datasets``:
+    ``shares`` says how many per *category* (``extractive`` / ``mcq`` /
+    ``free_form`` — the category of a corpus is fixed by its loader, see
+    ``CORPUS_CATEGORY``), and inside a category the quota is split across
+    the listed corpora either ``equal`` (capacity-aware water-fill: a corpus
+    that cannot fill its slice hands the remainder to the others) or
+    ``proportional`` to the corpus sizes; ``weights`` overrides either with
+    explicit per-corpus weights. Quotas count *kept* records — the draw
+    walks a seeded permutation of every corpus, tokenizes as it goes, skips
+    records the answer-only masking drops (truncation ate the answer) and
+    stops when the quota is met, so the ratio is exact after truncation.
+
+    A corpus that cannot supply its quota is an error naming the numbers
+    (``upsample: true`` instead repeats a second seeded permutation).
+    ``drop_truncated_answers`` skips records whose full text hits
+    ``max_length`` (the answer is cut) and tops up, so the model only sees
+    complete answers. ``steps`` of the phase is derived as
+    ``total_examples / batch_size`` (one exact pass) unless set consistently.
+
+    Shares are in *examples*. Free-form answers carry one to two orders of
+    magnitude more loss tokens than an MCQ letter, so the manifest reports
+    the answer-token share per category alongside the example share.
+    """
+    total_examples: int
+    shares: Dict[MixtureCategory, float]
+    within_category: Literal["equal", "proportional"] = "equal"
+    weights: Optional[Dict[DatasetName, float]] = None
+    upsample: bool = False
+    drop_truncated_answers: bool = False
+    seed: int = 42
+
+    @field_validator("total_examples")
+    @classmethod
+    def _positive_total(cls, v):
+        if v <= 0:
+            raise ValueError(f"mixture.total_examples must be positive, got {v}")
+        return v
+
+    @field_validator("shares")
+    @classmethod
+    def _shares_sum_to_one(cls, v):
+        if not v:
+            raise ValueError("mixture.shares must name at least one category")
+        for cat, share in v.items():
+            if not (0.0 < share <= 1.0):
+                raise ValueError(f"mixture.shares[{cat!r}] must be in (0, 1], got {share}")
+        total = sum(v.values())
+        if abs(total - 1.0) > 1e-6:
+            raise ValueError(f"mixture.shares must sum to 1 (got {total:.6f} over {sorted(v)})")
+        return v
+
+    @field_validator("weights")
+    @classmethod
+    def _weights_positive(cls, v):
+        if v is not None:
+            if not v:
+                raise ValueError("mixture.weights must be null or a non-empty {corpus: weight} map")
+            for name, w in v.items():
+                if w <= 0:
+                    raise ValueError(f"mixture.weights[{name!r}] must be positive, got {w}")
+        return v
+
+
 class PhaseConfig(BaseModel):
     """One training phase.
 
@@ -183,6 +268,10 @@ class PhaseConfig(BaseModel):
     # Optional SFT-format QA text blended into a 'pretraining_mix' phase
     # (share of the phase's blocks). See ``QABlendConfig``.
     qa_blend: Optional[QABlendConfig] = None
+    # Optional ratio-controlled composition of a QA phase (never a
+    # 'pretraining_mix' phase): exact per-category example counts drawn from
+    # ``datasets``. See ``MixtureConfig``. ``steps`` is derived from it.
+    mixture: Optional[MixtureConfig] = None
     early_stopping: Optional[EarlyStoppingConfig] = None
 
     @field_validator("datasets", mode="before")
@@ -214,13 +303,66 @@ class PhaseConfig(BaseModel):
     @model_validator(mode="after")
     def _steps_or_mix_tokens(self):
         uses_mix = "pretraining_mix" in self.datasets
-        if not uses_mix and self.steps is None:
-            raise ValueError("steps is required (only phases on 'pretraining_mix' may derive it from mix_tokens)")
         if not uses_mix and self.mix_tokens is not None:
             raise ValueError("mix_tokens is only valid on a phase whose datasets is ['pretraining_mix']")
         if not uses_mix and self.qa_blend is not None:
             raise ValueError("qa_blend is only valid on a phase whose datasets is ['pretraining_mix']")
+        if self.mixture is not None:
+            self._validate_mixture()
+        if not uses_mix and self.steps is None:
+            raise ValueError(
+                "steps is required (only phases on 'pretraining_mix' derive it from mix_tokens, "
+                "and phases with a 'mixture' from total_examples / batch_size)"
+            )
         return self
+
+    def _validate_mixture(self) -> None:
+        """``mixture`` needs a QA phase whose ``datasets`` cover exactly the
+        share categories; ``steps`` is derived from ``total_examples``."""
+        mix = self.mixture
+        assert mix is not None
+        if "pretraining_mix" in self.datasets:
+            raise ValueError(
+                "mixture is only valid on a QA phase (datasets of QA corpora); a 'pretraining_mix' "
+                "phase blends QA text through qa_blend instead"
+            )
+        if len(set(self.datasets)) != len(self.datasets):
+            raise ValueError(f"datasets has duplicates: {self.datasets}")
+        listed = {name: CORPUS_CATEGORY[name] for name in self.datasets}
+        for name, cat in listed.items():
+            if cat not in mix.shares:
+                raise ValueError(
+                    f"mixture: dataset {name!r} is {cat!r} but mixture.shares has no {cat!r} share "
+                    f"(shares: {sorted(mix.shares)}); drop the dataset or give its category a share"
+                )
+        for cat in mix.shares:
+            if cat not in listed.values():
+                raise ValueError(
+                    f"mixture.shares names {cat!r} but no listed dataset is {cat!r} "
+                    f"(datasets: {self.datasets}); add a {cat!r} corpus or drop the share"
+                )
+        if mix.weights is not None:
+            unknown = sorted(set(mix.weights) - set(self.datasets))
+            if unknown:
+                raise ValueError(
+                    f"mixture.weights names datasets the phase does not list: {unknown} "
+                    f"(datasets: {self.datasets})"
+                )
+        if mix.total_examples % self.batch_size != 0:
+            lo = (mix.total_examples // self.batch_size) * self.batch_size
+            raise ValueError(
+                f"mixture.total_examples ({mix.total_examples}) must be a multiple of batch_size "
+                f"({self.batch_size}); nearest valid values: {lo} or {lo + self.batch_size}"
+            )
+        derived = mix.total_examples // self.batch_size
+        if self.steps is None:
+            self.steps = derived
+        elif self.steps != derived:
+            raise ValueError(
+                f"mixture.total_examples ({mix.total_examples}) implies steps = {derived} "
+                f"(total_examples / batch_size {self.batch_size}) but steps = {self.steps}; "
+                f"set them consistently or omit steps"
+            )
 
 
 class PhasesConfig(BaseModel):
@@ -438,6 +580,18 @@ class TrainingConfig(BaseModel):
     fp16: bool = False
     logging_steps: int = 50
     pretraining_mix: Optional[PretrainingMixConfig] = None
+    # Per-corpus loader parameters, forwarded to ``load_corpus(name, split,
+    # **params)`` wherever a phase, an early-stop split or a qa_blend loads
+    # that corpus. Only ``aya_ar`` takes any today (``include_datasets``:
+    # sub-dataset allowlist of the Aya collection).
+    corpus_params: Dict[DatasetName, Dict[str, Any]] = Field(default_factory=dict)
+
+    @field_validator("corpus_params")
+    @classmethod
+    def _corpus_params_are_qa_corpora(cls, v):
+        if "pretraining_mix" in v:
+            raise ValueError("training.corpus_params: 'pretraining_mix' is configured under training.pretraining_mix")
+        return v
 
     @model_validator(mode="after")
     def _check_pretraining_mix_phases(self):
