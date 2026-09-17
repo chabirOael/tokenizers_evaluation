@@ -197,3 +197,74 @@ budget loop cut everything below the threshold (step 10).
 
 No new Python dependencies. Trace requests are serialized with a lock because the
 CAMeL bridge is single-threaded.
+
+---
+
+# Experiment Console
+
+A second local page: configure an experiment YAML in a form, list the existing
+ones under `configs/experiments/`, start the run, watch it, cancel it. A started
+run is **detached** — closing the tab, the SSH session or the server itself does
+not stop it; only *Cancel* (or `kill`) does.
+
+## Start it
+
+```bash
+.venv/bin/python debugger/serve_experiment_console.py --open     # http://127.0.0.1:8766/
+```
+
+`--port N` changes the port (the AraRooPat explorer uses 8765). The server needs
+nothing beyond the main `.venv`; export `HF_TOKEN` *before* starting it — runs
+inherit the server's environment, and the header shows whether the token is set.
+
+## Configs tab
+
+| Element | What it does |
+|---|---|
+| **list** (left) | every `configs/experiments/*.yaml`: model, tokenizer cells (named as `run_sweep` names them — `bpe_32k`, `charformer`, …), eval tasks, enabled phases (`P1 P2 P3`, `–` = disabled), and a results chip (`results` / `7/8 cells`) when `all_metrics.json` already exists under its `output_dir`. Invalid files are listed in red with the Pydantic error. |
+| **Form** | the *resolved* config (the file merged over `base.yaml`, exactly what `load_config` produces), rendered from the Pydantic JSON schema. Hand-built widgets for the parts that matter: sweep tokenizer cells (type from the registry, `vocab_sizes`, params prefilled from `configs/tokenizers/<type>.yaml`, reorder / remove), the eval-task checklist with per-task params, the three phase cards (enable toggle in the header, dataset checklist, mix-mode hint showing `steps = mix_tokens / (batch_size × block_size)`), model presets from `configs/models/`. Renaming the experiment renames `output_dir` while it still follows `outputs/experiments/<name>`. Params boxes take flat `key: value` YAML. Every field label carries a `?`: hovering it shows what the field means and a concrete example (the `HINTS` table at the top of the page script, keyed by config path with `*` for phase names and list indexes). |
+| **Validate** | `POST /api/config/validate` — the real merge + Pydantic; errors are painted on the offending fields by their `loc` path, the rest listed in the banner. On success the banner names the cells, whether `--sweep` applies, and which cells `run_sweep` would skip because results exist. |
+| **YAML** | the file's own text when a config is opened (comments intact); *Form → YAML* renders the form in **full** style (every value explicit, like `all_tokenizers_sweep.yaml`) or **delta** style (only differences from `base.yaml`, like the native_llama files) — both reload to the same config, a test pins that for every file in the repo. *YAML → Form* parses the pane back (invalid YAML still lands in the form, with errors). |
+| **Results** | per-cell downstream accuracy (PMI when available), MEI, fertility / compression / RPS read from `all_metrics.json`, plus links to `comparison_report.txt` and `experiment.log`. |
+| **Save…** | writes `configs/experiments/<name>.yaml`; refuses to overwrite unless ticked; refuses an invalid config. Rendering from the form drops the comments of a hand-written file, so save under a new name unless you mean to replace it. |
+| **▶ Start run…** | validates, then shows what will run (source, cells, tasks, phases, cells that will be skipped) and the CLI overrides: `--sweep` (auto = more than one tokenizer cell, as `run_experiment.py` requires), `--device`, `--seed`. One run at a time by default — two full-FT jobs do not fit the H100; *run concurrently* overrides. An unsaved form is started from a snapshot, no file needed. |
+
+## Runs tab
+
+Every run is a directory `outputs/runs/<YYYYmmdd-HHMMSS>_<config>/`:
+
+| File | Content |
+|---|---|
+| `run.json` | pid / pgid / process start ticks (defeats PID reuse), argv, timestamps, status, exit code |
+| `config.yaml` | the config **as launched** — the run reads this snapshot, so editing the file afterwards never changes a running job |
+| `console.log` | stdout + stderr of `run_experiment.py` (the pipeline's own `outputs/logs/<name>/experiment.log` is unchanged and linked too) |
+| `exit_code` | written by the launching shell when the process ends, so the status survives a server restart |
+
+The launch is `bash -c 'trap … TERM; python scripts/run_experiment.py … > console.log 2>&1; echo $? > exit_code'`
+with `start_new_session=True`: the run is its own session leader. The server
+reconciles status from the directory alone (`running` / `cancelling` /
+`finished` / `failed` / `cancelled` / `lost` = process gone without an exit
+code, e.g. a reboot), so a restarted server lists and controls every run.
+
+The detail panel parses `console.log` into: sweep cells (✓ done, ↷ skipped
+because results existed, ● current, ✗ failed), the pipeline stage (`Step N/7`),
+the current phase with step / loss / lr / eval_loss and a progress bar, the
+current eval task with its tqdm count, the last traceback line on failure, the
+results table once `all_metrics.json` exists, and a live tail of the log
+(incremental polling every 3 s, `\r` progress lines collapsed). **Cancel** sends
+SIGTERM to the process group and SIGKILL 15 s later if it is still alive.
+
+Routes: `GET /api/schema`, `GET /api/configs`, `GET /api/configs/get?path=`,
+`GET /api/configs/results?path=`, `POST /api/config/validate`, `POST /api/config/render`,
+`POST /api/config/parse`, `POST /api/configs/save`, `GET /api/runs`, `GET /api/runs/<id>`,
+`GET /api/runs/<id>/log?offset=`, `POST /api/runs/start`, `POST /api/runs/<id>/cancel`,
+`GET /api/gpu`, `GET /api/text?path=` (files under `outputs/` only).
+
+## Files
+
+| File | Role |
+|---|---|
+| `debugger/serve_experiment_console.py` | stdlib `http.server`, thin routing |
+| `debugger/experiment_console.html` | the page (vanilla JS, no build step) |
+| `src/arabic_eval/tools/experiment_console.py` | schema bundle, config list / read / validate / render / save, `parse_progress`, `RunManager` |
+| `tests/test_experiment_console.py` | round-trip of every repo config in both styles, `loc`-tagged errors, save guards, progress parser on real log lines, run lifecycle with a stub command (start, exit code, conflict, cancel with SIGTERM → SIGKILL, rediscovery by a fresh manager, PID-reuse guard) |

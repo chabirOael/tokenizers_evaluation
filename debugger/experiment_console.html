@@ -1,0 +1,1193 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Experiment Console</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap">
+<style>
+:root{
+  --paper:#F2F5F4; --surface:#FFFFFF; --sunken:#E8EDEB; --line:#D2DAD7; --line-2:#BCC7C3;
+  --ink:#101A16; --ink-2:#44534D; --ink-3:#6E7E78;
+  --accent:#1E5FBF; --accent-soft:#DEE8FA;
+  --good:#0F6E3F; --good-soft:#DCF1E5; --warn:#8A5D00; --warn-soft:#F6ECD6; --bad:#A63A22; --bad-soft:#F7E4DF;
+  --run:#26619C; --run-soft:#DEE8F3;
+  --shadow:0 1px 2px rgba(16,26,22,.05), 0 8px 24px -12px rgba(16,26,22,.18);
+  --radius:10px;
+  --sans:"IBM Plex Sans","Helvetica Neue",Arial,sans-serif;
+  --mono:"IBM Plex Mono",ui-monospace,"SF Mono",Menlo,monospace;
+}
+@media (prefers-color-scheme:dark){
+  :root:not([data-theme="light"]){
+    --paper:#0D1412; --surface:#141D19; --sunken:#101815; --line:#25322D; --line-2:#33443D;
+    --ink:#E7EFEB; --ink-2:#A6B6B0; --ink-3:#7B8C86;
+    --accent:#77A6FF; --accent-soft:#17263F;
+    --good:#5BC98A; --good-soft:#10281B; --warn:#E0B35C; --warn-soft:#2E2413; --bad:#EF8A6C; --bad-soft:#341A13;
+    --run:#84B4E8; --run-soft:#132436;
+    --shadow:0 1px 2px rgba(0,0,0,.4), 0 10px 30px -14px rgba(0,0,0,.7);
+  }
+}
+:root[data-theme="dark"]{
+  --paper:#0D1412; --surface:#141D19; --sunken:#101815; --line:#25322D; --line-2:#33443D;
+  --ink:#E7EFEB; --ink-2:#A6B6B0; --ink-3:#7B8C86;
+  --accent:#77A6FF; --accent-soft:#17263F;
+  --good:#5BC98A; --good-soft:#10281B; --warn:#E0B35C; --warn-soft:#2E2413; --bad:#EF8A6C; --bad-soft:#341A13;
+  --run:#84B4E8; --run-soft:#132436;
+  --shadow:0 1px 2px rgba(0,0,0,.4), 0 10px 30px -14px rgba(0,0,0,.7);
+}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--paper);color:var(--ink);font:14px/1.45 var(--sans)}
+button,input,select,textarea{font:inherit;color:inherit}
+a{color:var(--accent)}
+code,.mono{font-family:var(--mono);font-size:12.5px}
+h1,h2,h3{margin:0;font-weight:600}
+header{position:sticky;top:0;z-index:5;background:var(--surface);border-bottom:1px solid var(--line);
+  display:flex;align-items:center;gap:14px;padding:10px 20px;flex-wrap:wrap}
+header h1{font-size:16px}
+.tabs{display:flex;gap:4px;margin-left:8px}
+.tab{padding:6px 14px;border-radius:8px;border:1px solid transparent;background:none;cursor:pointer;color:var(--ink-2)}
+.tab.on{background:var(--accent-soft);color:var(--accent);border-color:var(--line)}
+.spacer{flex:1}
+.chip{display:inline-flex;align-items:center;gap:6px;padding:2px 9px;border-radius:999px;font-size:12px;
+  background:var(--sunken);color:var(--ink-2);border:1px solid var(--line);white-space:nowrap}
+.chip.good{background:var(--good-soft);color:var(--good)}
+.chip.warn{background:var(--warn-soft);color:var(--warn)}
+.chip.bad{background:var(--bad-soft);color:var(--bad)}
+.chip.run{background:var(--run-soft);color:var(--run)}
+.chip.accent{background:var(--accent-soft);color:var(--accent)}
+.dot{width:8px;height:8px;border-radius:50%;background:currentColor;display:inline-block}
+.pulse{animation:pulse 1.4s infinite}
+@keyframes pulse{0%,100%{opacity:.35}50%{opacity:1}}
+main{padding:16px 20px 60px}
+.view{display:none}.view.on{display:block}
+
+/* ---- configs view ---- */
+.cfg-grid{display:grid;grid-template-columns:320px minmax(0,1fr);gap:16px;align-items:start}
+@media (max-width:1100px){.cfg-grid{grid-template-columns:1fr}}
+.panel{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow)}
+.panel-h{display:flex;align-items:center;gap:8px;padding:10px 14px;border-bottom:1px solid var(--line);flex-wrap:wrap}
+.panel-h h2{font-size:13.5px;text-transform:uppercase;letter-spacing:.04em;color:var(--ink-2)}
+.panel-b{padding:12px 14px}
+.cfg-list{max-height:calc(100vh - 170px);overflow:auto}
+.cfg-item{padding:10px 14px;border-bottom:1px solid var(--line);cursor:pointer}
+.cfg-item:hover{background:var(--sunken)}
+.cfg-item.on{background:var(--accent-soft)}
+.cfg-item .name{font-weight:600;display:flex;align-items:center;gap:8px}
+.cfg-item .meta{color:var(--ink-3);font-size:12px;margin-top:2px;display:flex;flex-wrap:wrap;gap:4px 6px}
+.cfg-item.invalid .name{color:var(--bad)}
+.btn{padding:6px 12px;border-radius:8px;border:1px solid var(--line-2);background:var(--surface);cursor:pointer;color:var(--ink)}
+.btn:hover{background:var(--sunken)}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+.btn.primary:hover{filter:brightness(1.08)}
+.btn.danger{background:var(--bad);border-color:var(--bad);color:#fff}
+.btn.sm{padding:3px 9px;font-size:12.5px}
+.btn:disabled{opacity:.5;cursor:not-allowed}
+.toolbar{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.toolbar input[type=text]{padding:5px 8px;border:1px solid var(--line-2);border-radius:6px;background:var(--surface)}
+.editor-tabs{display:flex;gap:2px;margin-left:auto}
+.editor-tabs .tab{padding:4px 10px}
+.status{padding:8px 14px;border-bottom:1px solid var(--line);font-size:13px;display:none}
+.status.on{display:block}
+.status.bad{background:var(--bad-soft);color:var(--bad)}
+.status.good{background:var(--good-soft);color:var(--good)}
+.status.warn{background:var(--warn-soft);color:var(--warn)}
+.status ul{margin:4px 0 0 18px;padding:0}
+
+/* form */
+.form{display:flex;flex-direction:column;gap:10px}
+details.sec{border:1px solid var(--line);border-radius:8px;background:var(--surface)}
+details.sec>summary{cursor:pointer;padding:8px 12px;font-weight:600;display:flex;align-items:center;gap:8px;list-style:none}
+details.sec>summary::-webkit-details-marker{display:none}
+details.sec>summary::before{content:"▸";color:var(--ink-3);font-size:12px}
+details.sec[open]>summary::before{content:"▾"}
+details.sec>.sec-b{padding:4px 12px 12px;border-top:1px solid var(--line)}
+details.sec.sub{background:var(--sunken)}
+.help{color:var(--ink-3);font-size:12px;font-weight:400;margin-left:auto;max-width:55%;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.rows{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:8px 16px}
+.row{display:flex;flex-direction:column;gap:3px;min-width:0}
+.row.wide{grid-column:1/-1}
+.row label{font-size:12px;color:var(--ink-2);display:flex;align-items:center;gap:6px}
+.row label.hinted{cursor:help}
+.q{display:inline-flex;align-items:center;justify-content:center;width:14px;height:14px;border-radius:50%;font-size:10px;font-weight:600;
+  background:var(--accent-soft);color:var(--accent);border:1px solid var(--line);line-height:1;flex:none}
+#tip{position:fixed;z-index:50;max-width:380px;background:var(--surface);color:var(--ink);border:1px solid var(--line-2);border-radius:8px;
+  box-shadow:var(--shadow);padding:9px 11px;font-size:12.5px;line-height:1.45;pointer-events:none;display:none}
+#tip.on{display:block}
+#tip .tk{font-family:var(--mono);font-size:11.5px;color:var(--ink-3);margin-bottom:3px}
+#tip .eg{margin-top:6px;padding-top:6px;border-top:1px dashed var(--line);font-size:12px}
+#tip .eg b{color:var(--accent);font-weight:600}
+#tip .eg code{background:var(--sunken);padding:0 4px;border-radius:4px;font-size:11.5px;white-space:pre-wrap}
+.row label .k{font-family:var(--mono);font-size:11.5px}
+.row input[type=text],.row input[type=number],.row select,.row textarea{
+  padding:5px 8px;border:1px solid var(--line-2);border-radius:6px;background:var(--surface);width:100%;min-width:0}
+.row textarea{font-family:var(--mono);font-size:12px;min-height:56px;resize:vertical}
+.row.err input,.row.err select,.row.err textarea{border-color:var(--bad);background:var(--bad-soft)}
+.row .emsg{color:var(--bad);font-size:11.5px}
+.row .nul{font-size:11px;color:var(--ink-3);margin-left:auto;display:flex;gap:4px;align-items:center;font-weight:400}
+.sw{display:inline-flex;align-items:center;gap:8px;cursor:pointer}
+.sw input{width:34px;height:18px;appearance:none;background:var(--line-2);border-radius:999px;position:relative;cursor:pointer;margin:0}
+.sw input::after{content:"";position:absolute;top:2px;left:2px;width:14px;height:14px;border-radius:50%;background:#fff;transition:.15s}
+.sw input:checked{background:var(--accent)}
+.sw input:checked::after{left:18px}
+.checks{display:flex;flex-wrap:wrap;gap:6px 12px}
+.checks label{display:inline-flex;gap:5px;align-items:center;font-size:13px}
+.cards{display:flex;flex-direction:column;gap:8px}
+.card{border:1px solid var(--line);border-radius:8px;padding:8px 12px;background:var(--surface)}
+.card-h{display:flex;align-items:center;gap:8px;margin-bottom:6px}
+.card-h .t{font-weight:600}
+.card-h .x{margin-left:auto}
+.phase-off{opacity:.55}
+.hint{font-size:12px;color:var(--ink-3)}
+.badge{font-size:11px;padding:1px 6px;border-radius:5px;background:var(--sunken);color:var(--ink-2);font-family:var(--mono)}
+textarea.yaml{width:100%;min-height:60vh;font-family:var(--mono);font-size:12.5px;padding:10px;border:1px solid var(--line-2);
+  border-radius:8px;background:var(--surface);resize:vertical;white-space:pre;tab-size:2}
+
+/* ---- runs view ---- */
+.runs-grid{display:grid;grid-template-columns:360px minmax(0,1fr);gap:16px;align-items:start}
+@media (max-width:1100px){.runs-grid{grid-template-columns:1fr}}
+.run-item{padding:10px 14px;border-bottom:1px solid var(--line);cursor:pointer}
+.run-item:hover{background:var(--sunken)}
+.run-item.on{background:var(--accent-soft)}
+.run-item .name{font-weight:600;display:flex;align-items:center;gap:8px}
+.run-item .meta{color:var(--ink-3);font-size:12px;margin-top:2px}
+.bar{height:8px;border-radius:999px;background:var(--sunken);overflow:hidden;border:1px solid var(--line)}
+.bar>i{display:block;height:100%;background:var(--accent);transition:width .4s}
+.bar.eval>i{background:var(--run)}
+.kv{display:grid;grid-template-columns:max-content 1fr;gap:3px 14px;font-size:13px}
+.kv .k{color:var(--ink-3)}
+.prog{display:flex;flex-direction:column;gap:10px}
+.prog .line{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:13px}
+.cells{display:flex;flex-wrap:wrap;gap:5px}
+.log{font-family:var(--mono);font-size:12px;white-space:pre-wrap;word-break:break-all;background:var(--sunken);border:1px solid var(--line);
+  border-radius:8px;padding:10px;max-height:52vh;overflow:auto;line-height:1.4}
+.log .tb{color:var(--bad)}
+table.res{border-collapse:collapse;font-size:12.5px;width:100%}
+table.res th,table.res td{border:1px solid var(--line);padding:4px 8px;text-align:right;font-family:var(--mono)}
+table.res th{background:var(--sunken);font-family:var(--sans);font-weight:600}
+table.res td:first-child,table.res th:first-child{text-align:left;font-family:var(--sans)}
+.modal-bg{position:fixed;inset:0;background:rgba(0,0,0,.35);display:none;align-items:center;justify-content:center;z-index:20}
+.modal-bg.on{display:flex}
+.modal{background:var(--surface);border:1px solid var(--line);border-radius:12px;box-shadow:var(--shadow);width:min(560px,94vw);padding:16px 18px}
+.modal h3{margin-bottom:10px}
+.modal .rows{margin-bottom:12px}
+.modal .foot{display:flex;gap:8px;justify-content:flex-end}
+.pre{white-space:pre-wrap;font-family:var(--mono);font-size:12px;background:var(--sunken);border:1px solid var(--line);border-radius:8px;padding:10px;max-height:60vh;overflow:auto}
+.empty{color:var(--ink-3);padding:20px;text-align:center}
+</style>
+</head>
+<body>
+<header>
+  <h1>Experiment Console</h1>
+  <div class="tabs">
+    <button class="tab on" data-view="configs">Configs</button>
+    <button class="tab" data-view="runs">Runs <span id="runs-badge"></span></button>
+  </div>
+  <div class="spacer"></div>
+  <span id="gpu-chip" class="chip">GPU …</span>
+  <span id="env-chip" class="chip">…</span>
+  <button class="btn sm" id="theme-btn" title="toggle theme">◐</button>
+</header>
+
+<main>
+<!-- ================= CONFIGS ================= -->
+<section class="view on" id="view-configs">
+<div class="cfg-grid">
+  <div class="panel">
+    <div class="panel-h">
+      <h2>configs/experiments</h2>
+      <span class="spacer"></span>
+      <button class="btn sm" id="btn-new">+ new from base</button>
+      <button class="btn sm" id="btn-refresh-configs" title="reload the list">↻</button>
+    </div>
+    <div class="panel-b" style="padding:8px 14px"><input type="text" id="cfg-filter" placeholder="filter…" style="width:100%;padding:5px 8px;border:1px solid var(--line-2);border-radius:6px;background:var(--surface)"></div>
+    <div class="cfg-list" id="cfg-list"><div class="empty">loading…</div></div>
+  </div>
+
+  <div class="panel" id="editor">
+    <div class="panel-h">
+      <h2 id="editor-title" style="text-transform:none">editor</h2>
+      <span id="dirty-chip" class="chip warn" style="display:none">unsaved changes</span>
+      <div class="toolbar" style="margin-left:auto">
+        <button class="btn sm" id="btn-validate">Validate</button>
+        <button class="btn sm" id="btn-save">Save…</button>
+        <button class="btn sm primary" id="btn-start">▶ Start run…</button>
+      </div>
+      <div class="editor-tabs">
+        <button class="tab on" data-etab="form">Form</button>
+        <button class="tab" data-etab="yaml">YAML</button>
+        <button class="tab" data-etab="results">Results</button>
+      </div>
+    </div>
+    <div class="status" id="editor-status"></div>
+    <div class="panel-b">
+      <div id="etab-form"><div class="form" id="form"><div class="empty">pick a config on the left, or create a new one</div></div></div>
+      <div id="etab-yaml" style="display:none">
+        <div class="toolbar" style="margin-bottom:8px">
+          <button class="btn sm" id="btn-form-to-yaml">Form → YAML</button>
+          <label class="chip"><input type="radio" name="ymode" value="full" checked> full</label>
+          <label class="chip"><input type="radio" name="ymode" value="delta"> delta over base.yaml</label>
+          <span class="spacer"></span>
+          <button class="btn sm" id="btn-yaml-to-form">YAML → Form</button>
+        </div>
+        <textarea class="yaml" id="yaml" spellcheck="false"></textarea>
+        <div class="hint" style="margin-top:6px">Rendering from the form discards comments of the original file; save under a new name unless you mean to replace it.</div>
+      </div>
+      <div id="etab-results"><div class="empty">no results yet</div></div>
+    </div>
+  </div>
+</div>
+</section>
+
+<!-- ================= RUNS ================= -->
+<section class="view" id="view-runs">
+<div class="runs-grid">
+  <div class="panel">
+    <div class="panel-h"><h2>runs</h2><span class="spacer"></span><span class="hint">outputs/runs/&lt;id&gt;/</span></div>
+    <div id="run-list" class="cfg-list"><div class="empty">no runs yet</div></div>
+  </div>
+  <div class="panel">
+    <div class="panel-h">
+      <h2 id="run-title" style="text-transform:none">run</h2>
+      <span id="run-status" class="chip"></span>
+      <span class="spacer"></span>
+      <button class="btn sm danger" id="btn-cancel" style="display:none">■ Cancel</button>
+    </div>
+    <div class="panel-b" id="run-detail"><div class="empty">select a run</div></div>
+  </div>
+</div>
+</section>
+</main>
+
+<!-- ================= MODALS ================= -->
+<div id="tip" role="tooltip"></div>
+
+<div class="modal-bg" id="save-modal">
+  <div class="modal">
+    <h3>Save config</h3>
+    <div class="rows">
+      <div class="row wide"><label>file name (configs/experiments/&lt;name&gt;.yaml)</label><input type="text" id="save-name"></div>
+      <div class="row"><label>style</label><select id="save-mode"><option value="full">full — every value explicit</option><option value="delta">delta — only differences from base.yaml</option></select></div>
+      <div class="row"><label>&nbsp;</label><label class="sw"><input type="checkbox" id="save-overwrite"> overwrite if it exists</label></div>
+    </div>
+    <div class="hint" id="save-hint"></div>
+    <div class="foot"><button class="btn" data-close>Cancel</button><button class="btn primary" id="save-go">Save</button></div>
+  </div>
+</div>
+
+<div class="modal-bg" id="start-modal">
+  <div class="modal">
+    <h3>Start run</h3>
+    <div class="kv" id="start-summary" style="margin-bottom:12px"></div>
+    <div class="rows">
+      <div class="row"><label>--sweep</label><select id="start-sweep"><option value="auto">auto (more than one cell)</option><option value="true">yes</option><option value="false">no</option></select></div>
+      <div class="row"><label>--device (blank = config)</label><input type="text" id="start-device" placeholder="cuda:0"></div>
+      <div class="row"><label>--seed (blank = config)</label><input type="number" id="start-seed"></div>
+      <div class="row"><label>&nbsp;</label><label class="sw"><input type="checkbox" id="start-force"> run concurrently with an active run</label></div>
+    </div>
+    <div class="hint" id="start-hint"></div>
+    <div class="foot"><button class="btn" data-close>Cancel</button><button class="btn primary" id="start-go">▶ Start</button></div>
+  </div>
+</div>
+
+<div class="modal-bg" id="text-modal">
+  <div class="modal" style="width:min(1000px,96vw)">
+    <h3 id="text-title">file</h3>
+    <div class="pre" id="text-body"></div>
+    <div class="foot" style="margin-top:10px"><button class="btn" data-close>Close</button></div>
+  </div>
+</div>
+
+<script>
+'use strict';
+/* =========================================================================
+   state + helpers
+   ========================================================================= */
+const S = {
+  schema:null, base:null, reg:null, presets:null, env:null,
+  configs:[], file:null, cfg:null, dirty:false, errors:[], yamlDirty:false,
+  open:new Set(['', 'sweep', 'training', 'tokenizer', 'model']),
+  runs:[], run:null, runDetail:null, logOffset:0, logLines:[], logCur:'', pollT:null, view:'configs', etab:'form',
+};
+const $ = (s, r=document) => r.querySelector(s);
+const $$ = (s, r=document) => Array.from(r.querySelectorAll(s));
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+function h(tag, attrs={}, ...kids){
+  const el = document.createElement(tag);
+  for (const [k,v] of Object.entries(attrs||{})){
+    if (k==='class') el.className = v;
+    else if (k==='html') el.innerHTML = v;
+    else if (k.startsWith('on')) el.addEventListener(k.slice(2), v);
+    else if (v!==null && v!==undefined && v!==false) el.setAttribute(k, v===true?'':v);
+  }
+  for (const kid of kids.flat()) if (kid!==null && kid!==undefined && kid!==false) el.append(kid.nodeType ? kid : document.createTextNode(kid));
+  return el;
+}
+const deep = o => JSON.parse(JSON.stringify(o));
+function deepMerge(base, over){ // mutates base
+  for (const [k,v] of Object.entries(over||{})){
+    if (base && typeof base[k]==='object' && base[k]!==null && !Array.isArray(base[k]) && v && typeof v==='object' && !Array.isArray(v)) deepMerge(base[k], v);
+    else base[k] = v;
+  }
+  return base;
+}
+const splitPath = p => p===''?[]:p.split('.');
+function getPath(o, p){ for (const k of splitPath(p)){ if (o==null) return undefined; o = o[k]; } return o; }
+function setPath(o, p, v){ const ks = splitPath(p); for (let i=0;i<ks.length-1;i++){ if (o[ks[i]]==null || typeof o[ks[i]]!=='object') o[ks[i]] = /^\d+$/.test(ks[i+1])?[]:{}; o = o[ks[i]]; } o[ks[ks.length-1]] = v; }
+async function api(method, url, body){
+  const r = await fetch(url, {method, headers: body?{'Content-Type':'application/json'}:{}, body: body?JSON.stringify(body):undefined});
+  let data = null; try { data = await r.json(); } catch(e){ data = {error: 'bad response'}; }
+  if (!r.ok) { const e = new Error(data.error || r.statusText); e.status = r.status; e.data = data; throw e; }
+  return data;
+}
+const fmtTime = iso => iso ? new Date(iso).toLocaleString(undefined, {hour12:false}) : '—';
+function fmtDur(sec){ if (sec==null||isNaN(sec)) return '—'; sec = Math.max(0, Math.round(sec)); const hh=Math.floor(sec/3600), mm=Math.floor(sec%3600/60), ss=sec%60; return hh?`${hh}h ${mm}m`:mm?`${mm}m ${ss}s`:`${ss}s`; }
+const fmtNum = (v, d=4) => (v==null||v==='') ? '—' : (typeof v==='number' ? (Number.isInteger(v)?String(v):v.toFixed(d)) : String(v));
+function status(kind, msg, list){
+  const el = $('#editor-status'); el.className = 'status on ' + kind;
+  el.innerHTML = esc(msg) + (list && list.length ? '<ul>' + list.map(e=>`<li><code>${esc(e.loc)}</code> — ${esc(e.msg)}</li>`).join('') + '</ul>' : '');
+  if (kind==='good') setTimeout(()=>{ if (el.classList.contains('good')) el.className='status'; }, 4000);
+}
+const clearStatus = () => { $('#editor-status').className = 'status'; };
+
+/* ---- flat YAML (key: scalar) for params dicts ---- */
+function parseScalar(t){
+  t = t.trim();
+  if (t==='' || t==='~' || t==='null' || t==='None') return null;
+  if (t==='true' || t==='True') return true;
+  if (t==='false' || t==='False') return false;
+  if (/^[-+]?(\d+\.?\d*|\.\d+)([eE][-+]?\d+)?$/.test(t)) return Number(t);
+  if (/^[\[{]/.test(t)) { try { return JSON.parse(t); } catch(e){ try { return JSON.parse(t.replace(/'/g,'"')); } catch(e2){ return t; } } }
+  if ((t.startsWith('"') && t.endsWith('"')) || (t.startsWith("'") && t.endsWith("'"))) return t.slice(1,-1);
+  return t;
+}
+function parseFlat(text){
+  const out = {};
+  for (const raw of (text||'').split('\n')){
+    const line = raw.replace(/\s+#.*$/,'').trim();
+    if (!line || line.startsWith('#')) continue;
+    const m = line.match(/^([^:]+):\s*(.*)$/);
+    if (!m) throw new Error(`cannot parse line: ${raw}`);
+    out[m[1].trim()] = parseScalar(m[2]);
+  }
+  return out;
+}
+function fmtScalar(v){
+  if (v===null || v===undefined) return 'null';
+  if (typeof v==='string') return (/^[-+]?\d|^(true|false|null|~)$|[:#\[\]{}"']/.test(v) || v.trim()!==v) ? JSON.stringify(v) : v;
+  if (typeof v==='object') return JSON.stringify(v);
+  return String(v);
+}
+const fmtFlat = o => Object.entries(o||{}).map(([k,v])=>`${k}: ${fmtScalar(v)}`).join('\n');
+function parseList(text, kind){ // comma / whitespace separated; kind: 'int' | 'int?' | 'str'
+  return (text||'').split(/[,\s]+/).map(s=>s.trim()).filter(s=>s!=='').map(s => {
+    if (kind==='str') return s;
+    if (s==='null' || s==='None' || s==='~') return null;
+    const n = Number(s); if (Number.isNaN(n)) throw new Error(`not a number: ${s}`); return n;
+  });
+}
+
+/* =========================================================================
+   schema helpers
+   ========================================================================= */
+function resolve(node){
+  if (!node) return {};
+  if (node.$ref){ const key = node.$ref.replace('#/$defs/',''); return Object.assign({}, S.schema.$defs[key], {title: node.title || S.schema.$defs[key].title}); }
+  return node;
+}
+function fieldInfo(node){ // → {schema, nullable, enum, kind}
+  node = resolve(node);
+  let nullable = false, inner = node;
+  if (node.anyOf){
+    const alts = node.anyOf.filter(a => !(a.type==='null'));
+    nullable = alts.length < node.anyOf.length;
+    inner = resolve(alts[0] || {});
+    if (alts.length > 1) inner = Object.assign({}, inner, {_alts: alts});
+  }
+  const kind = inner.enum ? 'enum' : inner.const!==undefined ? 'const' : inner.type==='boolean' ? 'bool'
+    : inner.type==='integer' ? 'int' : inner.type==='number' ? 'num' : inner.type==='string' ? 'str'
+    : inner.type==='array' ? 'array' : (inner.type==='object' || inner.properties) ? (inner.properties ? 'object' : 'dict') : 'any';
+  return {schema: inner, nullable, kind, description: node.description || inner.description || ''};
+}
+function defaultFor(node){
+  const fi = fieldInfo(node);
+  const s = fi.schema;
+  if (s.default !== undefined) return deep(s.default);
+  if (fi.nullable) return null;
+  switch (fi.kind){
+    case 'bool': return false; case 'int': case 'num': return 0; case 'str': return '';
+    case 'enum': return s.enum[0]; case 'array': return []; case 'dict': return {};
+    case 'object': { const o = {}; for (const [k,p] of Object.entries(s.properties||{})) o[k] = defaultFor(p); return o; }
+    default: return null;
+  }
+}
+const firstSentence = t => (t||'').replace(/\s+/g,' ').split(/(?<=\.)\s/)[0];
+
+/* =========================================================================
+   form rendering
+   ========================================================================= */
+const SECTION_ORDER = ['experiment','sweep','tokenizer','model','training','evaluation','data','tracking','task'];
+
+/* ---- field hints: what it means + an easy example. Keys are config paths with
+   list indexes and phase names replaced by "*". A bare key (no dots) is the
+   fallback for any path ending in it. ---- */
+const HINTS = {
+  'name': ['Experiment name. Also names the log folder outputs/logs/<name>/ and the sweep cells inherit it.', 'bpe_32k_with_sft'],
+  'description': ['Free text stored in config.json for your future self.', '"BPE 32K vs native Llama, 3 phases, PMI scoring"'],
+  'output_dir': ['Where all_metrics.json, checkpoints and reports land. In a sweep each cell gets a sub-folder here.', 'outputs/experiments/bpe_32k_with_sft → outputs/experiments/bpe_32k_with_sft/bpe_32k/'],
+  'seed': ['Master random seed for data shuffles, sampling and init. Same seed + same config = same run.', '42'],
+  'deterministic': ['Forces deterministic cuDNN kernels. Slightly slower, but two runs with the same seed match exactly.', 'on for comparisons, off for a quick throwaway run'],
+  'data.dataset_name': ['HuggingFace dataset used ONLY to train the tokenizer and for intrinsic metrics (Phases 1–3 and the benchmarks have their own corpora).', 'Jr23xd23/ArabicText-Large'],
+  'data.dataset_config': ['Sub-config of that dataset, or null for the default one.', 'null'],
+  'data.cache_dir': ['Where HuggingFace datasets are cached on disk.', 'outputs/data_cache'],
+  'data.train_split': ['Split used to train the tokenizer.', 'train'],
+  'data.eval_split': ['Split used for the intrinsic metrics (fertility, compression, UNK rate…).', 'test'],
+  'data.max_train_samples': ['Cap on tokenizer-training texts; null = all (≈ 669 K rows).', '20000 for a quick smoke, null for a real run'],
+  'data.max_eval_samples': ['Cap on intrinsic-eval texts.', '10000'],
+  'data.preprocessing': ['Cleaning applied to the tokenizer-training corpus only (benchmarks and QA corpora stay raw). One key per line.', 'normalize_unicode: true\nremove_diacritics: false\nnormalize_alef: false   ← keep off: eval text keeps أ/إ/آ\nremove_tatweel: true\nmin_text_length: 10\njoin_lone_waw: true     ← "و القمر" → "والقمر"'],
+  'tokenizer.type': ['Registry key of the tokenizer. Overridden per cell when a sweep block exists.', 'bpe · wordpiece · morpho_bpe · character_bert · char_jaber · farasa_character_bert · charformer · araroopat · native_llama · native_qwen3'],
+  'tokenizer.vocab_size': ['Target vocabulary size for subword tokenizers. null for tokenizers whose vocab is fixed or derived (char-level, charformer, araroopat, native_*).', '32000 for bpe / wordpiece / morpho_bpe, null for character_bert'],
+  'tokenizer.params': ['Tokenizer-specific knobs, one key per line. "fill from configs/tokenizers/…" shows the documented defaults.', 'min_frequency: 2   (bpe)\nmax_block_size: 4  (charformer)\nmax_roots: 10000   (araroopat)'],
+  'tokenizer.save_path': ['Where the trained tokenizer is saved (sweep cells use outputs/tokenizers/<cell>).', 'outputs/tokenizers/bpe_32k'],
+  'tokenizer.load_path': ['Load a previously trained tokenizer instead of training one. null = train from scratch.', 'outputs/tokenizers/bpe_32k  (skips the ~minutes of training)'],
+  'model.type': ['Model adapter registry key.', 'llama  (Llama-3.2-1B/3B) · qwen3  (Qwen3-4B-Base)'],
+  'model.name_or_path': ['HuggingFace checkpoint. Gated meta-llama repos need HF_TOKEN in the server environment.', 'meta-llama/Llama-3.2-1B · meta-llama/Llama-3.2-3B · Qwen/Qwen3-4B-Base'],
+  'model.dtype': ['Weight dtype at load time.', 'bfloat16'],
+  'model.device': ['Where the model lives. "auto" picks the GPU when one exists; a --device override at start beats this.', 'auto · cuda:0 · cpu'],
+  'model.params': ['Extra kwargs for the adapter; usually empty.', '{}'],
+  'task.type': ['Legacy top-level task field. The 3-phase pipeline evaluates sweep.tasks instead — leave it.', 'text_generation'],
+  'task.params': ['Legacy; unused by the 3-phase pipeline.', 'max_length: 512'],
+  'training.bf16': ['Mixed precision in bfloat16 for every phase (recommended on H100).', 'on'],
+  'training.fp16': ['Mixed precision in float16 instead of bf16. Do not enable both.', 'off'],
+  'training.logging_steps': ['Log the training loss every N steps (this is what the Runs tab plots).', '50'],
+  'training.phases.*.enabled': ['Turn this phase on or off; the other phases still run in fixed order.', 'sft off = the "no-SFT" baseline (Phase 1 + 2 only)'],
+  'training.phases.*.datasets': ['Corpora this phase trains on (concatenated + shuffled). pretraining_mix must be alone and needs mix_tokens.', 'Phase 1/2: arabic_squad · Phase 3: tydiqa_arabic + arcd (+ arabic_squad_mcq for the MCQ format)'],
+  'training.phases.*.trainable_parameters': ['Substrings matched against parameter names; only matches get gradients. * alone = everything.', 'embed_tokens, lm_head  (Phase 1: body frozen) · *  (Phases 2/3)'],
+  'training.phases.*.steps': ['Number of optimizer micro-steps (NOT epochs). Wall time scales with it.', '1000 (Phase 1) · 2000 (Phases 2/3) · 30 for a smoke'],
+  'training.phases.*.mix_tokens': ['Only for datasets = pretraining_mix: tokens the phase consumes. Must equal steps × batch_size × block_size; steps can then be left null.', '4096000 = 2000 steps × 4 × 512'],
+  'training.phases.*.learning_rate': ['Peak learning rate of AdamW.', '5e-4 embeddings only (Phase 1) · 2e-5 full model (Phases 2/3)'],
+  'training.phases.*.batch_size': ['Sequences per micro-step. Effective batch = batch_size × gradient_accumulation_steps.', '8 (Phase 1) · 4 (Phases 2/3)'],
+  'training.phases.*.gradient_accumulation_steps': ['Micro-steps accumulated before one optimizer update. Raises the effective batch without more memory.', '4 → effective batch 4 × 4 = 16'],
+  'training.phases.*.optimizer': ['Only adamw is implemented.', 'adamw'],
+  'training.phases.*.weight_decay': ['L2-style decay in AdamW.', '0.0 for embeddings (Phase 1) · 0.01 for full fine-tuning'],
+  'training.phases.*.max_length': ['Token truncation length per sequence. Must equal block_size on a pretraining_mix phase. Character tokenizers need more (their sequences are 4–6× longer).', '512 subword · 2048 char_jaber / charformer'],
+  'training.phases.*.loss_target': ['full_sequence = loss on every token; answer_only = only the answer span after "### الإجابة:" counts.', 'full_sequence for Phase 1 and the pretraining mix · answer_only for Phases 2/3'],
+  'training.phases.*.lr_scheduler': ['LR shape after warmup: cosine decays to 0, linear decays straight, constant stays flat.', 'constant (Phase 1) · cosine (Phases 2/3)'],
+  'training.phases.*.warmup_steps': ['Linear LR ramp from 0 over the first N steps.', '0 (Phase 1) · 100 (Phases 2/3)'],
+  'training.phases.*.max_grad_norm': ['Gradient clipping threshold.', '1.0'],
+  'training.phases.*.save_checkpoint': ['Write model.pt to <output_dir>/training/<phase>/ at the end of the phase (~2.5 GB for the 1B model).', 'on'],
+  'training.phases.*.clean_latin_rows': ['Drop training records whose question / context / answer contains any Latin letter.', 'on for a clean-Arabic study'],
+  'training.phases.*.qa_blend': ['Only on a pretraining_mix phase: replace a share of the raw-text blocks with SFT-format QA text. null = pure raw text.', 'share 0.07 of Phase 2 = 560 QA blocks out of 8000 (same compute either way)'],
+  'training.phases.*.qa_blend.datasets': ['QA corpora rendered in the Phase 3 prompt form and packed like raw text.', 'tydiqa_arabic, arcd'],
+  'training.phases.*.qa_blend.share': ['Fraction of the phase blocks that are QA text, in (0, 1). Comes OUT of mix_tokens, not on top.', '0.07'],
+  'training.phases.*.qa_blend.split': ['Only train is allowed (validation feeds Phase 3 early-stop).', 'train'],
+  'training.phases.*.qa_blend.seed': ['Seed for shuffling and interleaving the QA blocks.', '42'],
+  'training.phases.*.early_stopping': ['Phase 3 only: evaluate the answer-only loss on TyDiQA-val + ARCD-val periodically and stop when it stagnates.', 'patience 5 × eval every 200 steps = stop after 1000 flat steps'],
+  'training.phases.*.early_stopping.enabled': ['Turn the periodic eval + stop rule on or off.', 'on'],
+  'training.phases.*.early_stopping.metric': ['Only eval_loss is supported.', 'eval_loss'],
+  'training.phases.*.early_stopping.eval_every_n_steps': ['How often the eval pass runs (each pass costs ~1 min).', '200'],
+  'training.phases.*.early_stopping.patience': ['Stop after this many consecutive evals without improvement.', '5'],
+  'training.phases.*.early_stopping.min_delta': ['Improvements smaller than this count as noise.', '0.0005'],
+  'training.phases.*.early_stopping.min_steps_before_stop': ['Never stop before this step (the LR is still warming up).', '500'],
+  'training.phases.*.early_stopping.restore_best_at_end': ['Keep a copy of the best-eval weights and restore them when the phase ends.', 'on'],
+  'training.phases.*.early_stopping.eval_splits': ['Which split of each corpus is the eval set, one key per line.', 'tydiqa_arabic: validation\narcd: validation'],
+  'training.pretraining_mix': ['Packed raw-text corpus (70 % FineWeb-2 / 20 % Wikipedia / 10 % ArabicWeb24) that a phase can train on instead of QA records. Inert until a phase sets datasets = pretraining_mix.', 'null when Phases 1/2 use arabic_squad'],
+  'training.pretraining_mix.block_size': ['Tokens per packed block = the max_length of every mix phase.', '512'],
+  'training.pretraining_mix.seed': ['Seed for the source shuffle and the packing order.', '42'],
+  'training.pretraining_mix.cache_dir': ['Where the pool and the per-tokenizer packs are cached (shared by every experiment).', 'outputs/data_cache/pretraining_mix'],
+  'training.pretraining_mix.normalization': ['Document normalization before filtering — keep parity with the raw QA phases (NFKC + tatweel only).', 'nfkc on, remove_tatweel on, normalize_alef off, remove_diacritics off'],
+  'training.pretraining_mix.normalization.nfkc': ['Unicode NFKC normalization of each document (compatibility forms → canonical).', 'on'],
+  'training.pretraining_mix.normalization.remove_tatweel': ['Strip the kashida / tatweel stretch character (ـ).', 'on'],
+  'training.pretraining_mix.normalization.normalize_alef': ['Fold آ/أ/إ/ٱ → ا. Keep OFF: the benchmarks keep the hamza forms, folding creates a train/eval skew.', 'off'],
+  'training.pretraining_mix.normalization.remove_diacritics': ['Strip tashkeel from the raw text.', 'off'],
+  'model.preset': ['Copies type / name_or_path / dtype / device from a file under configs/models/. The fields below stay editable.', 'Qwen/Qwen3-4B-Base (qwen3_4b.yaml)'],
+  'training.pretraining_mix.sources': ['Raw-text sources with their target shares (must sum to 1).', 'fineweb2_arb 0.70 · wikipedia_ar 0.20 · arabicweb24 0.10 (gated → HF_TOKEN; arabic_101b is the ungated alternative)'],
+  'training.pretraining_mix.sources.*.name': ['Key in SOURCE_REGISTRY.', 'fineweb2_arb · wikipedia_ar · arabicweb24 · arabic_101b'],
+  'training.pretraining_mix.sources.*.share': ['Target fraction of the mix in tokens (and in words for the cached pool).', '0.7'],
+  'training.pretraining_mix.sources.*.params': ['Loader options for that source, one key per line.', 'config: arb_Arab\nmin_language_score: 0.8   (fineweb2)\ndump: 20231101.ar   (wikipedia)'],
+  'training.pretraining_mix.pool.total_words': ['Post-filter words in the tokenizer-independent pool. Must cover Σ mix_tokens for the lowest-fertility tokenizer (≈ 1 token/word).', '20000000 for two 4.1 M-token phases'],
+  'training.pretraining_mix.pool.stream_shuffle_buffer': ['Buffer of the seeded streaming shuffle (0 = no shuffle → FineWeb-2 yields a 2013 snapshot).', '10000'],
+  'training.pretraining_mix.pool.max_stream_docs_per_source': ['Safety valve: stop streaming a source after this many raw docs even if its word target is not met.', '3000000'],
+  'training.pretraining_mix.dedup.paragraph_exact': ['Remove repeated normalized paragraphs from documents (boilerplate).', 'on'],
+  'training.pretraining_mix.dedup.minhash.enabled': ['MinHash-LSH near-duplicate document removal across sources.', 'on'],
+  'training.pretraining_mix.dedup.minhash.num_perm': ['MinHash permutations (accuracy vs speed).', '128'],
+  'training.pretraining_mix.dedup.minhash.shingle_words': ['Words per shingle.', '5'],
+  'training.pretraining_mix.dedup.minhash.threshold': ['Jaccard similarity above which two docs are duplicates.', '0.8'],
+  'training.pretraining_mix.dedup.priority': ['Source order for dedup: the higher-priority copy of a duplicate survives.', 'wikipedia_ar, fineweb2_arb, arabicweb24'],
+  'training.pretraining_mix.msa_filter.heuristic.enabled': ['Closed-list dialect-marker gate (drops documents written in dialect).', 'on'],
+  'training.pretraining_mix.msa_filter.heuristic.max_markers_per_1k_words': ['Drop only above this marker density.', '8'],
+  'training.pretraining_mix.msa_filter.heuristic.min_markers': ['…and with at least this many markers in total.', '3'],
+  'training.pretraining_mix.msa_filter.heuristic.min_distinct_markers': ['…of at least this many different types (one repeated word like شو as a name never sinks a doc).', '2'],
+  'training.pretraining_mix.msa_filter.camel_did.enabled': ['Opt-in CAMeL dialect-ID second signal. Measured to flag 16 % of plain-MSA Wikipedia — keep off.', 'off'],
+  'training.pretraining_mix.msa_filter.camel_did.sentences_per_doc': ['Sentences sampled per document for the DID model.', '8'],
+  'training.pretraining_mix.msa_filter.camel_did.min_sentence_words': ['Shorter sentences are skipped.', '5'],
+  'training.pretraining_mix.msa_filter.camel_did.min_msa_share': ['Drop when fewer than this share of sentences are labelled MSA.', '0.3'],
+  'training.pretraining_mix.quality.min_words': ['Drop documents shorter than this.', '50'],
+  'training.pretraining_mix.quality.max_words': ['Truncate longer documents at a paragraph boundary (not a drop).', '3000'],
+  'training.pretraining_mix.quality.strip_latin_parentheticals': ['Remove "(بالإنجليزية: Name)" glosses before the Latin-ratio rule.', 'on'],
+  'training.pretraining_mix.quality.max_latin_letter_ratio': ['Drop when Latin letters exceed this share of all letters.', '0.05'],
+  'training.pretraining_mix.quality.min_arabic_letter_ratio': ['Drop when Arabic-script letters are below this share.', '0.7'],
+  'training.pretraining_mix.quality.max_short_line_ratio': ['Drop when more than this share of lines are shorter than short_line_words.', '0.5'],
+  'training.pretraining_mix.quality.short_line_words': ['A line with fewer words than this is "short".', '5'],
+  'training.pretraining_mix.quality.max_dup_line_ratio': ['Drop when more than this share of lines repeat inside the document.', '0.3'],
+  'training.pretraining_mix.quality.max_symbol_ratio': ['Drop when symbol characters per word exceed this (Gopher-style).', '0.1'],
+  'training.pretraining_mix.quality.wikipedia_strip_sections': ['Tail sections cut from Wikipedia articles.', 'المراجع, وصلات خارجية, انظر أيضا'],
+  'evaluation.intrinsic_metrics': ['Compute fertility, compression ratio, UNK rate and vocab coverage on the eval split (fast).', 'on'],
+  'evaluation.morphological_metrics': ['Arabic root / pattern / morpheme / clitic metrics via qalsadi + Farasa (Java). Adds ~30 s per experiment.', 'on; off for a smoke without Java'],
+  'evaluation.morph_sample_size': ['Distinct words sampled for the morphological metrics.', '500'],
+  'evaluation.downstream_metrics': ['Run the LightEval MCQ benchmarks listed in sweep.tasks after training.', 'on'],
+  'evaluation.num_eval_samples': ['Cap on rows per benchmark; null = the full benchmark (the real number).', 'null for a real run · 500 for fast iteration'],
+  'evaluation.generation_max_new_tokens': ['Only for generation-based tasks (unused by the MCQ benchmarks).', '128'],
+  'evaluation.generation_temperature': ['Only for generation-based tasks.', '1.0'],
+  'evaluation.generation_do_sample': ['Only for generation-based tasks.', 'off'],
+  'evaluation.failure_reports': ['Write one CSV per task with every wrong answer and its per-choice log-likelihoods.', 'on'],
+  'evaluation.intrinsic_unk_report': ['Dump every word that produced an UNK token to intrinsic_unks.csv.', 'off'],
+  'evaluation.downstream_unk_report': ['Dump UNK occurrences in benchmark prompts to unk_reports/<task>_unks.csv.', 'off'],
+  'evaluation.score_normalization': ['How MCQ choices are scored: char = per-character length norm; pmi = subtract the answer prior (fixes the letter-prior bias); char+pmi = report both, accuracy = pmi.', 'char+pmi'],
+  'evaluation.num_fewshot': ['In-context demonstrations prepended to each MCQ prompt (a task param can override per task).', '3, with acva forced to 0 in its task params'],
+  'tracking.use_wandb': ['Log to Weights & Biases.', 'off'],
+  'tracking.wandb_project': ['W&B project name.', 'arabic-tokenizer-eval'],
+  'tracking.wandb_entity': ['W&B team / user, or null for the default.', 'null'],
+  'tracking.log_to_file': ['Also write outputs/logs/<name>/experiment.log.', 'on'],
+  'sweep.tokenizers.*.type': ['Tokenizer of this cell. Changing it applies the preset from configs/tokenizers/<type>.yaml.', 'bpe'],
+  'sweep.tokenizers.*.vocab_sizes': ['One cell per value. Cells are named <type>_<size>k; null makes a single cell named <type>.', '16000, 32000, 50000 → bpe_16k, bpe_32k, bpe_50k · null → charformer'],
+  'sweep.tokenizers.*.params': ['Tokenizer knobs for this cell, one key per line (overrides tokenizer.params).', 'min_frequency: 2'],
+  'sweep.tasks.*.params': ['Per-task overrides, one key per line. Empty = the defaults.', 'num_fewshot: 0\nclean_latin_rows: true\nmax_length: 512\ndataset_name: OALL/ACVA'],
+  'params': ['Free key: value lines (numbers, true/false, null, quoted strings, [lists]).', 'min_frequency: 2'],
+};
+const normPath = p => p.replace(/\.\d+(?=\.|$)/g, '.*').replace(/^training\.phases\.(embedding_alignment|warmup|sft)/, 'training.phases.*');
+function hintFor(path){
+  const n = normPath(path);
+  const hit = HINTS[n] || HINTS[n.split('.').pop()];
+  return hit ? {key: path, text: hit[0], example: hit[1]} : null;
+}
+const TIP = { el: null };
+function showTip(e, hint){
+  const t = TIP.el || (TIP.el = $('#tip'));
+  t.innerHTML = `<div class="tk">${esc(hint.key)}</div><div>${esc(hint.text)}</div>` + (hint.example ? `<div class="eg"><b>e.g.</b> <code>${esc(hint.example)}</code></div>` : '');
+  t.classList.add('on');
+  const lr = e.currentTarget.getBoundingClientRect();
+  const r = (e.currentTarget.closest('.row') || e.currentTarget).getBoundingClientRect();
+  let x = lr.left, y = r.bottom + 6;
+  const w = t.offsetWidth, hh = t.offsetHeight;
+  if (x + w > innerWidth - 12) x = Math.max(12, innerWidth - 12 - w);
+  if (y + hh > innerHeight - 12) y = Math.max(12, lr.top - 6 - hh);
+  t.style.left = x + 'px'; t.style.top = y + 'px';
+}
+function hideTip(){ if (TIP.el) TIP.el.classList.remove('on'); }
+function attachHint(label, path){
+  const hint = hintFor(path);
+  if (!hint) return label;
+  label.classList.add('hinted');
+  label.append(h('span', {class:'q', 'aria-hidden':'true'}, '?'));
+  label.addEventListener('mouseenter', e => showTip(e, hint));
+  label.addEventListener('mouseleave', hideTip);
+  label.addEventListener('focusin', e => showTip(e, hint));
+  label.addEventListener('focusout', hideTip);
+  return label;
+}
+const EXP_KEYS = ['name','description','output_dir','seed','deterministic'];
+
+function markDirty(){ S.dirty = true; $('#dirty-chip').style.display = ''; }
+function errorsFor(path){ return S.errors.filter(e => e.loc===path); }
+
+function control(path, node, opts={}){
+  const fi = fieldInfo(node);
+  const val = getPath(S.cfg, path);
+  const row = h('div', {class: 'row' + (opts.wide?' wide':'') + (errorsFor(path).length?' err':''), 'data-row': path});
+  const label = h('label', {}, h('span', {class:'k'}, opts.label || path.split('.').pop()));
+  if (fi.description && !opts.noHelp && !hintFor(path)) label.title = fi.description;
+  attachHint(label, path);
+  row.append(label);
+  let input;
+  const set = v => { setPath(S.cfg, path, v); markDirty(); row.classList.remove('err'); $$('.emsg', row).forEach(e=>e.remove()); opts.onChange && opts.onChange(v); };
+  const K = fi.kind;
+  if (K==='bool'){
+    input = h('input', {type:'checkbox', onchange: e => set(e.target.checked)}); input.checked = !!val;
+    const sw = h('label', {class:'sw'}, input, h('span', {class:'hint'}, val ? 'on' : 'off'));
+    input.addEventListener('change', e => sw.lastChild.textContent = e.target.checked?'on':'off');
+    row.append(sw);
+  } else if (K==='enum' || K==='const'){
+    const vals = K==='const' ? [fi.schema.const] : fi.schema.enum;
+    input = h('select', {onchange: e => set(e.target.value===' null'?null:vals[Number(e.target.value)])});
+    if (fi.nullable) input.append(h('option', {value:' null'}, 'null'));
+    vals.forEach((v,i) => input.append(h('option', {value:String(i), selected: v===val}, String(v))));
+    if (val===null && fi.nullable) input.value=' null';
+    row.append(input);
+  } else if (K==='int' || K==='num'){
+    input = h('input', {type:'text', class:'mono', value: val===null||val===undefined ? '' : String(val), placeholder: fi.nullable?'null':'',
+      onchange: e => { const t = e.target.value.trim(); if (t==='' || t==='null'){ if (fi.nullable) set(null); else { row.classList.add('err'); } return; }
+        const n = Number(t); if (Number.isNaN(n) || (K==='int' && !Number.isInteger(n))) { row.classList.add('err'); return; } set(n); }});
+    row.append(input);
+  } else if (K==='str'){
+    input = h('input', {type:'text', value: val ?? '', placeholder: fi.nullable?'null':'', onchange: e => set(e.target.value==='' && fi.nullable ? null : e.target.value)});
+    row.append(input);
+  } else if (K==='array'){
+    const items = fieldInfo(fi.schema.items || {});
+    if (items.kind==='enum' && opts.multi!==false){ // checkbox group
+      const box = h('div', {class:'checks'});
+      items.schema.enum.forEach(v => { const cb = h('input', {type:'checkbox', onchange: () => set($$('input', box).filter(c=>c.checked).map(c=>c.value))});
+        cb.value = v; cb.checked = (val||[]).includes(v); box.append(h('label', {}, cb, v)); });
+      row.append(box);
+    } else if (['int','num','str'].includes(items.kind) || items.nullable){
+      const kind = items.kind==='str' ? 'str' : 'int';
+      input = h('input', {type:'text', class:'mono', value: (val||[]).map(v=>v===null?'null':v).join(', '), placeholder: 'comma separated',
+        onchange: e => { try { set(parseList(e.target.value, kind)); } catch(err){ row.classList.add('err'); } }});
+      row.append(input);
+    } else { // array of objects → generic list
+      row.classList.add('wide');
+      row.append(listEditor(path, fi.schema.items));
+    }
+  } else if (K==='dict' || K==='any'){
+    input = h('textarea', {placeholder:'key: value', onchange: e => { try { set(parseFlat(e.target.value)); } catch(err){ row.classList.add('err'); row.append(h('div',{class:'emsg'}, err.message)); } }});
+    input.value = fmtFlat(val);
+    row.append(input);
+  } else if (K==='object'){
+    row.classList.add('wide');
+    row.append(objectSection(path, node, {title: opts.label || path.split('.').pop(), sub:true}));
+    row.querySelector('label').remove();
+  }
+  if (fi.nullable && (K==='object' || K==='dict' || K==='array')){
+    const cb = h('input', {type:'checkbox', onchange: e => { if (e.target.checked) set(null); else set(defaultFor(fi.schema) ?? {}); renderForm(); }});
+    cb.checked = val===null;
+    (row.querySelector('label') || row).append(h('span', {class:'nul'}, cb, 'null'));
+    if (val===null){ row.querySelectorAll('textarea, details, .cards').forEach(x => x.style.display='none'); }
+  }
+  for (const e of errorsFor(path)) row.append(h('div', {class:'emsg'}, e.msg));
+  return row;
+}
+
+function listEditor(path, itemNode){
+  const arr = getPath(S.cfg, path) || [];
+  const wrap = h('div', {class:'cards'});
+  arr.forEach((item, i) => {
+    const card = h('div', {class:'card'});
+    card.append(h('div', {class:'card-h'}, h('span', {class:'t'}, `#${i}`), h('button', {class:'btn sm x', onclick: () => { arr.splice(i,1); markDirty(); renderForm(); }}, '✕')));
+    card.append(objectBody(`${path}.${i}`, itemNode));
+    wrap.append(card);
+  });
+  wrap.append(h('div', {}, h('button', {class:'btn sm', onclick: () => { arr.push(defaultFor(itemNode) ?? {}); setPath(S.cfg, path, arr); markDirty(); renderForm(); }}, '+ add')));
+  return wrap;
+}
+
+function objectBody(path, node, opts={}){
+  const s = resolve(fieldInfo(node).schema);
+  const rows = h('div', {class:'rows'});
+  const props = Object.entries(s.properties||{});
+  const scalars = [], complex = [];
+  for (const [k,p] of props){
+    if (opts.skip && opts.skip.includes(k)) continue;
+    const fi = fieldInfo(p);
+    ((['object','dict','any'].includes(fi.kind) || (fi.kind==='array' && !['int','num','str','enum'].includes(fieldInfo(fi.schema.items||{}).kind))) ? complex : scalars).push([k,p]);
+  }
+  for (const [k,p] of scalars) rows.append(control(path?`${path}.${k}`:k, p, {label:k}));
+  for (const [k,p] of complex) rows.append(control(path?`${path}.${k}`:k, p, {label:k, wide:true}));
+  return rows;
+}
+
+function section(key, title, body, opts={}){
+  const det = h('details', {class:'sec' + (opts.sub?' sub':''), 'data-sec': key, open: S.open.has(key)});
+  det.addEventListener('toggle', () => { det.open ? S.open.add(key) : S.open.delete(key); });
+  const sum = h('summary', {}, title);
+  if (opts.badge) sum.append(h('span', {class:'badge'}, opts.badge));
+  if (opts.extra) sum.append(opts.extra);
+  if (opts.help) sum.append(h('span', {class:'help', title: opts.help}, firstSentence(opts.help)));
+  det.append(sum, h('div', {class:'sec-b'}, body));
+  return det;
+}
+function objectSection(path, node, opts={}){
+  const fi = fieldInfo(node);
+  return section(path, opts.title || path, objectBody(path, node, opts), {sub: opts.sub, help: fi.description, badge: opts.badge});
+}
+
+/* ---- custom widgets ---- */
+function tokenizerParamsRow(path, type){
+  const val = getPath(S.cfg, path) || {};
+  const row = h('div', {class:'row wide' + (errorsFor(path).length?' err':'')});
+  const preset = S.presets.tokenizers[type];
+  const ta = h('textarea', {placeholder:'key: value', onchange: e => { try { setPath(S.cfg, path, parseFlat(e.target.value)); markDirty(); row.classList.remove('err'); } catch(err){ row.classList.add('err'); } }});
+  ta.value = fmtFlat(val);
+  const lab = attachHint(h('label', {}, h('span', {class:'k'}, 'params')), path);
+  if (preset && preset.params) lab.append(h('button', {class:'btn sm', style:'margin-left:auto', title: preset.file, onclick: () => { ta.value = fmtFlat(preset.params); ta.dispatchEvent(new Event('change')); }}, `fill from configs/tokenizers/${preset.file}`));
+  row.append(lab, ta);
+  return row;
+}
+function tokenizerSelect(path, onChange){
+  const val = getPath(S.cfg, path);
+  const sel = h('select', {onchange: e => { setPath(S.cfg, path, e.target.value); markDirty(); onChange && onChange(e.target.value); }});
+  const opts = Array.from(new Set([...S.reg.tokenizers, val].filter(Boolean)));
+  opts.forEach(t => sel.append(h('option', {value:t, selected:t===val}, t)));
+  return h('div', {class:'row'}, attachHint(h('label', {}, h('span', {class:'k'}, 'type')), path), sel);
+}
+function cellName(type, vs){ return vs ? `${type}_${Math.floor(vs/1000)}k` : type; }
+
+function sweepSection(){
+  const sw = S.cfg.sweep;
+  const body = h('div', {class:'form'});
+  if (!sw){
+    body.append(h('div', {class:'hint'}, 'No sweep block: the run would have no eval tasks. '),
+      h('button', {class:'btn sm', onclick: () => { S.cfg.sweep = {tokenizers:[{type:S.cfg.tokenizer.type, vocab_sizes:[S.cfg.tokenizer.vocab_size], params: deep(S.cfg.tokenizer.params||{})}], tasks:[{type:'acva',params:{}},{type:'alghafa',params:{}},{type:'arabic_exam',params:{}}]}; markDirty(); renderForm(); }}, '+ add sweep block'));
+    return section('sweep', 'sweep — tokenizer cells × eval tasks', body, {help: 'Training happens once per (tokenizer, vocab_size) cell; every cell is evaluated on every task.'});
+  }
+  // tokenizer cells
+  const cells = h('div', {class:'cards'});
+  (sw.tokenizers||[]).forEach((tok, i) => {
+    const p = `sweep.tokenizers.${i}`;
+    const names = (tok.vocab_sizes||[]).map(v => cellName(tok.type, v));
+    const card = h('div', {class:'card'});
+    card.append(h('div', {class:'card-h'}, h('span', {class:'t'}, `cell ${i}`), ...names.map(n => h('span', {class:'badge'}, n)),
+      h('span', {class:'x'}, h('button', {class:'btn sm', title:'move up', disabled: i===0, onclick: () => { const a = sw.tokenizers; [a[i-1],a[i]]=[a[i],a[i-1]]; markDirty(); renderForm(); }}, '↑'), ' ',
+        h('button', {class:'btn sm', onclick: () => { sw.tokenizers.splice(i,1); markDirty(); renderForm(); }}, '✕'))));
+    const rows = h('div', {class:'rows'});
+    rows.append(tokenizerSelect(`${p}.type`, t => { const pr = S.presets.tokenizers[t]; if (pr){ tok.vocab_sizes = [pr.vocab_size ?? null]; tok.params = deep(pr.params||{}); } renderForm(); }));
+    rows.append(control(`${p}.vocab_sizes`, S.schema.$defs.SweepTokenizerConfig.properties.vocab_sizes, {label:'vocab_sizes (null = derived)'}));
+    rows.append(tokenizerParamsRow(`${p}.params`, tok.type));
+    card.append(rows);
+    cells.append(card);
+  });
+  cells.append(h('div', {}, h('button', {class:'btn sm', onclick: () => { sw.tokenizers.push({type:'bpe', vocab_sizes:[32000], params:{min_frequency:2}}); markDirty(); renderForm(); }}, '+ add tokenizer cell')));
+  const nCells = (sw.tokenizers||[]).reduce((n,t)=>n+(t.vocab_sizes||[]).length, 0);
+  body.append(section('sweep.tokenizers', 'tokenizer cells', cells, {sub:true, badge: `${nCells} cell${nCells===1?'':'s'}${(sw.tokenizers||[]).length>1?' · --sweep':''}`}));
+
+  // tasks: checklist in registry order + params per enabled task
+  const tasks = h('div', {class:'cards'});
+  const enabled = new Map((sw.tasks||[]).map((t,i)=>[t.type,i]));
+  const known = Array.from(new Set([...S.reg.tasks, ...(sw.tasks||[]).map(t=>t.type)]));
+  const checks = h('div', {class:'checks'});
+  known.forEach(t => { const cb = h('input', {type:'checkbox', onchange: e => { if (e.target.checked) sw.tasks.push({type:t, params:{}}); else sw.tasks = sw.tasks.filter(x=>x.type!==t); markDirty(); renderForm(); }}); cb.checked = enabled.has(t); checks.append(h('label', {}, cb, t)); });
+  tasks.append(checks);
+  (sw.tasks||[]).forEach((t, i) => {
+    const card = h('div', {class:'card'});
+    card.append(h('div', {class:'card-h'}, h('span', {class:'t'}, t.type), attachHint(h('label', {class:'hint'}, 'params'), `sweep.tasks.${i}.params`), h('span', {class:'x'},
+      h('button', {class:'btn sm', title:'fill from configs/tasks', onclick: () => { const pr = S.presets.tasks[t.type]; if (pr && pr.params){ t.params = deep(pr.params); markDirty(); renderForm(); } }}, 'preset'))));
+    const row = h('div', {class:'row wide'});
+    const ta = h('textarea', {placeholder:'key: value  (e.g. num_fewshot: 0, clean_latin_rows: true)', onchange: e => { try { t.params = parseFlat(e.target.value); markDirty(); row.classList.remove('err'); } catch(err){ row.classList.add('err'); } }});
+    ta.value = fmtFlat(t.params||{}); row.append(ta); card.append(row); tasks.append(card);
+  });
+  body.append(section('sweep.tasks', 'eval tasks', tasks, {sub:true, badge: `${(sw.tasks||[]).length} task${(sw.tasks||[]).length===1?'':'s'}`}));
+  const nullBtn = h('button', {class:'btn sm', style:'margin-left:auto', onclick: e => { e.preventDefault(); if (confirm('Remove the sweep block? The run would then have no eval tasks.')) { S.cfg.sweep = null; markDirty(); renderForm(); } }}, 'remove block');
+  return section('sweep', 'sweep — tokenizer cells × eval tasks', body, {help: 'Training happens once per (tokenizer, vocab_size) cell; every cell is evaluated on every task.', extra: nullBtn});
+}
+
+function tokenizerSection(){
+  const body = h('div', {class:'rows'});
+  const tok = S.cfg.tokenizer;
+  body.append(tokenizerSelect('tokenizer.type', t => { const pr = S.presets.tokenizers[t]; if (pr){ tok.vocab_size = pr.vocab_size ?? null; tok.params = deep(pr.params||{}); tok.save_path = pr.save_path || `outputs/tokenizers/${t}`; } renderForm(); }));
+  body.append(control('tokenizer.vocab_size', S.schema.$defs.TokenizerConfig.properties.vocab_size, {label:'vocab_size'}));
+  body.append(control('tokenizer.save_path', S.schema.$defs.TokenizerConfig.properties.save_path, {label:'save_path'}));
+  body.append(control('tokenizer.load_path', S.schema.$defs.TokenizerConfig.properties.load_path, {label:'load_path (skip training)'}));
+  body.append(tokenizerParamsRow('tokenizer.params', tok.type));
+  const hint = S.cfg.sweep && (S.cfg.sweep.tokenizers||[]).length ? 'With a sweep block, each cell overrides these values (type / vocab_size / params / save_path).' : 'Used as-is when there is no sweep block.';
+  return section('tokenizer', 'tokenizer (top-level default)', h('div', {}, h('div', {class:'hint', style:'margin-bottom:6px'}, hint), body), {help: fieldInfo(S.schema.properties.tokenizer).description});
+}
+
+function modelSection(){
+  const body = h('div', {class:'form'});
+  const presets = S.presets.models;
+  const sel = h('select', {onchange: e => { const pr = presets[e.target.value]; if (!pr) return; Object.assign(S.cfg.model, {type: pr.type, name_or_path: pr.name_or_path, dtype: pr.dtype || S.cfg.model.dtype, device: pr.device || S.cfg.model.device}); markDirty(); renderForm(); }});
+  sel.append(h('option', {value:''}, '— apply a preset from configs/models —'));
+  Object.entries(presets).forEach(([k,p]) => sel.append(h('option', {value:k}, `${p.name_or_path} (${p.file})`)));
+  body.append(h('div', {class:'rows'}, h('div', {class:'row wide'}, attachHint(h('label', {}, h('span', {class:'k'}, 'preset')), 'model.preset'), sel)));
+  const rows = objectBody('model', S.schema.properties.model);
+  const typeRow = $$('.row', rows).find(r => r.dataset.row==='model.type');
+  if (typeRow){ const inp = typeRow.querySelector('input'); const dl = h('datalist', {id:'model-types'}); S.reg.models.forEach(m => dl.append(h('option', {value:m}))); inp.setAttribute('list','model-types'); typeRow.append(dl); }
+  body.append(rows);
+  return section('model', 'model', body, {help: 'Fixed across cells — the only experimental variable is the tokenizer.'});
+}
+
+function phaseCard(name, title){
+  const p = S.cfg.training.phases[name];
+  const path = `training.phases.${name}`;
+  const node = S.schema.$defs.PhaseConfig;
+  const body = h('div', {class:'form' + (p.enabled?'':' phase-off')});
+  const rows = h('div', {class:'rows'});
+  const datasetsNode = node.properties.datasets;
+  rows.append(control(`${path}.datasets`, datasetsNode, {label:'datasets', wide:true}));
+  rows.append(control(`${path}.trainable_parameters`, node.properties.trainable_parameters, {label:'trainable_parameters (substrings; * = all)'}));
+  const usesMix = (p.datasets||[]).includes('pretraining_mix');
+  for (const k of ['steps','mix_tokens','learning_rate','batch_size','gradient_accumulation_steps','optimizer','weight_decay','max_length','loss_target','lr_scheduler','warmup_steps','max_grad_norm','save_checkpoint','clean_latin_rows']){
+    rows.append(control(`${path}.${k}`, node.properties[k], {label:k}));
+  }
+  if (usesMix){
+    const pm = S.cfg.training.pretraining_mix;
+    const bs = pm ? pm.block_size : null;
+    const derived = (bs && p.mix_tokens && p.batch_size) ? p.mix_tokens / (p.batch_size * bs) : null;
+    rows.append(h('div', {class:'row wide hint'}, `pretraining_mix: steps = mix_tokens / (batch_size × block_size) = ${derived==null?'?':derived}${Number.isInteger(derived)?'':' (must be an integer)'}; loss_target must be full_sequence and max_length must equal block_size (${bs ?? 'no pretraining_mix block'}).`));
+  }
+  body.append(rows);
+  body.append(control(`${path}.qa_blend`, node.properties.qa_blend, {label:'qa_blend', wide:true}));
+  if (name==='sft' || p.early_stopping) body.append(control(`${path}.early_stopping`, node.properties.early_stopping, {label:'early_stopping', wide:true}));
+  const en = h('input', {type:'checkbox', onchange: e => { p.enabled = e.target.checked; markDirty(); renderForm(); }}); en.checked = !!p.enabled;
+  const toggle = h('label', {class:'sw', onclick: e => e.stopPropagation()}, en, h('span', {class:'hint'}, p.enabled?'enabled':'disabled'));
+  const ds = (p.datasets||[]).join('+') || '—';
+  return section(path, title, body, {sub:true, extra: toggle, badge: `${ds} · ${p.steps ?? '?'} steps · lr ${p.learning_rate}`});
+}
+function trainingSection(){
+  const body = h('div', {class:'form'});
+  body.append(objectBody('training', S.schema.properties.training, {skip:['phases','pretraining_mix']}));
+  body.append(phaseCard('embedding_alignment', 'Phase 1 — embedding_alignment'));
+  body.append(phaseCard('warmup', 'Phase 2 — warmup'));
+  body.append(phaseCard('sft', 'Phase 3 — sft'));
+  body.append(control('training.pretraining_mix', S.schema.$defs.TrainingConfig.properties.pretraining_mix, {label:'pretraining_mix (Phase 1/2 packed raw-text corpus)', wide:true}));
+  return section('training', 'training — 3-phase pipeline', body, {help: fieldInfo(S.schema.properties.training).description});
+}
+function experimentSection(){
+  const rows = h('div', {class:'rows'});
+  const P = S.schema.properties;
+  rows.append(control('name', P.name, {label:'name', onChange: v => { const od = S.cfg.output_dir||''; if (!od || /^outputs\/experiments\/[^/]*$/.test(od)) { S.cfg.output_dir = `outputs/experiments/${v}`; const r = $$('.row').find(r=>r.dataset.row==='output_dir'); if (r) r.querySelector('input').value = S.cfg.output_dir; } }}));
+  rows.append(control('output_dir', P.output_dir, {label:'output_dir'}));
+  rows.append(control('seed', P.seed, {label:'seed'}));
+  rows.append(control('deterministic', P.deterministic, {label:'deterministic'}));
+  rows.append(control('description', P.description, {label:'description', wide:true}));
+  return section('', 'experiment', rows);
+}
+
+function renderForm(){
+  const form = $('#form'); form.innerHTML = '';
+  if (!S.cfg){ form.append(h('div', {class:'empty'}, 'pick a config on the left, or create a new one')); return; }
+  form.append(experimentSection());
+  form.append(sweepSection());
+  form.append(tokenizerSection());
+  form.append(modelSection());
+  form.append(trainingSection());
+  form.append(objectSection('evaluation', S.schema.properties.evaluation, {title:'evaluation'}));
+  form.append(objectSection('data', S.schema.properties.data, {title:'data — tokenizer-training corpus + preprocessing'}));
+  form.append(objectSection('tracking', S.schema.properties.tracking, {title:'tracking'}));
+  form.append(objectSection('task', S.schema.properties.task, {title:'task (legacy top-level field; unused by the 3-phase pipeline)'}));
+  // errors that no field displays
+  const shown = new Set($$('[data-row]').map(r=>r.dataset.row));
+  const orphan = S.errors.filter(e => !shown.has(e.loc));
+  if (orphan.length) status('bad', 'validation errors', orphan);
+}
+
+/* =========================================================================
+   configs: list, load, validate, yaml, save, start
+   ========================================================================= */
+async function loadConfigs(){
+  const d = await api('GET', '/api/configs');
+  S.configs = d.configs; renderConfigList();
+}
+function renderConfigList(){
+  const list = $('#cfg-list'); list.innerHTML = '';
+  const f = ($('#cfg-filter').value||'').toLowerCase();
+  const rows = S.configs.filter(c => !f || c.file.toLowerCase().includes(f) || (c.name||'').toLowerCase().includes(f) || (c.cells||[]).join(' ').includes(f));
+  if (!rows.length){ list.append(h('div', {class:'empty'}, 'no configs')); return; }
+  for (const c of rows){
+    const it = h('div', {class:'cfg-item' + (c.valid?'':' invalid') + (S.file===c.file?' on':''), onclick: () => openConfig(c.file)});
+    const res = c.results;
+    let resChip = null;
+    if (c.valid && res){
+      if (res.sweep){ const n = res.cells_done.length, t = res.cells.length; resChip = n ? h('span', {class:'chip ' + (n===t?'good':'warn'), title: `done: ${res.cells_done.join(', ')}`}, `${n}/${t} cells`) : null; }
+      else if (res.exists) resChip = h('span', {class:'chip good'}, 'results');
+    }
+    it.append(h('div', {class:'name'}, c.file.replace(/\.yaml$/,''), resChip, c.valid ? null : h('span', {class:'chip bad'}, 'invalid')));
+    const meta = h('div', {class:'meta'});
+    if (c.valid){
+      meta.append(h('span', {}, c.model.split('/').pop()), h('span', {}, '·'), h('span', {}, `${c.cells.length} cell${c.cells.length===1?'':'s'}: ${c.cells.slice(0,4).join(', ')}${c.cells.length>4?'…':''}`),
+        h('span', {}, '·'), h('span', {}, (c.tasks||[]).join(', ') || 'no tasks'), h('span', {}, '·'),
+        h('span', {title:'phases enabled'}, ['embedding_alignment','warmup','sft'].map((p,i)=> c.phases[p]?`P${i+1}`:`–`).join(' ')));
+    } else meta.append(h('span', {class:'mono', title:c.error}, c.error));
+    it.append(meta);
+    list.append(it);
+  }
+}
+async function openConfig(file){
+  if (S.dirty && !confirm('Discard unsaved changes?')) return;
+  clearStatus();
+  const d = await api('GET', `/api/configs/get?path=${encodeURIComponent(file)}`);
+  S.file = file; S.cfg = d.resolved; S.dirty = false; S.yamlDirty = false; $('#dirty-chip').style.display='none';
+  S.errors = d.errors || [];
+  $('#editor-title').textContent = file;
+  $('#yaml').value = d.yaml;
+  renderConfigList(); renderForm();
+  if (!d.valid) status('bad', `${file} does not validate`, d.errors);
+  loadResultsTab();
+}
+function newConfig(){
+  if (S.dirty && !confirm('Discard unsaved changes?')) return;
+  clearStatus();
+  const cfg = deep(S.base);
+  cfg.name = 'new_experiment'; cfg.output_dir = 'outputs/experiments/new_experiment'; cfg.description = '';
+  cfg.sweep = {tokenizers:[{type:'bpe', vocab_sizes:[32000], params:{min_frequency:2}}], tasks:[{type:'acva',params:{num_fewshot:0}},{type:'alghafa',params:{}},{type:'arabic_exam',params:{}}]};
+  cfg.evaluation.score_normalization = 'char+pmi'; cfg.evaluation.num_eval_samples = null; cfg.evaluation.failure_reports = true;
+  S.file = null; S.cfg = cfg; S.errors = []; S.dirty = true; $('#dirty-chip').style.display='';
+  $('#editor-title').textContent = 'new config (unsaved)'; $('#yaml').value = '';
+  renderConfigList(); renderForm(); setEtab('form');
+  $('#etab-results').innerHTML = '<div class="empty">no results yet</div>';
+}
+async function validate(quiet){
+  if (!S.cfg) return null;
+  const v = await api('POST', '/api/config/validate', {config: S.cfg});
+  S.errors = v.errors || [];
+  if (v.ok){ S.cfg = v.resolved; renderForm(); if (!quiet) status('good', `valid — ${v.cells.length} cell${v.cells.length===1?'':'s'} (${v.cells.join(', ')})${v.sweep?' · will run with --sweep':''}` + (v.results.cells_done.length?` · results exist for ${v.results.cells_done.join(', ')} (skipped by run_sweep)`:v.results.exists?' · results exist in output_dir':'')); }
+  else { renderForm(); status('bad', `${S.errors.length} validation error${S.errors.length===1?'':'s'}`, S.errors); }
+  return v;
+}
+function yamlMode(){ return $$('input[name=ymode]').find(r=>r.checked).value; }
+async function formToYaml(){
+  if (!S.cfg) return;
+  try { const d = await api('POST', '/api/config/render', {config: S.cfg, mode: yamlMode()}); $('#yaml').value = d.yaml; S.yamlDirty = false; clearStatus(); }
+  catch(e){ status('bad', e.message); }
+}
+async function yamlToForm(){
+  try {
+    const d = await api('POST', '/api/config/parse', {yaml: $('#yaml').value});
+    S.errors = d.errors || [];
+    S.cfg = d.ok ? d.resolved : deepMerge(deep(S.base), d.config);
+    S.yamlDirty = false; markDirty(); renderForm(); setEtab('form');
+    if (d.ok) status('good', 'YAML applied to the form'); else status('bad', 'YAML parsed but does not validate', d.errors);
+  } catch(e){ status('bad', e.message); }
+}
+async function currentYaml(){
+  if (S.etab==='yaml' && S.yamlDirty) return $('#yaml').value;
+  const d = await api('POST', '/api/config/render', {config: S.cfg, mode: $('#save-mode').value || 'full'});
+  return d.yaml;
+}
+function openModal(id){ $(id).classList.add('on'); }
+function closeModals(){ $$('.modal-bg').forEach(m=>m.classList.remove('on')); }
+async function saveFlow(){
+  if (!S.cfg) return;
+  $('#save-name').value = (S.file || `${S.cfg.name}.yaml`).replace(/\.yaml$/,'');
+  $('#save-overwrite').checked = false;
+  $('#save-hint').textContent = S.etab==='yaml' && S.yamlDirty ? 'The YAML pane has edits: the text is saved as typed (after validation).' : 'The form is rendered to YAML in the chosen style.';
+  openModal('#save-modal');
+}
+async function doSave(){
+  const name = $('#save-name').value.trim();
+  try {
+    const text = await currentYaml();
+    const d = await api('POST', '/api/configs/save', {name, yaml: text, overwrite: $('#save-overwrite').checked});
+    closeModals();
+    S.dirty = false; S.yamlDirty = false; $('#dirty-chip').style.display='none';
+    await loadConfigs(); await openConfig(d.file);
+    status('good', `saved ${d.path}`);
+  } catch(e){ $('#save-hint').textContent = e.message; $('#save-hint').style.color='var(--bad)'; }
+}
+async function startFlow(){
+  if (!S.cfg) return;
+  const v = await validate(true);
+  if (!v || !v.ok){ status('bad', 'fix the validation errors before starting', S.errors); return; }
+  const active = S.runs.filter(r => ['running','cancelling'].includes(r.status));
+  const kv = $('#start-summary'); kv.innerHTML = '';
+  const add = (k, val) => kv.append(h('span', {class:'k'}, k), h('span', {}, val));
+  add('source', S.file && !S.dirty ? `configs/experiments/${S.file}` : 'current form (unsaved snapshot — saved into the run directory)');
+  add('experiment', v.resolved.name); add('output_dir', v.resolved.output_dir);
+  add('cells', `${v.cells.length}: ${v.cells.join(', ')}`); add('tasks', (v.resolved.sweep?.tasks||[]).map(t=>t.type).join(', ') || 'none');
+  add('phases', ['embedding_alignment','warmup','sft'].filter(p=>v.resolved.training.phases[p].enabled).join(' → ') || 'none (eval only)');
+  if (v.results.cells_done.length) add('will skip', `${v.results.cells_done.join(', ')} (all_metrics.json exists)`);
+  else if (v.results.exists) add('note', 'output_dir already has all_metrics.json — it will be overwritten');
+  $('#start-sweep').value = 'auto'; $('#start-device').value=''; $('#start-seed').value=''; $('#start-force').checked=false;
+  $('#start-hint').style.color=''; $('#start-hint').textContent = (active.length ? `⚠ ${active[0].run_id} is ${active[0].status} — a second full-FT run will not fit the GPU; tick "run concurrently" only if you know it fits. ` : '') + (S.env.hf_token_set ? '' : '⚠ HF_TOKEN is not set in the server environment (needed for gated meta-llama checkpoints).');
+  openModal('#start-modal');
+}
+async function doStart(){
+  const body = {sweep: $('#start-sweep').value==='auto' ? null : $('#start-sweep').value==='true', device: $('#start-device').value.trim() || null,
+    seed: $('#start-seed').value===''?null:Number($('#start-seed').value), force: $('#start-force').checked};
+  if (S.file && !S.dirty) body.config = S.file; else { body.yaml = await currentYaml(); body.label = S.cfg.name; }
+  try {
+    const rec = await api('POST', '/api/runs/start', body);
+    closeModals(); status('good', `started ${rec.run_id} (pid ${rec.pid})`);
+    await pollRuns(); selectRun(rec.run_id); setView('runs');
+  } catch(e){ $('#start-hint').textContent = e.message; $('#start-hint').style.color='var(--bad)'; }
+}
+async function loadResultsTab(){
+  const box = $('#etab-results'); box.innerHTML = '<div class="empty">loading…</div>';
+  if (!S.file){ box.innerHTML = '<div class="empty">save the config first</div>'; return; }
+  try {
+    const d = await api('GET', `/api/configs/results?path=${encodeURIComponent(S.file)}`);
+    box.innerHTML = '';
+    box.append(h('div', {class:'kv', style:'margin-bottom:10px'}, h('span', {class:'k'}, 'output_dir'), h('span', {class:'mono'}, d.output_dir),
+      h('span', {class:'k'}, 'cells'), h('span', {}, d.sweep ? `${d.cells_done.length}/${d.cells.length} done${d.cells_pending.length?` · pending: ${d.cells_pending.join(', ')}`:''}` : (d.exists?'results present':'none yet')),
+      h('span', {class:'k'}, 'files'), h('span', {}, ...[d.report_path && textLink(d.report_path, 'comparison_report.txt'), d.experiment_log && textLink(d.experiment_log, 'experiment.log')].filter(Boolean).flatMap(x=>[x,' '])) ));
+    box.append(resultsTable(d.cells_metrics));
+  } catch(e){ box.innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
+}
+function textLink(path, label){ return h('a', {href:'#', class:'mono', onclick: async e => { e.preventDefault(); const d = await api('GET', `/api/text?path=${encodeURIComponent(path)}`); $('#text-title').textContent = path + (d.truncated?' (tail)':''); $('#text-body').textContent = d.text; openModal('#text-modal'); }}, label || path); }
+function resultsTable(cells){
+  const names = Object.keys(cells||{});
+  if (!names.length) return h('div', {class:'empty'}, 'no all_metrics.json yet');
+  const tasks = Array.from(new Set(names.flatMap(n => Object.keys(cells[n].downstream||{}))));
+  const t = h('table', {class:'res'});
+  t.append(h('tr', {}, h('th', {}, 'cell'), ...tasks.map(x=>h('th', {title:'accuracy (PMI when available)'}, x)), ...tasks.map(x=>h('th', {title:'MEI'}, `MEI ${x}`)), h('th', {}, 'fertility'), h('th', {}, 'compression'), h('th', {}, 'RPS')));
+  for (const n of names){
+    const m = cells[n];
+    if (m.error){ t.append(h('tr', {}, h('td', {}, n), h('td', {colspan: 2*tasks.length+3, style:'color:var(--bad)'}, m.error))); continue; }
+    const acc = x => { const d = (m.downstream||{})[x]; if (!d) return '—'; const v = d.accuracy_pmi ?? d.accuracy; return v==null?'—':(v*100).toFixed(1)+'%'; };
+    t.append(h('tr', {}, h('td', {}, n), ...tasks.map(x=>h('td', {}, acc(x))), ...tasks.map(x=>h('td', {}, fmtNum((m.mei||{})[x], 2))),
+      h('td', {}, fmtNum(m.intrinsic?.fertility, 3)), h('td', {}, fmtNum(m.intrinsic?.compression_ratio, 3)), h('td', {}, fmtNum(m.intrinsic?.root_conservation_rate, 3))));
+  }
+  return t;
+}
+
+/* =========================================================================
+   runs
+   ========================================================================= */
+const STATUS_CLASS = {running:'run', cancelling:'warn', finished:'good', failed:'bad', cancelled:'warn', lost:'bad'};
+function statusChip(st){ return h('span', {class:'chip ' + (STATUS_CLASS[st]||'')}, st==='running'||st==='cancelling' ? h('span', {class:'dot pulse'}) : null, st); }
+async function pollRuns(){
+  try {
+    const d = await api('GET', '/api/runs');
+    S.runs = d.runs; renderGpu(d.gpu); renderRunList();
+    const active = S.runs.filter(r=>['running','cancelling'].includes(r.status)).length;
+    $('#runs-badge').innerHTML = active ? `<span class="chip run" style="padding:0 6px">${active}</span>` : '';
+    if (S.run) await pollRunDetail();
+  } catch(e){ /* server away; keep last state */ }
+}
+function renderGpu(gpus){
+  const el = $('#gpu-chip');
+  if (!gpus || !gpus.length){ el.textContent = 'GPU n/a'; return; }
+  const g = gpus[0]; const pct = g.memory_total_mib ? Math.round(100*g.memory_used_mib/g.memory_total_mib) : 0;
+  el.textContent = `${g.name.replace('NVIDIA ','')} · ${(g.memory_used_mib/1024).toFixed(1)}/${(g.memory_total_mib/1024).toFixed(0)} GB · ${g.utilization_pct}%`;
+  el.className = 'chip ' + (pct>85?'warn':pct>0?'run':'');
+}
+function renderRunList(){
+  const list = $('#run-list'); list.innerHTML = '';
+  if (!S.runs.length){ list.append(h('div', {class:'empty'}, 'no runs yet — start one from the Configs tab')); return; }
+  for (const r of S.runs){
+    const it = h('div', {class:'run-item' + (S.run===r.run_id?' on':''), onclick: () => selectRun(r.run_id)});
+    const started = new Date(r.started_at); const end = r.finished_at ? new Date(r.finished_at) : new Date();
+    it.append(h('div', {class:'name'}, r.experiment_name, statusChip(r.status)),
+      h('div', {class:'meta'}, `${r.run_id} · ${r.sweep?`${r.cells.length} cells`:r.tokenizer} · ${fmtTime(r.started_at)} · ${fmtDur((end-started)/1000)}${r.exit_code!=null&&r.exit_code!==0?` · exit ${r.exit_code}`:''}`));
+    list.append(it);
+  }
+}
+function selectRun(id){
+  if (S.run!==id){ S.run = id; S.logOffset = 0; S.logLines = []; S.logCur = ''; S.runDetail = null; }
+  renderRunList(); pollRunDetail();
+}
+function appendLog(text){
+  for (const ch of text){
+    if (ch==='\n'){ S.logLines.push(S.logCur); S.logCur=''; }
+    else if (ch==='\r'){ S.logCur=''; }
+    else S.logCur += ch;
+  }
+  if (S.logLines.length > 3000) S.logLines.splice(0, S.logLines.length-3000);
+}
+async function pollRunDetail(){
+  if (!S.run) return;
+  try {
+    const d = await api('GET', `/api/runs/${encodeURIComponent(S.run)}`);
+    const first = !S.runDetail;
+    S.runDetail = d;
+    const lg = await api('GET', `/api/runs/${encodeURIComponent(S.run)}/log?offset=${S.logOffset}`);
+    if (lg.offset < S.logOffset){ S.logOffset = 0; S.logLines = []; S.logCur=''; }
+    if (lg.data){ appendLog(lg.data); }
+    S.logOffset = lg.offset;
+    renderRunDetail(first);
+  } catch(e){ $('#run-detail').innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
+}
+function renderRunDetail(scrollToEnd){
+  const d = S.runDetail; if (!d) return;
+  $('#run-title').textContent = d.run_id;
+  const st = $('#run-status'); st.replaceWith(Object.assign(statusChip(d.status), {id:'run-status'}));
+  $('#btn-cancel').style.display = ['running','cancelling'].includes(d.status) ? '' : 'none';
+  $('#btn-cancel').disabled = d.status==='cancelling';
+  const box = $('#run-detail');
+  const logEl = $('#log');
+  const wasAtEnd = !logEl || (logEl.scrollTop + logEl.clientHeight >= logEl.scrollHeight - 30);
+  box.innerHTML = '';
+  const started = new Date(d.started_at), end = d.finished_at ? new Date(d.finished_at) : new Date();
+  const kv = h('div', {class:'kv'});
+  const add = (k, v) => kv.append(h('span', {class:'k'}, k), typeof v==='string' ? h('span', {}, v) : v);
+  add('experiment', d.experiment_name); add('config', d.config ? h('span', {class:'mono'}, d.config) : h('span', {}, 'unsaved snapshot → ', h('span', {class:'mono'}, d.snapshot)));
+  add('output_dir', h('span', {class:'mono'}, d.output_dir)); add('command', h('span', {class:'mono', style:'word-break:break-all'}, d.argv.join(' ')));
+  add('started', `${fmtTime(d.started_at)} · ${fmtDur((end-started)/1000)}${d.finished_at?` · ended ${fmtTime(d.finished_at)}`:''}`);
+  add('pid / pgid', `${d.pid} / ${d.pgid}${d.exit_code!=null?` · exit code ${d.exit_code}`:''}`);
+  add('logs', h('span', {}, textLink(d.console_log, 'console.log'), ' · ', textLink(d.experiment_log, 'experiment.log')));
+  box.append(kv);
+
+  // progress
+  const p = d.progress; const prog = h('div', {class:'prog', style:'margin:12px 0'});
+  if (d.sweep && d.cells.length){
+    const cells = h('div', {class:'cells'});
+    for (const c of d.cells){
+      let cls='', mark='';
+      if (p.cells_done.includes(c) || (d.results && d.results.cells && d.results.cells[c] && !d.results.cells[c].error)) { cls='good'; mark='✓ '; }
+      else if (p.cells_skipped.includes(c)) { cls='accent'; mark='↷ '; }
+      else if (p.cells_failed[c]) { cls='bad'; mark='✗ '; }
+      else if (p.cell===c && ['running','cancelling'].includes(d.status)) { cls='run'; mark='● '; }
+      cells.append(h('span', {class:'chip '+cls, title: p.cells_failed[c]||''}, mark + c));
+    }
+    prog.append(h('div', {class:'line'}, h('b', {}, 'cells'), cells));
+  }
+  const line = h('div', {class:'line'});
+  if (p.stage_label) line.append(h('span', {class:'chip accent'}, `stage ${p.stage}: ${p.stage_label}`));
+  for (const ph of p.phases_done) line.append(h('span', {class:'chip good', title: ph.skipped?'skipped (enabled=false)':`${ph.steps} steps`}, `${ph.skipped?'↷':'✓'} ${ph.name}`));
+  for (const t of p.tasks_done) line.append(h('span', {class:'chip good'}, `✓ ${t.task} (${fmtDur(t.seconds)})`));
+  if (p.done) line.append(h('span', {class:'chip good'}, '✓ experiment done'));
+  if (line.children.length) prog.append(line);
+  if (p.phase){
+    const ph = p.phase; const pct = ph.steps ? Math.min(100, 100*ph.step/ph.steps) : 0;
+    prog.append(h('div', {}, h('div', {class:'line'}, h('b', {}, ph.name), h('span', {class:'mono'}, `step ${ph.step}${ph.steps?`/${ph.steps}`:''}`), ph.loss!=null?h('span', {class:'mono'}, `loss ${fmtNum(ph.loss)}`):null, ph.lr?h('span', {class:'mono hint'}, `lr ${ph.lr}`):null, ph.eval_loss!=null?h('span', {class:'mono'}, `eval_loss ${fmtNum(ph.eval_loss)} @${ph.eval_step}`):null, ph.early_stopped?h('span', {class:'chip warn'}, 'early-stopped'):null),
+      h('div', {class:'bar'}, h('i', {style:`width:${pct}%`}))));
+  }
+  if (p.eval){
+    const ev = p.eval; const pct = ev.total ? Math.min(100, 100*ev.done/ev.total) : 0;
+    prog.append(h('div', {}, h('div', {class:'line'}, h('b', {}, `eval ${ev.task||''}`), h('span', {class:'mono'}, `${ev.done}/${ev.total}`)), h('div', {class:'bar eval'}, h('i', {style:`width:${pct}%`}))));
+  }
+  if (p.error) prog.append(h('div', {class:'chip bad', style:'white-space:normal'}, p.error));
+  if (!p.stage_label && !p.phase && !p.eval && ['running','cancelling'].includes(d.status)) prog.append(h('div', {class:'hint'}, 'starting up… (imports, dataset download)'));
+  box.append(prog);
+
+  if (d.results && d.results.cells){ box.append(h('h3', {style:'margin:10px 0 6px;font-size:13px'}, 'results'), resultsTable(d.results.cells)); if (d.results.report) box.append(h('div', {style:'margin-top:6px'}, textLink(d.results.report, 'comparison_report.txt'))); }
+
+  const log = h('div', {class:'log', id:'log'});
+  log.textContent = S.logLines.join('\n') + (S.logCur ? '\n' + S.logCur : '');
+  box.append(h('div', {class:'line', style:'margin:12px 0 6px'}, h('b', {}, 'console.log'), h('span', {class:'hint'}, `${S.logLines.length} lines shown · ${(d.log_size/1024).toFixed(0)} KB`)), log);
+  if (scrollToEnd || wasAtEnd) log.scrollTop = log.scrollHeight;
+}
+async function cancelRun(){
+  if (!S.run || !confirm(`Cancel ${S.run}? SIGTERM to the process group, SIGKILL after 15 s.`)) return;
+  try { await api('POST', `/api/runs/${encodeURIComponent(S.run)}/cancel`); await pollRuns(); } catch(e){ alert(e.message); }
+}
+
+/* =========================================================================
+   wiring
+   ========================================================================= */
+function setView(v){
+  S.view = v; $$('.tabs .tab').forEach(t => t.classList.toggle('on', t.dataset.view===v));
+  $$('.view').forEach(x => x.classList.toggle('on', x.id==='view-'+v));
+  if (v==='runs') pollRuns();
+}
+function setEtab(t){
+  if (t==='yaml' && S.etab!=='yaml' && !S.yamlDirty && S.cfg && (S.dirty || !$('#yaml').value)) formToYaml();
+  if (t==='results') loadResultsTab();
+  S.etab = t; $$('.editor-tabs .tab').forEach(x => x.classList.toggle('on', x.dataset.etab===t));
+  for (const k of ['form','yaml','results']) $('#etab-'+k).style.display = k===t?'':'none';
+}
+document.addEventListener('DOMContentLoaded', async () => {
+  $$('.tabs .tab').forEach(t => t.onclick = () => setView(t.dataset.view));
+  $$('.editor-tabs .tab').forEach(t => t.onclick = () => setEtab(t.dataset.etab));
+  $('#btn-new').onclick = newConfig;
+  $('#btn-refresh-configs').onclick = loadConfigs;
+  $('#cfg-filter').oninput = renderConfigList;
+  $('#btn-validate').onclick = () => validate(false);
+  $('#btn-form-to-yaml').onclick = formToYaml;
+  $('#btn-yaml-to-form').onclick = yamlToForm;
+  $('#yaml').addEventListener('input', () => { S.yamlDirty = true; markDirty(); });
+  $$('input[name=ymode]').forEach(r => r.onchange = formToYaml);
+  $('#btn-save').onclick = saveFlow; $('#save-go').onclick = doSave;
+  $('#btn-start').onclick = startFlow; $('#start-go').onclick = doStart;
+  $('#btn-cancel').onclick = cancelRun;
+  $$('[data-close]').forEach(b => b.onclick = closeModals);
+  $$('.modal-bg').forEach(m => m.addEventListener('click', e => { if (e.target===m) closeModals(); }));
+  $('#theme-btn').onclick = () => { const r = document.documentElement; const cur = r.dataset.theme || (matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light'); r.dataset.theme = cur==='dark'?'light':'dark'; try { localStorage.setItem('xc-theme', r.dataset.theme); } catch(e){} };
+  try { const t = localStorage.getItem('xc-theme'); if (t) document.documentElement.dataset.theme = t; } catch(e){}
+  window.addEventListener('beforeunload', e => { if (S.dirty){ e.preventDefault(); e.returnValue=''; } });
+
+  try {
+    const b = await api('GET', '/api/schema');
+    S.schema = b.schema; S.base = b.base; S.reg = b.registries; S.presets = b.presets; S.env = b.env;
+    const env = $('#env-chip'); env.textContent = `${b.env.python.replace(/^.*\//,'')} · ${b.env.hf_token_set?'HF_TOKEN set':'no HF_TOKEN'}`; env.className = 'chip ' + (b.env.hf_token_set?'good':'warn');
+    env.title = `${b.env.python} ${b.env.script}`;
+    await loadConfigs();
+    const want = new URLSearchParams(location.search).get('config'); if (want) openConfig(want);
+  } catch(e){ status('bad', `server error: ${e.message}`); }
+  await pollRuns();
+  S.pollT = setInterval(() => { if (!document.hidden) pollRuns(); }, 3000);
+  const run = new URLSearchParams(location.search).get('run'); if (run){ setView('runs'); selectRun(run); }
+});
+</script>
+</body>
+</html>

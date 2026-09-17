@@ -201,7 +201,14 @@ python scripts/compare_results.py outputs/experiments/*/
 # AraRooPat training explorer — local web page that replays train() on any typed text,
 # step by step, against the real CAMeL bridge (needs .venv-camel). Opens on :8765.
 .venv/bin/python debugger/serve_araroopat_explorer.py --open
+
+# Experiment console — local web page to build / validate / save experiment YAMLs in a
+# form, list the existing ones, start a run detached from the page and server, watch
+# and cancel it. Opens on :8766. Export HF_TOKEN before starting it (runs inherit it).
+.venv/bin/python debugger/serve_experiment_console.py --open
 ```
+
+**Experiment console** (`debugger/serve_experiment_console.py` + `debugger/experiment_console.html`, logic in [src/arabic_eval/tools/experiment_console.py](src/arabic_eval/tools/experiment_console.py), added 2026-09-17). The form is generated from the `ExperimentConfig` JSON schema over the *resolved* config (file merged over `base.yaml`), with hand-built widgets for sweep cells / eval tasks / phase cards / model presets; **Validate** is the real `load_config` merge + Pydantic with `loc`-tagged errors painted on the fields; **Save** renders either *full* (every value explicit) or *delta* (differences from `base.yaml`) YAML — a test pins that every file in `configs/experiments/` round-trips identically in both styles. **Start** launches `scripts/run_experiment.py` from a snapshot of the config as a detached session leader (`setsid` + a `TERM`-trapping bash that records the exit code), so closing the page, the SSH session or the server never stops a run; `outputs/runs/<run_id>/{run.json,config.yaml,console.log,exit_code}` is the whole state and a restarted server rediscovers every run (liveness = pid + `/proc` start ticks, then a `/proc` scan of the process group that ignores zombies). `--sweep` is derived like the CLI requires (more than one tokenizer cell); one run at a time unless *run concurrently* is ticked. The Runs tab parses `console.log` into cells / stage / phase step-loss / eval progress / traceback and tails it live; **Cancel** = SIGTERM to the group, SIGKILL after 15 s. Details in [debugger/README.md](debugger/README.md); tests in `tests/test_experiment_console.py`.
 
 All scripts add `src/` to `sys.path`, so no install is needed for development. They auto-detect `configs/base.yaml` as the base config.
 
