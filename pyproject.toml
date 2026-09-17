@@ -32,6 +32,11 @@ dependencies = [
     # MinHash-LSH cross-source document dedup for the Phase 1/2 pretraining mix
     # (data/pretraining_mix/dedup.py). Pure-python + numpy, no version conflicts.
     "datasketch>=1.6.0",
+    # Row-level reports (eval-row dumps, failure reports, UNK reports) are
+    # Parquet. Already present as a `datasets` dependency; declared because
+    # evaluation/eval_rows.py imports it directly. Imported lazily, so
+    # tokenizer-only workflows still run without it.
+    "pyarrow>=14.0.0",
 ]
 
 [project.optional-dependencies]

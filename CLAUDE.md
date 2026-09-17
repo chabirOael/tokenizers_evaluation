@@ -190,6 +190,15 @@ Any phase can train on a packed raw-text mix instead of QA records by setting `d
 # Compare results across experiments
 python scripts/compare_results.py outputs/experiments/*/
 
+# Rebuild the per-row eval dump of a finished experiment (eval only, no training).
+# --max-rows gives a fast preview; --sweep walks every cell.
+.venv/bin/python scripts/dump_eval_rows.py --cell outputs/experiments/<sweep>/<cell> --max-rows 300
+.venv/bin/python scripts/dump_eval_rows.py --sweep outputs/experiments/<sweep>
+
+# Migrate the CSV reports of older runs to Parquet (keeps the CSVs unless --delete-csv)
+.venv/bin/python scripts/reports_to_parquet.py --dry-run
+.venv/bin/python scripts/reports_to_parquet.py
+
 # Pretraining mix (Phase 1/2 raw-text corpus): calibrate filters on N raw docs per
 # source, build the cached pool, or print its manifest. Needs HF_TOKEN (ArabicWeb24).
 .venv/bin/python scripts/build_pretraining_mix.py --config configs/experiments/all_tokenizers_sweep_pretrain_mix.yaml --calibrate 2000
@@ -208,7 +217,7 @@ python scripts/compare_results.py outputs/experiments/*/
 .venv/bin/python debugger/serve_experiment_console.py --open
 ```
 
-**Experiment console** (`debugger/serve_experiment_console.py` + `debugger/experiment_console.html`, logic in [src/arabic_eval/tools/experiment_console.py](src/arabic_eval/tools/experiment_console.py), added 2026-09-17). The form is generated from the `ExperimentConfig` JSON schema over the *resolved* config (file merged over `base.yaml`), with hand-built widgets for sweep cells / eval tasks / phase cards / model presets; **Validate** is the real `load_config` merge + Pydantic with `loc`-tagged errors painted on the fields; **Save** renders either *full* (every value explicit) or *delta* (differences from `base.yaml`) YAML — a test pins that every file in `configs/experiments/` round-trips identically in both styles. **Start** launches `scripts/run_experiment.py` from a snapshot of the config as a detached session leader (`setsid` + a `TERM`-trapping bash that records the exit code), so closing the page, the SSH session or the server never stops a run; `outputs/runs/<run_id>/{run.json,config.yaml,console.log,exit_code}` is the whole state and a restarted server rediscovers every run (liveness = pid + `/proc` start ticks, then a `/proc` scan of the process group that ignores zombies). `--sweep` is derived like the CLI requires (more than one tokenizer cell); one run at a time unless *run concurrently* is ticked. The Runs tab parses `console.log` into cells / stage / phase step-loss / eval progress / traceback and tails it live; **Cancel** = SIGTERM to the group, SIGKILL after 15 s. Details in [debugger/README.md](debugger/README.md); tests in `tests/test_experiment_console.py`.
+**Experiment console** (`debugger/serve_experiment_console.py` + `debugger/experiment_console.html`, logic in [src/arabic_eval/tools/experiment_console.py](src/arabic_eval/tools/experiment_console.py), added 2026-09-17). The form is generated from the `ExperimentConfig` JSON schema over the *resolved* config (file merged over `base.yaml`), with hand-built widgets for sweep cells / eval tasks / phase cards / model presets; **Validate** is the real `load_config` merge + Pydantic with `loc`-tagged errors painted on the fields; **Save** renders either *full* (every value explicit) or *delta* (differences from `base.yaml`) YAML — a test pins that every file in `configs/experiments/` round-trips identically in both styles. **Start** launches `scripts/run_experiment.py` from a snapshot of the config as a detached session leader (`setsid` + a `TERM`-trapping bash that records the exit code), so closing the page, the SSH session or the server never stops a run; `outputs/runs/<run_id>/{run.json,config.yaml,console.log,exit_code}` is the whole state and a restarted server rediscovers every run (liveness = pid + `/proc` start ticks, then a `/proc` scan of the process group that ignores zombies). `--sweep` is derived like the CLI requires (more than one tokenizer cell); one run at a time unless *run concurrently* is ticked. The Runs tab parses `console.log` into cells / stage / phase step-loss / eval progress / traceback and tails it live; **Cancel** = SIGTERM to the group, SIGKILL after 15 s. The **Eval rows** tab (added 2026-09-17, [tools/eval_rows_browser.py](src/arabic_eval/tools/eval_rows_browser.py)) browses the per-row dumps: pick experiment → tokenizer cell → benchmark, filter by outcome / scoring / sub-config / flag / free text, and page through every row with the exact prompt, the per-choice scores and the gold-vs-predicted answer. Filtering and paging run off Parquet column projection (no sidecar index); a page of 50 rows touches one row group. The summary strip shows the prediction histogram (class collapse at a glance) and the truncation shares, each clickable as a filter. Details in [debugger/README.md](debugger/README.md); tests in `tests/test_experiment_console.py`.
 
 All scripts add `src/` to `sys.path`, so no install is needed for development. They auto-detect `configs/base.yaml` as the base config.
 
@@ -583,8 +592,9 @@ evaluation:
   morph_sample_size: 500
   downstream_metrics: true
   failure_reports: true
-  intrinsic_unk_report: false   # dumps per-word UNK list to intrinsic_unks.csv
-  downstream_unk_report: false  # dumps per-task UNK list to unk_reports/<task>_unks.csv
+  eval_row_dump: true           # every scored row -> eval_rows/<task>.parquet (console Eval-rows tab)
+  intrinsic_unk_report: false   # dumps per-word UNK list to intrinsic_unks.parquet
+  downstream_unk_report: false  # dumps per-task UNK list to unk_reports/<task>_unks.parquet
   score_normalization: "char+pmi"
   num_eval_samples: null
 ```
@@ -659,6 +669,11 @@ outputs/experiments/<name>/
   config.json               # Full resolved config
   intrinsic_metrics.json    # Fertility, compression, UNK rate, coverage, morphological metrics
   all_metrics.json          # Combined: config + intrinsic + training (per-phase) + downstream (per-task) + mei (per-task)
+  eval_rows/                # Only when evaluation.eval_row_dump=true (default in base.yaml)
+    <task_name>.parquet     # EVERY scored eval row: exact prompt, continuations, per-choice
+                            #   ll / char / pmi scores, gold + prediction, truncation flags.
+                            #   ~18 MB per cell across the four benchmarks. Read by the
+                            #   experiment console's Eval-rows tab; pd.read_parquet elsewhere.
   data/pretraining_mix/     # Only when a phase uses the packed mix: packed_manifest.json pointing at the
                             #   shared entry outputs/data_cache/pretraining_mix/<pool>/packed/<tokenizer_fp>/
                             #   (+ qa_blend_manifest.json → outputs/data_cache/pretraining_mix/qa_blend/<fp>/ when blended)
@@ -669,37 +684,49 @@ outputs/experiments/<name>/
       model.pt
     sft/                    # Phase 3 checkpoint (best-by-eval-loss, restored)
       model.pt
-  failure_reports/          # Only when evaluation.failure_reports=true
-    <task_name>_accuracy_failures.csv   # one CSV per LightEval MCQ task
-  intrinsic_unks.csv        # Only when evaluation.intrinsic_unk_report=true
+  failure_reports/          # Only when failure_reports=true AND eval_row_dump=false
+    <task_name>_accuracy_failures.parquet   # one file per LightEval MCQ task
+  intrinsic_unks.parquet    # Only when evaluation.intrinsic_unk_report=true
   unk_reports/              # Only when evaluation.downstream_unk_report=true
-    <task_name>_unks.csv    # one CSV per LightEval MCQ task
+    <task_name>_unks.parquet   # one file per LightEval MCQ task
 ```
 
 Per-phase histories (final loss, train-loss tail, eval losses, wall time, early-stop status, checkpoint path) live under `all_metrics.json["training"][<phase>]`. Per-task downstream metrics + MEI live under `all_metrics.json["downstream"][<task>]` and `all_metrics.json["mei"][<task>]`.
 
 Sweep mode additionally generates: `comparison_report.txt` and `comparison_report.json` in the sweep output directory. The text report includes a "Composite Metric: MEI" section with per-experiment rows + an asterisk-and-footnote on tokenizers with mechanical RPS extremes (`RPS_MECHANICAL_FLAGS` in `evaluation/reporter.py`). For multi-sub-config benchmarks (Alghafa), a "Per-sub-config breakdown" sub-section per task is emitted under the main downstream-task table — rows = experiments, columns = sub-configs, cells = `accuracy (n=N)`. Single-config benchmarks suppress this section; the main table strips `per_subconfig_accuracy.*` so its column count stays manageable.
 
-### Failure-case CSV reports (opt-in)
+### Per-row eval dumps (`evaluation.eval_row_dump`, default **true** in `base.yaml`)
 
-When `evaluation.failure_reports: true`, LightEval MCQ tasks (`acva`, `alghafa`, `culture_arabic_mmlu`, `arabic_exam`) write one CSV per task with one row per wrong-answer example. Columns: `index, question, choice_0..N, gold_idx/letter, pred_idx/letter, ll_0..N, ll_margin, score_0..N, score_margin`. Both raw and aggregated views are persisted: `ll_*` is the raw model log-likelihood (sum over continuation tokens) and `ll_margin = ll_pred − ll_gold`; `score_*` is the value passed to `argmax` after `_aggregate_scores` (default char-norm, LightEval `LogProbCharNorm` equivalent), with `score_margin` defined the same way. They differ only when continuation lengths differ — letter-scored MCQ rows have `ll_* == score_*` (1-char continuations); ACVA and word-scored Alghafa rows have `score_*` divided by the character count of the answer text. The margins distinguish confident-wrong (large positive) from near-tie failures (~0); use `score_margin` to interpret the model's actual decision and `ll_margin` to debug the unnormalized signal. UTF-8-BOM encoding so Excel renders Arabic correctly.
+Every scored row of every LightEval MCQ benchmark is written to `<output_dir>/eval_rows/<task>.parquet` — **the artifact the experiment console's Eval-rows tab reads**, and a `pd.read_parquet` away from any analysis. One record per row: the **exact prompt string the scorer was handed** (the return of `_format_eval_context_with_fewshot`, few-shot demos included), the continuations, per-choice `ll` / `score_char` / `score_pmi` / `uncond_ll` as native list columns, gold and predicted index and text under each normalization, `margin` (`score[pred] − score[gold]`, hence 0 on every correct row) and `decision_margin` (`top1 − top2`, the coin-flip axis), `prompt_units` measured in the tokenizer's own unit (tokens / words / chars / bytes, named in the file metadata) against `max_length`, and the flags `sentinel` / `all_sentinel` / `hit_cap` / `near_tie` / `disagree`.
+
+`all_sentinel` is the one to watch: when truncation leaves no room for the continuation, `_compute_loglikelihood` returns `SENTINEL_LL` (−1e9) for *every* choice and the row's argmax is an artifact of the cap. Measured on a 400-row sample of the archived `all_tokenizers_sweep_pretrain_mix/charformer` cell: **48.8 % of culture_arabic_mmlu rows**, all 195 of them predicting the same slot. The same cell's median `decision_margin` on ACVA is 5e-6 against 1.6 for `native_llama` — near-uniform continuation scores, a second and independent pathology. Neither is visible in an accuracy number.
+
+Writing is streamed (a row group every 2 000 records) via `EvalRowWriter` in [evaluation/eval_rows.py](src/arabic_eval/evaluation/eval_rows.py), plumbed through the established signature-gating pattern (`row_dump_dir` on `evaluate`, `row_sink` on `evaluate_mcq`; `row_sink=None` keeps the loop byte-identical). A Parquet file has no footer until it closes, so while a benchmark is being evaluated its rows are unreadable — the writer keeps a `<task>.progress.json` beside it (row count + running accuracy) that the console shows instead. Cost: ~18 MB per sweep cell for all four benchmarks, against the ~20 GB of checkpoints the same cell writes.
+
+**Backfill**: experiments that pre-date the flag have no dump. `scripts/dump_eval_rows.py --cell <dir> [--max-rows N]` rebuilds the tokenizer + phase checkpoint and re-runs *only* the scoring (no training), then compares the recomputed accuracy against `all_metrics.json` and reports whether it reproduces. It deliberately does **not** use `LlamaAdapter.load_checkpoint`: that calls `from_pretrained` on the checkpoint dir, which rebuilds a vanilla architecture from its `config.json`, so for CharacterBERT / char-JABER / Charformer cells the custom embedding and output-head weights become unexpected keys and the replaced modules stay randomly initialised. The script adapts to the tokenizer first, then loads the state dict strictly, allowing only a tied `lm_head.weight` to be missing.
+
+### Failure-case reports (opt-in, superseded by the row dump)
+
+When `evaluation.failure_reports: true` **and no row dump is being written**, LightEval MCQ tasks write one Parquet file per task with one row per wrong-answer example. With `eval_row_dump` on, the failure report is skipped and logged — it is the dump filtered to `correct == False`, with the prompt missing. Columns: `index, question, choice_0..N, gold_idx/letter, pred_idx/letter, ll_0..N, ll_margin, score_0..N, score_margin`. Both raw and aggregated views are persisted: `ll_*` is the raw model log-likelihood (sum over continuation tokens) and `ll_margin = ll_pred − ll_gold`; `score_*` is the value passed to `argmax` after `_aggregate_scores` (default char-norm, LightEval `LogProbCharNorm` equivalent), with `score_margin` defined the same way. They differ only when continuation lengths differ — letter-scored MCQ rows have `ll_* == score_*` (1-char continuations); ACVA and word-scored Alghafa rows have `score_*` divided by the character count of the answer text. The margins distinguish confident-wrong (large positive) from near-tie failures (~0); use `score_margin` to interpret the model's actual decision and `ll_margin` to debug the unnormalized signal.
 
 To opt a new task family into failure reporting, just add `failure_report_dir: Optional[Path] = None` to its `evaluate()` signature and handle it — no base-class change needed (signature gating in the pipeline picks it up automatically).
 
-### UNK occurrence CSV reports (opt-in)
+### UNK occurrence reports (opt-in)
 
 Two independent flags surface the per-word data underlying UNK detection, mirroring the failure-CSV pattern:
 
-* **`evaluation.intrinsic_unk_report: true`** — during intrinsic evaluation, every whitespace-split word of the eval split is encoded individually (same loop that produces the scalar `unk_rate`). Words whose per-word encoding contains at least one UNK token id are aggregated into `<output_dir>/intrinsic_unks.csv` with columns `word, unk_token_count, total_token_count, example_context`. Sorted descending by `unk_token_count`. The scalar `unk_rate` and `vocab_coverage` are byte-identical with vs. without the flag — the CSV is a side-channel, not a recomputation.
-* **`evaluation.downstream_unk_report: true`** — during LightEval MCQ evaluation, every prompt (via `_format_eval_context_with_fewshot`) and every continuation per example is scanned. Per-task output `<output_dir>/unk_reports/<task_name>_unks.csv` with columns `word, unk_token_count, source_fields, num_examples_seen_in, example_context`. `source_fields` is a pipe-joined sorted set (`"continuation_0|prompt"`); `num_examples_seen_in` counts each eval row at most once even if the word recurs across fields.
+* **`evaluation.intrinsic_unk_report: true`** — during intrinsic evaluation, every whitespace-split word of the eval split is encoded individually (same loop that produces the scalar `unk_rate`). Words whose per-word encoding contains at least one UNK token id are aggregated into `<output_dir>/intrinsic_unks.parquet` with columns `word, unk_token_count, total_token_count, example_context`. Sorted descending by `unk_token_count`. The scalar `unk_rate` and `vocab_coverage` are byte-identical with vs. without the flag — the CSV is a side-channel, not a recomputation.
+* **`evaluation.downstream_unk_report: true`** — during LightEval MCQ evaluation, every prompt (via `_format_eval_context_with_fewshot`) and every continuation per example is scanned. Per-task output `<output_dir>/unk_reports/<task_name>_unks.parquet` with columns `word, unk_token_count, source_fields, num_examples_seen_in, example_context`. `source_fields` is a pipe-joined sorted set (`"continuation_0|prompt"`); `num_examples_seen_in` counts each eval row at most once even if the word recurs across fields.
 
-Both reports always write a CSV when the flag is on — even header-only when no UNK was seen, or when the tokenizer's `special_tokens` dict has no `unk_token` entry (byte-level Charformer; Llama under byte-fallback). The header-only file is intentional so every (tokenizer, task) pair in a sweep produces a comparable artifact. UTF-8-BOM encoding so Arabic columns render in Excel.
+Both reports always write a file when the flag is on — an empty one carrying the full schema when no UNK was seen, or when the tokenizer's `special_tokens` dict has no `unk_token` entry (byte-level Charformer; Llama under byte-fallback). The empty file is intentional so every (tokenizer, task) pair in a sweep produces a comparable artifact.
+
+**Report file format.** Every row-level report is Parquet, written through `write_report_table` in [utils/io.py](src/arabic_eval/utils/io.py) (column types inferred per column; an empty report still writes the full schema). `write_failure_csv` survives in the same module for *export* paths only — the console's "export this view" button and `scripts/reports_to_parquet.py --to-csv` — where a spreadsheet is the destination and the UTF-8 BOM matters. Measured on this repo's 166 archived CSV reports: 1 047.7 MB → 243.9 MB, 4.3× smaller, and the filter columns of a 21 144-row dump load in ~2 ms against ~103 ms for the equivalent JSONL scan. Migrate older runs with `scripts/reports_to_parquet.py` (keeps the CSVs unless `--delete-csv`).
 
 Helper module: [src/arabic_eval/evaluation/unk_reports.py](src/arabic_eval/evaluation/unk_reports.py) exposes `scan_text` / `aggregate_occurrences` / `records_to_rows` plus the two fieldname constants (`INTRINSIC_UNK_FIELDS`, `DOWNSTREAM_UNK_FIELDS`). Downstream wiring uses the existing signature-gating pattern (`unk_report_dir: Optional[Path] = None` kwarg on `LightEvalBenchmarkTask.evaluate`).
 
 ## Dependencies
 
-Core: `torch`, `transformers`, `tokenizers`, `datasets`, `accelerate`, `farasapy`, `pydantic`, `pyyaml`, `numpy`, `tqdm`, `wandb`, `tabulate`, `matplotlib`, `lighteval>=0.6.0`, `datasketch` (MinHash LSH for the pretraining-mix dedup)
+Core: `torch`, `transformers`, `tokenizers`, `datasets`, `accelerate`, `farasapy`, `pydantic`, `pyyaml`, `numpy`, `tqdm`, `wandb`, `tabulate`, `matplotlib`, `lighteval>=0.6.0`, `datasketch` (MinHash LSH for the pretraining-mix dedup), `pyarrow` (row-level reports; already a `datasets` dependency, imported lazily so tokenizer-only workflows are unaffected)
 
 Tokenizer-only workflows (no GPU): `pydantic`, `pyyaml`, `tokenizers`, `tabulate`, `numpy`, `tqdm`
 

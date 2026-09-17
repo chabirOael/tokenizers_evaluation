@@ -180,6 +180,7 @@ class _WordTokenizer(BaseTokenizer):
 # Counter accumulating evaluate() calls per task — lets tests assert "task X
 # was evaluated exactly once".
 _EVAL_CALL_COUNTS: Dict[str, int] = {}
+_EVAL_KWARGS: Dict[str, Dict[str, Any]] = {}
 
 
 def _make_lighteval_stub(task_name: str, accuracy: float):
@@ -216,8 +217,14 @@ def _make_lighteval_stub(task_name: str, accuracy: float):
             return list(log_likelihoods)
 
         def evaluate(self, model, tokenizer, split="test", max_samples=None,
-                     failure_report_dir=None, score_normalization="char"):
+                     failure_report_dir=None, score_normalization="char",
+                     row_dump_dir=None):
             _EVAL_CALL_COUNTS[task_name] = _EVAL_CALL_COUNTS.get(task_name, 0) + 1
+            _EVAL_KWARGS[task_name] = {
+                "failure_report_dir": failure_report_dir,
+                "score_normalization": score_normalization,
+                "row_dump_dir": row_dump_dir,
+            }
             return {"accuracy": accuracy, "num_samples": 100}
 
     _Stub.__name__ = f"_StubTask_{task_name}"
@@ -496,3 +503,43 @@ class TestSweep:
 
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-v"]))
+
+
+class TestEvalRowDumpWiring:
+    """``evaluation.eval_row_dump`` must reach the task through signature gating."""
+
+    def test_flag_on_passes_the_dump_directory(self, tmp_path):
+        cfg = _exp_config(tmp_path)
+        cfg.evaluation.eval_row_dump = True
+        _EVAL_KWARGS.clear()
+        run_experiment(cfg)
+        got = _EVAL_KWARGS["test_acva_stub"]["row_dump_dir"]
+        assert got is not None
+        assert Path(got).name == "eval_rows"
+        assert Path(got).parent == Path(cfg.output_dir)
+        assert Path(got).is_dir()
+
+    def test_flag_off_passes_nothing(self, tmp_path):
+        cfg = _exp_config(tmp_path)
+        cfg.evaluation.eval_row_dump = False
+        _EVAL_KWARGS.clear()
+        run_experiment(cfg)
+        assert _EVAL_KWARGS["test_acva_stub"]["row_dump_dir"] is None
+        assert not (Path(cfg.output_dir) / "eval_rows").exists()
+
+    def test_task_without_the_kwarg_is_left_alone(self, tmp_path):
+        """A non-LightEval task family must not be forced to accept the flag."""
+        import inspect
+
+        from arabic_eval.registry import task_registry
+
+        class _NoDumpTask(_StubAcva):
+            def evaluate(self, model, tokenizer, split="test", max_samples=None):
+                return {"accuracy": 0.5, "num_samples": 10}
+
+        task_registry.register("test_nodump_stub")(_NoDumpTask)
+        assert "row_dump_dir" not in inspect.signature(_NoDumpTask({}).evaluate).parameters
+        cfg = _exp_config(tmp_path, tasks=["test_nodump_stub"])
+        cfg.evaluation.eval_row_dump = True
+        results = run_experiment(cfg)          # must not raise
+        assert results["downstream"]["test_nodump_stub"]["accuracy"] == 0.5

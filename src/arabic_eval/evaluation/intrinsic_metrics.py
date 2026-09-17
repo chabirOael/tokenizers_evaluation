@@ -44,7 +44,7 @@ from arabic_eval.tokenizers.utils.arabic_text import (
     clean_token_string,
     strip_diacritics,
 )
-from arabic_eval.utils.io import write_failure_csv
+from arabic_eval.utils.io import write_report_table
 
 # Char cap on the ``example_context`` column emitted by the UNK report.
 # Full eval texts can be very long; keep the CSV human-readable.
@@ -166,8 +166,9 @@ def compute_intrinsic_metrics(
         rows = records_to_rows(
             (unk_records or {}).values(), INTRINSIC_UNK_FIELDS,
         )
-        n_written = write_failure_csv(
+        n_written = write_report_table(
             unk_report_path, rows, INTRINSIC_UNK_FIELDS,
+            metadata={"kind": "intrinsic_unks"},
         )
         logger.info(
             "Wrote %d UNK word rows to %s (unique unk-producing words)",

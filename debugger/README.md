@@ -254,11 +254,47 @@ results table once `all_metrics.json` exists, and a live tail of the log
 (incremental polling every 3 s, `\r` progress lines collapsed). **Cancel** sends
 SIGTERM to the process group and SIGKILL 15 s later if it is still alive.
 
+## Eval rows tab
+
+Every scored row of every benchmark, as the model saw it. Reads the Parquet
+dumps at `outputs/experiments/<sweep>/<cell>/eval_rows/<task>.parquet` that a
+run writes when `evaluation.eval_row_dump` is on (the default in `base.yaml`).
+
+| Element | What it does |
+|---|---|
+| **experiment / tokenizer / benchmark** | the three pickers, discovered from the filesystem. The tokenizer list shows each cell's registry key and vocab size; the benchmark list shows its row count. |
+| **scoring** | which normalization decides the prediction, and therefore which rows count as correct: `primary` (PMI when the run computed it), `pmi`, `char`. The headline accuracy always follows this choice, so it agrees with the outcome filter. |
+| **all / correct / wrong** | the outcome filter. |
+| **sub-config / flag / sort / search** | sub-config counts follow the current filter. Flags are `truncated` (every choice scored the sentinel), `sentinel`, `hit the cap`, `closest call` (top two within 0.01), `scorings differ`. Sorts: row order, closest call first, most decisive first, and by distance from the gold answer. Search hits the question, or the whole prompt with *prompt too* ticked. |
+| **summary strip** | rows selected, accuracy under the chosen scoring, both normalizations side by side, the **prediction histogram** (one tall bar means the model is riding a prior rather than reading the question), and the flag shares — each flag chip is clickable and applies itself as a filter. |
+| **table** | one row per eval example: index, sub-config, question, expected, received, margin (`score[pred] − score[gold]`, so 0 whenever the model was right), flags. Click a row to expand it. |
+| **row detail** | the **exact prompt** that was fed to the scorer, in a plain-text block with a `¶ spaces` toggle that renders spaces and newlines (the leading space on a continuation is load-bearing), its length in the tokenizer's own unit against `max_length`, and the per-choice table: every continuation with its raw log-likelihood, char-normalised and PMI scores, gold and picked marked. A row whose prompt filled the cap carries an explicit note that the pick is an artifact of truncation, not a decision. |
+| **Export CSV** | the rows currently selected, as UTF-8-BOM CSV for a spreadsheet. |
+
+A benchmark still being evaluated shows a banner instead of a table: a Parquet
+file has no footer until it closes, so its rows become readable when that
+benchmark finishes. The row count comes from the `<task>.progress.json` the
+writer keeps beside it.
+
+For an experiment that finished before the dump existed, rebuild one without
+retraining:
+
+```bash
+.venv/bin/python scripts/dump_eval_rows.py --cell outputs/experiments/<sweep>/<cell> --max-rows 300
+.venv/bin/python scripts/dump_eval_rows.py --sweep outputs/experiments/<sweep>          # every cell, full
+```
+
+It reloads the cell's tokenizer and phase checkpoint and re-runs only the
+scoring. Because scoring is deterministic it also re-checks the archived
+accuracy and says whether it reproduces.
+
 Routes: `GET /api/schema`, `GET /api/configs`, `GET /api/configs/get?path=`,
 `GET /api/configs/results?path=`, `POST /api/config/validate`, `POST /api/config/render`,
 `POST /api/config/parse`, `POST /api/configs/save`, `GET /api/runs`, `GET /api/runs/<id>`,
 `GET /api/runs/<id>/log?offset=`, `POST /api/runs/start`, `POST /api/runs/<id>/cancel`,
-`GET /api/gpu`, `GET /api/text?path=` (files under `outputs/` only).
+`GET /api/gpu`, `GET /api/text?path=` (files under `outputs/` only),
+`GET /api/eval/tree`, `GET /api/eval/describe?path=`, `GET /api/eval/rows?path=&…`,
+`GET /api/eval/row?path=&position=`, `GET /api/eval/export?path=&…`.
 
 ## Files
 
@@ -267,4 +303,8 @@ Routes: `GET /api/schema`, `GET /api/configs`, `GET /api/configs/get?path=`,
 | `debugger/serve_experiment_console.py` | stdlib `http.server`, thin routing |
 | `debugger/experiment_console.html` | the page (vanilla JS, no build step) |
 | `src/arabic_eval/tools/experiment_console.py` | schema bundle, config list / read / validate / render / save, `parse_progress`, `RunManager` |
+| `src/arabic_eval/tools/eval_rows_browser.py` | eval-row discovery, filtering, paging, CSV export, path guard |
+| `src/arabic_eval/evaluation/eval_rows.py` | the dump format: record builder, streaming Parquet writer, reader |
+| `scripts/dump_eval_rows.py` | rebuild a finished experiment's dump (eval only, no training) |
+| `tests/test_eval_rows.py` | record semantics, write → read invariants (accuracy and prompt fidelity), filters and paging, discovery, export, path guard |
 | `tests/test_experiment_console.py` | round-trip of every repo config in both styles, `loc`-tagged errors, save guards, progress parser on real log lines, run lifecycle with a stub command (start, exit code, conflict, cancel with SIGTERM → SIGKILL, rediscovery by a fresh manager, PID-reuse guard) |

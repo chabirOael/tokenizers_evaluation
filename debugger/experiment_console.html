@@ -175,6 +175,45 @@ table.res td:first-child,table.res th:first-child{text-align:left;font-family:va
 .modal .foot{display:flex;gap:8px;justify-content:flex-end}
 .pre{white-space:pre-wrap;font-family:var(--mono);font-size:12px;background:var(--sunken);border:1px solid var(--line);border-radius:8px;padding:10px;max-height:60vh;overflow:auto}
 .empty{color:var(--ink-3);padding:20px;text-align:center}
+
+/* ---- eval rows ---- */
+.ev-bar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:8px 14px;border-bottom:1px solid var(--line)}
+.ev-bar select,.ev-bar input[type=text],.ev-bar input[type=number]{padding:4px 7px;border:1px solid var(--line-2);border-radius:6px;background:var(--surface)}
+.ev-bar label.k{color:var(--ink-3);font-size:11.5px;text-transform:uppercase;letter-spacing:.04em}
+.ev-seg{display:inline-flex;border:1px solid var(--line-2);border-radius:7px;overflow:hidden}
+.ev-seg button{padding:4px 11px;background:none;border:none;cursor:pointer;color:var(--ink-2)}
+.ev-seg button.on{background:var(--accent-soft);color:var(--accent)}
+.ev-sum{display:flex;gap:10px;flex-wrap:wrap;align-items:center;padding:9px 14px;border-bottom:1px solid var(--line);background:var(--sunken)}
+.ev-sum .chip{background:var(--surface)}
+.ev-sum .chip.act{cursor:pointer}
+.ev-sum .chip.act:hover{border-color:var(--accent);color:var(--accent)}
+.ev-hist{display:inline-flex;gap:3px;align-items:flex-end;height:20px}
+.ev-hist i{display:block;width:11px;min-height:2px;background:var(--accent);opacity:.6;border-radius:2px 2px 0 0}
+.ev-hist i.g{background:var(--good)}
+table.ev{width:100%;border-collapse:collapse;font-size:13px}
+table.ev th{position:sticky;top:0;background:var(--surface);text-align:start;font-weight:600;font-size:11px;
+  text-transform:uppercase;letter-spacing:.04em;color:var(--ink-3);border-bottom:1px solid var(--line);padding:6px 8px;z-index:1}
+table.ev td{border-bottom:1px solid var(--line);padding:6px 8px;vertical-align:top}
+table.ev tr.r{cursor:pointer}
+table.ev tr.r:hover{background:var(--sunken)}
+table.ev tr.r.on td{background:var(--accent-soft)}
+.ev-ar{unicode-bidi:plaintext;text-align:left}
+.ev-clip{display:block;max-width:52ch;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ev-det td{background:var(--sunken);padding:12px 14px}
+.ev-grid{display:grid;grid-template-columns:minmax(0,1.1fr) minmax(0,1fr);gap:14px;align-items:start}
+@media (max-width:1100px){.ev-grid{grid-template-columns:1fr}}
+.ev-pre{white-space:pre-wrap;unicode-bidi:plaintext;font-family:var(--mono);font-size:12.5px;background:var(--surface);
+  border:1px solid var(--line);border-radius:8px;padding:10px;max-height:46vh;overflow:auto;margin:0}
+.ev-pre .inv{color:var(--ink-3)}
+.ev-h{display:flex;gap:8px;align-items:center;margin-bottom:6px;flex-wrap:wrap}
+.ev-h h4{margin:0;font-size:12px;text-transform:uppercase;letter-spacing:.04em;color:var(--ink-3);font-weight:600}
+table.ev-ch{width:100%;border-collapse:collapse;font-size:12.5px}
+table.ev-ch th{font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:var(--ink-3);font-weight:600}
+table.ev-ch th,table.ev-ch td{border-bottom:1px solid var(--line);padding:4px 6px;text-align:start}
+table.ev-ch tr.gold td{background:var(--good-soft)}
+table.ev-ch tr.pred td{outline:1px solid var(--accent);outline-offset:-1px}
+.ev-pager{display:flex;gap:8px;align-items:center;justify-content:center;padding:12px}
+.ev-warn{padding:8px 14px;background:var(--warn-soft);color:var(--warn);border-bottom:1px solid var(--line)}
 </style>
 </head>
 <body>
@@ -183,6 +222,7 @@ table.res td:first-child,table.res th:first-child{text-align:left;font-family:va
   <div class="tabs">
     <button class="tab on" data-view="configs">Configs</button>
     <button class="tab" data-view="runs">Runs <span id="runs-badge"></span></button>
+    <button class="tab" data-view="eval">Eval rows</button>
   </div>
   <div class="spacer"></div>
   <span id="gpu-chip" class="chip">GPU …</span>
@@ -257,6 +297,63 @@ table.res td:first-child,table.res th:first-child{text-align:left;font-family:va
     <div class="panel-b" id="run-detail"><div class="empty">select a run</div></div>
   </div>
 </div>
+</section>
+<!-- ================= EVAL ROWS ================= -->
+<section class="view" id="view-eval">
+  <div class="panel">
+    <div class="panel-h">
+      <h2>eval rows</h2>
+      <span id="ev-title" class="chip" style="text-transform:none"></span>
+      <span class="spacer"></span>
+      <button class="btn sm" id="ev-export" title="download the rows currently selected, as CSV">Export CSV</button>
+      <button class="btn sm" id="ev-refresh" title="rescan outputs/experiments">↻</button>
+    </div>
+
+    <div class="ev-bar">
+      <label class="k" for="ev-exp">experiment</label>
+      <select id="ev-exp"></select>
+      <label class="k" for="ev-cell">tokenizer</label>
+      <select id="ev-cell"></select>
+      <label class="k" for="ev-task">benchmark</label>
+      <select id="ev-task"></select>
+      <label class="k" for="ev-scoring" title="which normalization decides the prediction, and therefore the outcome">scoring</label>
+      <select id="ev-scoring">
+        <option value="primary">primary</option>
+        <option value="pmi">PMI</option>
+        <option value="char">char-norm</option>
+      </select>
+      <span class="ev-seg" id="ev-outcome">
+        <button data-outcome="all" class="on">all</button>
+        <button data-outcome="correct">correct</button>
+        <button data-outcome="wrong">wrong</button>
+      </span>
+    </div>
+
+    <div class="ev-bar">
+      <label class="k" for="ev-sub">sub-config</label>
+      <select id="ev-sub"><option value="">all</option></select>
+      <label class="k" for="ev-flag">flag</label>
+      <select id="ev-flag"></select>
+      <label class="k" for="ev-sort">sort</label>
+      <select id="ev-sort">
+        <option value="row">row order</option>
+        <option value="uncertain">closest call first</option>
+        <option value="confident">most decisive first</option>
+        <option value="margin_asc">furthest from gold</option>
+        <option value="margin_desc">nearest to gold</option>
+      </select>
+      <input type="text" id="ev-q" placeholder="search question…" style="min-width:200px">
+      <label class="chip" title="also search the full prompt (slower on the first hit)"><input type="checkbox" id="ev-qp"> prompt too</label>
+      <span class="spacer"></span>
+      <label class="k" for="ev-size">per page</label>
+      <select id="ev-size"><option>25</option><option>50</option><option>100</option><option>200</option></select>
+    </div>
+
+    <div id="ev-note"></div>
+    <div class="ev-sum" id="ev-sum"><span class="chip">no selection</span></div>
+    <div id="ev-body"><div class="empty">pick an experiment above</div></div>
+    <div class="ev-pager" id="ev-pager"></div>
+  </div>
 </section>
 </main>
 
@@ -1143,12 +1240,326 @@ async function cancelRun(){
 }
 
 /* =========================================================================
+   eval rows — every scored benchmark row, exactly as the model saw it
+   ========================================================================= */
+const EV_FLAGS = [
+  ['', 'any'],
+  ['all_sentinel', 'truncated: every choice scored the sentinel'],
+  ['sentinel', 'some choice hit the sentinel'],
+  ['hit_cap', 'prompt filled max_length'],
+  ['near_tie', 'closest call (top two within 0.01)'],
+  ['disagree', 'char-norm and PMI picked differently'],
+  ['-all_sentinel', 'NOT truncated'],
+  ['-near_tie', 'NOT a close call'],
+];
+S.ev = {tree: null, exp: null, cell: null, task: null, path: null, scoring: 'primary',
+        outcome: 'all', sub: '', flag: '', q: '', qp: false, sort: 'row',
+        page: 1, size: 25, data: null, open: null, inv: false, busy: false};
+
+function evPick(id){ return $(id).value; }
+function evOptions(sel, items, value){
+  sel.innerHTML = '';
+  for (const it of items) sel.append(h('option', {value: it.value, selected: it.value===value}, it.label));
+  if (items.length && !items.some(i => i.value===value)) sel.value = items[0].value;
+  return sel.value;
+}
+async function loadEvalTree(){
+  if (S.ev.tree) return renderEvalPickers();
+  try {
+    const d = await api('GET', '/api/eval/tree');
+    S.ev.tree = d.experiments || [];
+    renderEvalPickers();
+  } catch(e){ $('#ev-body').innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
+}
+function evExperiment(){ return (S.ev.tree||[]).find(e => e.experiment===S.ev.exp) || null; }
+function evCell(){ const x = evExperiment(); return x ? (x.cells.find(c => c.cell===S.ev.cell) || x.cells[0]) : null; }
+function evTask(){ const c = evCell(); return c ? (c.tasks.find(t => t.task===S.ev.task) || c.tasks[0]) : null; }
+
+function renderEvalPickers(){
+  const tree = S.ev.tree || [];
+  if (!tree.length){
+    $('#ev-body').innerHTML = '<div class="empty">no eval-row dumps yet.<br><br>'
+      + 'Runs with <code>evaluation.eval_row_dump: true</code> write them automatically.<br>'
+      + 'For an experiment that already finished, rebuild one with:<br>'
+      + '<code>.venv/bin/python scripts/dump_eval_rows.py --cell outputs/experiments/&lt;sweep&gt;/&lt;cell&gt; --max-rows 300</code></div>';
+    $('#ev-sum').innerHTML = '<span class="chip">nothing to show</span>';
+    ['#ev-exp','#ev-cell','#ev-task','#ev-sub'].forEach(x => $(x).innerHTML = '');
+    return;
+  }
+  S.ev.exp = evOptions($('#ev-exp'),
+    tree.map(e => ({value: e.experiment, label: `${e.experiment} (${e.cells.length} cell${e.cells.length===1?'':'s'})`})),
+    S.ev.exp);
+  const exp = evExperiment();
+  S.ev.cell = evOptions($('#ev-cell'),
+    exp.cells.map(c => ({value: c.cell, label: c.tokenizer ? `${c.cell} · ${c.tokenizer}${c.vocab_size?'@'+Math.round(c.vocab_size/1000)+'k':''}` : c.cell})),
+    S.ev.cell);
+  const cell = evCell();
+  S.ev.task = evOptions($('#ev-task'),
+    cell.tasks.map(t => ({value: t.task, label: t.in_progress ? `${t.task} (running: ${t.n_rows||0} rows)` : `${t.task} (${(t.n_rows||0).toLocaleString()})`})),
+    S.ev.task);
+  const task = evTask();
+  evOptions($('#ev-flag'), EV_FLAGS.map(([v, l]) => ({value: v, label: l})), S.ev.flag);
+  $('#ev-size').value = String(S.ev.size);
+  $('#ev-sort').value = S.ev.sort;
+  $('#ev-scoring').value = S.ev.scoring;
+  $('#ev-q').value = S.ev.q;
+  $('#ev-qp').checked = S.ev.qp;
+
+  $('#ev-note').innerHTML = '';
+  if (!task){ $('#ev-body').innerHTML = '<div class="empty">this cell has no dumps</div>'; return; }
+  if (task.in_progress){
+    S.ev.path = null; S.ev.data = null;
+    $('#ev-note').innerHTML = `<div class="ev-warn">${esc(task.task)} is still being evaluated — `
+      + `${(task.n_rows||0).toLocaleString()} rows written so far. A Parquet file has no footer until it `
+      + `closes, so the rows become readable when this benchmark finishes.</div>`;
+    $('#ev-body').innerHTML = '<div class="empty">waiting for the benchmark to finish</div>';
+    $('#ev-pager').innerHTML = ''; $('#ev-sum').innerHTML = '<span class="chip">in progress</span>';
+    return;
+  }
+  const notes = [];
+  if (task.error) notes.push(`unreadable dump: ${esc(task.error)}`);
+  // A dump built with --max-rows covers part of the benchmark. The archived
+  // accuracy in all_metrics.json was measured over the whole thing, so say so
+  // rather than let the two numbers sit side by side as if comparable.
+  const reported = (cell.reported || {})[task.task];
+  const dumped = (task.metadata || {}).n_examples ?? task.n_rows;
+  if (reported && reported.num_samples && dumped && dumped < reported.num_samples){
+    notes.push(`partial dump: ${dumped.toLocaleString()} of the benchmark's `
+      + `${reported.num_samples.toLocaleString()} rows. The accuracy below is over these rows only — `
+      + `the run's archived accuracy (${(reported.accuracy*100).toFixed(1)}%) covers all of them. `
+      + `Rebuild in full with <code>scripts/dump_eval_rows.py --cell ${esc(cell.dir)} --overwrite</code>.`);
+  }
+  $('#ev-note').innerHTML = notes.map(n => `<div class="ev-warn">${n}</div>`).join('');
+  S.ev.path = task.path;
+  loadEvalRows();
+}
+function evParams(){
+  const p = new URLSearchParams({path: S.ev.path, page: S.ev.page, page_size: S.ev.size,
+                                outcome: S.ev.outcome, scoring: S.ev.scoring, sort: S.ev.sort});
+  if (S.ev.sub) p.set('subconfig', S.ev.sub);
+  if (S.ev.flag) p.set('flags', S.ev.flag);
+  if (S.ev.q){ p.set('q', S.ev.q); if (S.ev.qp) p.set('search_prompt', '1'); }
+  return p;
+}
+async function loadEvalRows(){
+  if (!S.ev.path || S.ev.busy) return;
+  S.ev.busy = true;
+  try {
+    const d = await api('GET', '/api/eval/rows?' + evParams().toString());
+    S.ev.data = d; S.ev.open = null;
+    renderEvalSubconfigs(d); renderEvalSummary(d); renderEvalTable(d); renderEvalPager(d);
+    const m = d.metadata || {};
+    $('#ev-title').textContent = `${m.task||''} · ${d.n_rows_file.toLocaleString()} rows · `
+      + `${m.score_normalization||''} · max_length ${m.max_length} · ${m.num_fewshot||0}-shot`;
+  } catch(e){
+    $('#ev-body').innerHTML = `<div class="empty">${esc(e.message)}</div>`;
+    $('#ev-pager').innerHTML = '';
+  } finally { S.ev.busy = false; }
+}
+function renderEvalSubconfigs(d){
+  const all = [{value: '', label: `all (${d.total.toLocaleString()})`}];
+  for (const f of (d.subconfigs||[])) all.push({value: f.name, label: `${f.name} (${f.n_rows.toLocaleString()})`});
+  // Keep the active choice listed even when the current filter excludes it.
+  if (S.ev.sub && !all.some(o => o.value===S.ev.sub)) all.push({value: S.ev.sub, label: `${S.ev.sub} (0)`});
+  const sel = $('#ev-sub'); sel.innerHTML = '';
+  for (const o of all) sel.append(h('option', {value: o.value, selected: o.value===S.ev.sub}, o.label));
+}
+const evPct = v => v==null ? '—' : (v*100).toFixed(1) + '%';
+function renderEvalSummary(d){
+  const s = d.summary || {}, box = $('#ev-sum'); box.innerHTML = '';
+  const n = s.n_rows || 0;
+  const chip = (label, cls, title, onclick) =>
+    h('span', {class: 'chip' + (cls?' '+cls:'') + (onclick?' act':''), title: title||'', onclick: onclick||undefined}, label);
+  box.append(chip(`${n.toLocaleString()} of ${d.n_rows_file.toLocaleString()} rows`, n?'':'warn'));
+  box.append(chip(`accuracy ${evPct(s.accuracy)}`, 'good',
+    `accuracy over the rows currently selected, under ${S.ev.scoring==='primary'?'the primary':S.ev.scoring} scoring`));
+  if (s.accuracy_char != null && s.accuracy_pmi != null)
+    box.append(chip(`char ${evPct(s.accuracy_char)} · pmi ${evPct(s.accuracy_pmi)}`, '',
+                    'the same rows scored under each normalization'));
+  const hist = s.pred_hist || [], gold = s.gold_hist || [];
+  if (hist.length){
+    const max = Math.max(...hist, ...gold, 1);
+    const bars = h('span', {class: 'ev-hist'});
+    hist.forEach((v, i) => bars.append(h('i', {style: `height:${Math.max(2, Math.round(20*v/max))}px`,
+      title: `predicted choice ${i}: ${v} rows (gold has ${gold[i]||0})`})));
+    box.append(h('span', {class: 'chip', title: 'how the predictions spread across the answer slots — '
+      + 'one tall bar means the model is riding a prior rather than reading the question'},
+      'predictions ', bars));
+  }
+  const flagChip = (key, label, title) => {
+    const v = s[key] || 0;
+    if (!v) return;
+    box.append(chip(`${label} ${evPct(v/Math.max(n,1))} (${v.toLocaleString()})`,
+      key==='all_sentinel' ? 'bad' : 'warn', title,
+      () => { S.ev.flag = key; S.ev.page = 1; $('#ev-flag').value = key; loadEvalRows(); }));
+  };
+  flagChip('all_sentinel', 'truncated away',
+    'the prompt filled max_length, so every choice scored the sentinel and the pick is an artifact of the cap');
+  flagChip('hit_cap', 'hit the cap', 'prompt reached max_length in this tokenizer’s units');
+  flagChip('near_tie', 'closest calls', 'top two scores within 0.01 — effectively a coin flip');
+  flagChip('disagree', 'scorings differ', 'char-norm and PMI picked different answers');
+  if (s.prompt_units_mean != null){
+    const unit = (d.metadata||{}).unit || 'tokens';
+    box.append(chip(`prompt ${s.prompt_units_mean} ${unit} avg · ${s.prompt_units_max} max`, '',
+      `one unit is one ${unit.replace(/s$/,'')} for this tokenizer`));
+  }
+}
+function evFlagPills(r){
+  const out = [];
+  if (r.all_sentinel) out.push(h('span', {class: 'chip bad', title: 'every choice scored the truncation sentinel'}, 'truncated'));
+  else if (r.sentinel) out.push(h('span', {class: 'chip warn', title: 'a choice hit the truncation sentinel'}, 'sentinel'));
+  if (r.hit_cap && !r.all_sentinel) out.push(h('span', {class: 'chip warn', title: 'prompt reached max_length'}, 'cap'));
+  if (r.near_tie) out.push(h('span', {class: 'chip', title: 'top two scores within 0.01'}, 'close'));
+  if (r.disagree) out.push(h('span', {class: 'chip', title: 'char-norm and PMI disagree'}, 'split'));
+  return out;
+}
+function renderEvalTable(d){
+  const box = $('#ev-body'); box.innerHTML = '';
+  if (!d.rows.length){ box.innerHTML = '<div class="empty">no rows match these filters</div>'; return; }
+  const t = h('table', {class: 'ev'});
+  t.append(h('tr', {},
+    h('th', {style: 'width:4.5rem'}, '#'),
+    h('th', {style: 'width:11rem'}, 'sub-config'),
+    h('th', {}, 'question'),
+    h('th', {style: 'width:9rem'}, 'expected'),
+    h('th', {style: 'width:9rem'}, 'received'),
+    h('th', {style: 'width:5.5rem', title: 'score[pred] − score[gold]; 0 when correct'}, 'margin'),
+    h('th', {style: 'width:10rem'}, 'flags')));
+  for (const r of d.rows){
+    const tr = h('tr', {class: 'r' + (S.ev.open===r.position ? ' on' : ''),
+                        onclick: () => toggleEvalRow(r.position)});
+    tr.append(
+      h('td', {class: 'mono'}, String(r.row_index)),
+      h('td', {class: 'ev-ar'}, h('span', {class: 'ev-clip', title: r.source_config}, r.source_config)),
+      h('td', {class: 'ev-ar'}, h('span', {class: 'ev-clip', title: r.question}, r.question || '—')),
+      h('td', {class: 'ev-ar', style: 'color:var(--good)'}, r.gold_text || '—'),
+      h('td', {class: 'ev-ar', style: r.correct ? 'color:var(--good)' : 'color:var(--bad)'}, r.pred_text || '—'),
+      h('td', {class: 'mono'}, r.margin==null ? '—' : r.margin.toFixed(3)),
+      h('td', {}, ...evFlagPills(r)));
+    t.append(tr);
+    if (S.ev.open === r.position) t.append(evalRowDetail(r, d.metadata || {}));
+  }
+  box.append(t);
+}
+function toggleEvalRow(pos){
+  S.ev.open = (S.ev.open===pos) ? null : pos;
+  renderEvalTable(S.ev.data);
+}
+function evShowInvisibles(text){
+  // Spaces and newlines are load-bearing in these prompts (the continuation
+  // convention is a leading space), so make them visible on demand.
+  const frag = document.createDocumentFragment();
+  for (const line of text.split('\n')){
+    for (const part of line.split(' ')){
+      frag.append(document.createTextNode(part));
+      frag.append(h('span', {class: 'inv'}, '·'));
+    }
+    if (frag.lastChild) frag.removeChild(frag.lastChild);
+    frag.append(h('span', {class: 'inv'}, '⏎'));
+    frag.append(document.createTextNode('\n'));
+  }
+  return frag;
+}
+function evalRowDetail(r, meta){
+  const unit = meta.unit || 'tokens';
+  const promptBox = h('pre', {class: 'ev-pre'});
+  const paint = () => {
+    promptBox.innerHTML = '';
+    promptBox.append(S.ev.inv ? evShowInvisibles(r.prompt) : document.createTextNode(r.prompt));
+  };
+  paint();
+  const head = h('div', {class: 'ev-h'},
+    h('h4', {}, 'prompt as sent to the model'),
+    h('span', {class: 'chip', title: `length in this tokenizer's units`},
+      `${r.prompt_units==null?'?':r.prompt_units} ${unit} / cap ${meta.max_length}`),
+    r.hit_cap ? h('span', {class: 'chip bad'}, 'truncated at the cap') : null,
+    h('span', {class: 'spacer'}),
+    h('button', {class: 'btn sm', onclick: e => { e.stopPropagation(); S.ev.inv = !S.ev.inv; paint(); }}, '¶ spaces'),
+    h('button', {class: 'btn sm', onclick: e => { e.stopPropagation(); navigator.clipboard?.writeText(r.prompt); }}, 'copy'));
+
+  const ch = h('table', {class: 'ev-ch'});
+  ch.append(h('tr', {},
+    h('th', {}, '#'), h('th', {}, 'continuation scored'),
+    h('th', {title: 'raw sum of log-probabilities'}, 'll'),
+    h('th', {title: 'log-likelihood divided by the continuation’s character length'}, 'char'),
+    h('th', {title: 'log-likelihood minus the unconditioned log-likelihood'}, 'pmi'),
+    h('th', {}, '')));
+  const n = (r.continuations || []).length;
+  for (let i = 0; i < n; i++){
+    const isGold = i===r.gold_idx, isPred = i===r.pred_idx;
+    const marks = [];
+    if (isGold) marks.push(h('span', {class: 'chip good'}, 'gold'));
+    if (isPred) marks.push(h('span', {class: 'chip ' + (r.correct?'good':'bad')}, 'picked'));
+    ch.append(h('tr', {class: (isGold?'gold ':'') + (isPred?'pred':'')},
+      h('td', {class: 'mono'}, String(i)),
+      h('td', {class: 'ev-ar'}, h('span', {class: 'ev-clip', title: r.continuations[i]}, r.continuations[i])),
+      h('td', {class: 'mono'}, r.ll && r.ll[i]!=null ? r.ll[i].toFixed(3) : '—'),
+      h('td', {class: 'mono'}, r.score_char && r.score_char[i]!=null ? r.score_char[i].toFixed(3) : '—'),
+      h('td', {class: 'mono'}, r.score_pmi && r.score_pmi[i]!=null ? r.score_pmi[i].toFixed(3) : '—'),
+      h('td', {}, ...marks)));
+  }
+  const kv = h('div', {class: 'kv', style: 'margin-top:10px'});
+  const add = (k, v) => { if (v!==null && v!==undefined && v!=='') kv.append(h('span', {class: 'k'}, k), h('span', {class: 'ev-ar'}, String(v))); };
+  add('row', r.row_index); add('sub-config', r.source_config);
+  add('context', r.context); add('choices', (r.choices||[]).join(' · '));
+  add('decision margin', r.decision_margin==null ? null : r.decision_margin.toFixed(4) + '  (top1 − top2)');
+  add('margin', r.margin==null ? null : r.margin.toFixed(4) + '  (pred − gold)');
+  if (r.correct_char!=null && r.correct_pmi!=null)
+    add('per scoring', `char ${r.correct_char?'correct':'wrong'} · pmi ${r.correct_pmi?'correct':'wrong'}`);
+
+  const left = h('div', {}, head, promptBox,
+    r.all_sentinel ? h('div', {class: 'ev-warn', style: 'margin-top:8px;border:0;border-radius:8px'},
+      'Every choice scored the truncation sentinel: the prompt alone filled max_length, so nothing was '
+      + 'left to score and the pick is an artifact of the cap, not a decision.') : null);
+  const right = h('div', {}, h('div', {class: 'ev-h'}, h('h4', {}, 'what was scored against it')), ch, kv);
+  return h('tr', {class: 'ev-det'}, h('td', {colspan: 7}, h('div', {class: 'ev-grid'}, left, right)));
+}
+function renderEvalPager(d){
+  const box = $('#ev-pager'); box.innerHTML = '';
+  if (!d.total){ return; }
+  const go = p => { S.ev.page = p; loadEvalRows(); };
+  const jump = h('input', {type: 'number', min: 1, max: d.pages, value: d.page, style: 'width:5.5rem',
+    onchange: e => go(Math.max(1, Math.min(d.pages, Number(e.target.value)||1)))});
+  box.append(
+    h('button', {class: 'btn sm', disabled: d.page<=1, onclick: () => go(1)}, '« first'),
+    h('button', {class: 'btn sm', disabled: d.page<=1, onclick: () => go(d.page-1)}, '‹ prev'),
+    h('span', {}, 'page '), jump, h('span', {}, ` of ${d.pages.toLocaleString()} · ${d.total.toLocaleString()} rows`),
+    h('button', {class: 'btn sm', disabled: d.page>=d.pages, onclick: () => go(d.page+1)}, 'next ›'),
+    h('button', {class: 'btn sm', disabled: d.page>=d.pages, onclick: () => go(d.pages)}, 'last »'));
+}
+function wireEvalTab(){
+  const reload = (resetPage) => { if (resetPage) S.ev.page = 1; loadEvalRows(); };
+  $('#ev-exp').onchange = () => { S.ev.exp = evPick('#ev-exp'); S.ev.cell = null; S.ev.task = null; S.ev.sub = ''; S.ev.page = 1; renderEvalPickers(); };
+  $('#ev-cell').onchange = () => { S.ev.cell = evPick('#ev-cell'); S.ev.task = null; S.ev.page = 1; renderEvalPickers(); };
+  $('#ev-task').onchange = () => { S.ev.task = evPick('#ev-task'); S.ev.sub = ''; S.ev.page = 1; renderEvalPickers(); };
+  $('#ev-scoring').onchange = () => { S.ev.scoring = evPick('#ev-scoring'); reload(true); };
+  $('#ev-sub').onchange = () => { S.ev.sub = evPick('#ev-sub'); reload(true); };
+  $('#ev-flag').onchange = () => { S.ev.flag = evPick('#ev-flag'); reload(true); };
+  $('#ev-sort').onchange = () => { S.ev.sort = evPick('#ev-sort'); reload(true); };
+  $('#ev-size').onchange = () => { S.ev.size = Number(evPick('#ev-size')); reload(true); };
+  $('#ev-qp').onchange = () => { S.ev.qp = $('#ev-qp').checked; if (S.ev.q) reload(true); };
+  let qT = null;
+  $('#ev-q').oninput = () => { clearTimeout(qT); qT = setTimeout(() => { S.ev.q = $('#ev-q').value.trim(); reload(true); }, 300); };
+  $$('#ev-outcome button').forEach(b => b.onclick = () => {
+    S.ev.outcome = b.dataset.outcome;
+    $$('#ev-outcome button').forEach(x => x.classList.toggle('on', x===b));
+    reload(true);
+  });
+  $('#ev-refresh').onclick = () => { S.ev.tree = null; loadEvalTree(); };
+  $('#ev-export').onclick = () => {
+    if (!S.ev.path) return;
+    window.open('/api/eval/export?' + evParams().toString(), '_blank');
+  };
+}
+
+/* =========================================================================
    wiring
    ========================================================================= */
 function setView(v){
   S.view = v; $$('.tabs .tab').forEach(t => t.classList.toggle('on', t.dataset.view===v));
   $$('.view').forEach(x => x.classList.toggle('on', x.id==='view-'+v));
   if (v==='runs') pollRuns();
+  if (v==='eval') loadEvalTree();
 }
 function setEtab(t){
   if (t==='yaml' && S.etab!=='yaml' && !S.yamlDirty && S.cfg && (S.dirty || !$('#yaml').value)) formToYaml();
@@ -1170,6 +1581,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   $('#btn-save').onclick = saveFlow; $('#save-go').onclick = doSave;
   $('#btn-start').onclick = startFlow; $('#start-go').onclick = doStart;
   $('#btn-cancel').onclick = cancelRun;
+  wireEvalTab();
   $$('[data-close]').forEach(b => b.onclick = closeModals);
   $$('.modal-bg').forEach(m => m.addEventListener('click', e => { if (e.target===m) closeModals(); }));
   $('#theme-btn').onclick = () => { const r = document.documentElement; const cur = r.dataset.theme || (matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light'); r.dataset.theme = cur==='dark'?'light':'dark'; try { localStorage.setItem('xc-theme', r.dataset.theme); } catch(e){} };

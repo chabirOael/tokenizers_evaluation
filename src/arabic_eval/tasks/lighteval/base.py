@@ -26,13 +26,19 @@ import logging
 from abc import abstractmethod
 from collections import defaultdict
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import numpy as np
 import torch
 import torch.nn.functional as F
 from tqdm import tqdm
 
+from arabic_eval.evaluation.eval_rows import (
+    SENTINEL_LL,
+    UNIT_BY_EMBEDDING,
+    EvalRowWriter,
+    build_row_record,
+)
 from arabic_eval.evaluation.unk_reports import (
     DOWNSTREAM_UNK_FIELDS,
     WordUnkRecord,
@@ -48,7 +54,7 @@ from arabic_eval.tasks.lighteval.utils import (
 )
 from arabic_eval.tokenizers.base import BaseTokenizer, EmbeddingType
 from arabic_eval.tokenizers.utils.arabic_text import contains_latin_letters
-from arabic_eval.utils.io import write_failure_csv
+from arabic_eval.utils.io import write_report_table
 
 logger = logging.getLogger("arabic_eval.tasks.lighteval.base")
 
@@ -97,8 +103,11 @@ def _compute_loglikelihood(
     full_len = len(full_enc.input_ids)
 
     if full_len <= ctx_len:
-        # Continuation was completely truncated — should not happen for single letters.
-        return -1e9
+        # Truncation at ``max_length`` left no room for the continuation, so
+        # there is nothing to score. Every choice of such a row returns this
+        # same sentinel and the row's argmax is an artifact of the cap, not a
+        # decision — ``eval_rows`` flags it as ``all_sentinel``.
+        return SENTINEL_LL
 
     attention_mask = torch.tensor([full_enc.attention_mask], device=model.device)
 
@@ -164,12 +173,29 @@ class LightEvalModelWrapper:
             for ctx, cont in requests
         ]
 
+    def _prompt_units(self, context: str) -> Optional[int]:
+        """Length of the prompt in whatever unit this tokenizer emits.
+
+        One extra encode per row, paid only while dumping. What a "unit" means
+        depends on the embedding family (tokens / words / chars / bytes), so
+        the dump records the label alongside the number. Never fatal: a fake
+        tokenizer in a test or an analyzer that throws just yields ``None``.
+        """
+        try:
+            enc = self.tokenizer.encode(
+                context, max_length=self.max_length, truncation=True, padding=False
+            )
+            return len(enc.input_ids)
+        except Exception:  # noqa: BLE001 - diagnostics must never break eval
+            return None
+
     def evaluate_mcq(
         self,
         examples: List[Dict[str, Any]],
         collect_failures: bool = False,
         task: Optional["LightEvalBenchmarkTask"] = None,
         score_normalization: str = "char",
+        row_sink: Optional[Callable[[Dict[str, Any]], None]] = None,
     ) -> Tuple[Dict[str, float], List[Dict[str, Any]]]:
         """
         Run LightEval-style multiple-choice accuracy evaluation.
@@ -194,9 +220,15 @@ class LightEvalModelWrapper:
 
         When ``collect_failures`` is True, also returns a list of failure
         records (one per wrong-answer example) with per-choice log-likelihoods
-        for downstream CSV reporting. Under PMI modes "failure" is defined by
+        for downstream reporting. Under PMI modes "failure" is defined by
         the PMI argmax (since PMI is the corrected scoring); the record also
         carries ``score_pmi_*`` and ``score_pmi_margin`` columns.
+
+        ``row_sink``, when given, is called once per example — right *and*
+        wrong — with a full dump record (``eval_rows.build_row_record``): the
+        exact prompt the model was scored on, every continuation, every
+        per-choice score, and the truncation diagnostics. Leaving it ``None``
+        keeps this method's behaviour byte-identical to before it existed.
         """
         if score_normalization not in ("char", "pmi", "char+pmi"):
             raise ValueError(
@@ -285,6 +317,8 @@ class LightEvalModelWrapper:
             cfg_key = ex.get("_source_config", "_default")
             per_config[cfg_key][2] += 1
 
+            pred_char: Optional[int] = None
+            pred_pmi: Optional[int] = None
             if want_char:
                 pred_char = int(np.argmax(scores_char))
                 if pred_char == gold:
@@ -295,6 +329,24 @@ class LightEvalModelWrapper:
                 if pred_pmi == gold:
                     correct_pmi += 1
                     per_config[cfg_key][1] += 1
+
+            if row_sink is not None:
+                row_sink(build_row_record(
+                    row_index=idx,
+                    example=ex,
+                    prompt=context,
+                    continuations=continuations,
+                    log_likelihoods=log_likelihoods,
+                    scores_char=scores_char,
+                    scores_pmi=scores_pmi,
+                    unconditioned_log_likelihoods=uncond_lls,
+                    gold_idx=gold,
+                    pred_idx=predicted,
+                    pred_idx_char=pred_char,
+                    pred_idx_pmi=pred_pmi,
+                    prompt_units=self._prompt_units(context),
+                    max_length=self.max_length,
+                ))
 
             if predicted == gold:
                 total += 1
@@ -686,6 +738,42 @@ class LightEvalBenchmarkTask(BaseTask):
             occs_by_example.append(ex_occs)
         return aggregate_occurrences(occs_by_example)
 
+    def _open_row_writer(
+        self,
+        row_dump_dir: Path,
+        tokenizer: BaseTokenizer,
+        score_normalization: str,
+        n_examples: int,
+    ) -> EvalRowWriter:
+        """Open the per-row dump for this task, stamped with its run context.
+
+        Only facts available here go into the metadata: what the file says
+        about itself must be true of the file. The sweep cell and the model
+        checkpoint are recorded by the pipeline in ``config.json`` next to it.
+        """
+        embedding = getattr(tokenizer, "embedding_type", EmbeddingType.STANDARD)
+        try:
+            vocab_size = int(tokenizer.vocab_size)
+        except Exception:  # noqa: BLE001 - a fake tokenizer in a test
+            vocab_size = None
+        meta = {
+            "task": self.name,
+            "dataset_name": self.dataset_name,
+            "dataset_config": self.dataset_config,
+            "n_examples": int(n_examples),
+            "score_normalization": score_normalization,
+            "primary": "pmi" if score_normalization in ("pmi", "char+pmi") else "char",
+            "max_length": int(self.max_length),
+            "num_fewshot": int(self.num_fewshot),
+            "clean_latin_rows": bool(self.clean_latin_rows),
+            "tokenizer_class": type(tokenizer).__name__,
+            "vocab_size": vocab_size,
+            "embedding_type": embedding,
+            "unit": UNIT_BY_EMBEDDING.get(embedding, "tokens"),
+        }
+        path = Path(row_dump_dir) / f"{self.name}.parquet"
+        return EvalRowWriter(path, metadata=meta)
+
     @torch.no_grad()
     def evaluate(
         self,
@@ -696,18 +784,27 @@ class LightEvalBenchmarkTask(BaseTask):
         failure_report_dir: Optional[Path] = None,
         score_normalization: str = "char",
         unk_report_dir: Optional[Path] = None,
+        row_dump_dir: Optional[Path] = None,
     ) -> Dict[str, float]:
         """
         Evaluate on the **90 % held-out split** using LightEval's log-likelihood
         multiple-choice methodology.
 
-        If ``failure_report_dir`` is given, a ``<task_name>_accuracy_failures.csv``
-        is written there with one row per wrong-answer example.
+        If ``row_dump_dir`` is given, ``<task_name>.parquet`` is written there
+        with **every** scored row: the exact prompt the model received, the
+        continuations, every per-choice score under every active normalization,
+        and the truncation diagnostics. This is a strict superset of the
+        failure report, so when both are requested the failure report is
+        skipped and the dump stands in for it.
 
-        If ``unk_report_dir`` is given, a ``<task_name>_unks.csv`` is written
-        there listing the unique source words that produced UNK tokens in
-        either the prompt or any continuation. Header-only when no UNK was
-        seen or the tokenizer has no ``unk_token`` id.
+        If ``failure_report_dir`` is given (and no row dump is being written),
+        a ``<task_name>_accuracy_failures.parquet`` is written there with one
+        row per wrong-answer example.
+
+        If ``unk_report_dir`` is given, a ``<task_name>_unks.parquet`` is
+        written there listing the unique source words that produced UNK tokens
+        in either the prompt or any continuation. Empty (schema-only) when no
+        UNK was seen or the tokenizer has no ``unk_token`` id.
 
         ``score_normalization`` selects the aggregation policy:
           * ``"char"`` (default) — char-length normalization (existing behavior;
@@ -738,14 +835,30 @@ class LightEvalBenchmarkTask(BaseTask):
         )
         model.model.eval()
         wrapper = LightEvalModelWrapper(model, tokenizer, max_length=self.max_length)
-        collect = failure_report_dir is not None
-        # Pass `self` so the wrapper uses this task's prompt/continuation/scoring hooks.
-        metrics, failures = wrapper.evaluate_mcq(
-            examples,
-            collect_failures=collect,
-            task=self,
-            score_normalization=score_normalization,
+        # The dump carries every failure row and then some, so asking for both
+        # would write the same wrong answers twice in two shapes.
+        collect = failure_report_dir is not None and row_dump_dir is None
+        if failure_report_dir is not None and row_dump_dir is not None:
+            logger.info(
+                "%s: row dump enabled — skipping the failure report "
+                "(it is the dump filtered to correct == False)", self.name,
+            )
+        writer = (
+            self._open_row_writer(row_dump_dir, tokenizer, score_normalization, len(examples))
+            if row_dump_dir is not None else None
         )
+        # Pass `self` so the wrapper uses this task's prompt/continuation/scoring hooks.
+        try:
+            metrics, failures = wrapper.evaluate_mcq(
+                examples,
+                collect_failures=collect,
+                task=self,
+                score_normalization=score_normalization,
+                row_sink=writer.write if writer is not None else None,
+            )
+        finally:
+            if writer is not None:
+                writer.close()
         logger.info("%s metrics: %s", self.name, metrics)
 
         if collect:
@@ -763,10 +876,14 @@ class LightEvalBenchmarkTask(BaseTask):
                 fieldnames.extend(
                     [*[f"score_pmi_{i}" for i in range(max_choices)], "score_pmi_margin"]
                 )
-            csv_path = Path(failure_report_dir) / f"{self.name}_accuracy_failures.csv"
-            n_written = write_failure_csv(csv_path, failures, fieldnames)
+            out_path = Path(failure_report_dir) / f"{self.name}_accuracy_failures.parquet"
+            n_written = write_report_table(
+                out_path, failures, fieldnames,
+                metadata={"task": self.name, "kind": "accuracy_failures",
+                          "score_normalization": score_normalization},
+            )
             logger.info(
-                "%s: wrote %d failure rows to %s", self.name, n_written, csv_path
+                "%s: wrote %d failure rows to %s", self.name, n_written, out_path
             )
 
         if unk_report_dir is not None:
@@ -774,11 +891,14 @@ class LightEvalBenchmarkTask(BaseTask):
             udir.mkdir(parents=True, exist_ok=True)
             records = self._compute_downstream_unk_records(examples, tokenizer)
             rows = records_to_rows(records.values(), DOWNSTREAM_UNK_FIELDS)
-            csv_path = udir / f"{self.name}_unks.csv"
-            n_unk_written = write_failure_csv(csv_path, rows, DOWNSTREAM_UNK_FIELDS)
+            out_path = udir / f"{self.name}_unks.parquet"
+            n_unk_written = write_report_table(
+                out_path, rows, DOWNSTREAM_UNK_FIELDS,
+                metadata={"task": self.name, "kind": "downstream_unks"},
+            )
             logger.info(
                 "%s: wrote %d UNK word rows to %s",
-                self.name, n_unk_written, csv_path,
+                self.name, n_unk_written, out_path,
             )
 
         # Stamp the eval-preprocessing flag into the metrics dict so downstream

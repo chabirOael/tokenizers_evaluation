@@ -42,10 +42,10 @@ class Evaluator:
         """Compute intrinsic tokenizer metrics.
 
         When ``unk_report_path`` is set, the per-word UNK occurrence list
-        underlying the scalar ``unk_rate`` is dumped to that path as a CSV
-        (see ``compute_intrinsic_metrics`` for the column schema). Always
-        writes the CSV when the path is provided — header-only when no
-        UNKs were seen.
+        underlying the scalar ``unk_rate`` is dumped to that path as a Parquet
+        file (see ``compute_intrinsic_metrics`` for the column schema). Always
+        writes the file when the path is provided — schema-only when no UNKs
+        were seen.
         """
         texts = (
             self.eval_texts

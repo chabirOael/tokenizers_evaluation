@@ -30,6 +30,12 @@ Routes
     POST /api/runs/<id>/cancel      SIGTERM the process group, SIGKILL after the grace period
     GET  /api/gpu                   nvidia-smi snapshot (null when unavailable)
     GET  /api/text?path=&tail=      a text file under outputs/ (reports, experiment.log), tail-limited
+    GET  /api/eval/tree             every eval-row dump: experiment → cell → benchmark
+    GET  /api/eval/describe?path=   one dump's metadata, sub-configs and whole-file summary
+    GET  /api/eval/rows?path=&…     filtered, paginated rows + the selection's aggregates
+                                    (outcome, scoring, subconfig, flags, q, sort, page, page_size)
+    GET  /api/eval/row?path=&position=   one full record
+    GET  /api/eval/export?path=&…   the current selection as a CSV download
 
 Stdlib only (http.server) — no new dependencies.
 """
@@ -48,6 +54,7 @@ from urllib.parse import parse_qs, urlsplit
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT / "src"))
 
+from arabic_eval.tools import eval_rows_browser as eval_rows  # noqa: E402
 from arabic_eval.tools.experiment_console import (  # noqa: E402
     ConsoleError,
     ConsolePaths,
@@ -94,6 +101,16 @@ class Handler(SimpleHTTPRequestHandler):
         body = PAGE.read_bytes()
         self.send_response(HTTPStatus.OK)
         self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _send_csv(self, filename: str, text: str) -> None:
+        body = text.encode("utf-8-sig")   # BOM so Excel renders Arabic
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", "text/csv; charset=utf-8")
+        self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
         self.end_headers()
@@ -168,6 +185,17 @@ class Handler(SimpleHTTPRequestHandler):
             self._send_json({"gpu": gpu_snapshot()})
         elif route == "/api/text":
             self._send_json(_read_text(q.get("path", ""), int(q.get("tail") or 256 * 1024)))
+        elif route == "/api/eval/tree":
+            self._send_json(eval_rows.discover(REPO_ROOT))
+        elif route == "/api/eval/describe":
+            self._send_json(eval_rows.describe(REPO_ROOT, q.get("path", "")))
+        elif route == "/api/eval/rows":
+            self._send_json(eval_rows.query(REPO_ROOT, q.get("path", ""), q))
+        elif route == "/api/eval/row":
+            self._send_json(eval_rows.row(REPO_ROOT, q.get("path", ""), int(q.get("position") or 0)))
+        elif route == "/api/eval/export":
+            name, text = eval_rows.export_csv(REPO_ROOT, q.get("path", ""), q)
+            self._send_csv(name, text)
         else:
             self._send_json({"error": "not found"}, HTTPStatus.NOT_FOUND)
 

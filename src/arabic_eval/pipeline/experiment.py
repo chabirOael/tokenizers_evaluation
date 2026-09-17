@@ -353,7 +353,7 @@ def run_experiment(config: ExperimentConfig) -> Dict[str, Any]:
         )
         intrinsic_unk_csv: Optional[str] = None
         if config.evaluation.intrinsic_unk_report:
-            intrinsic_unk_csv = str(output_dir / "intrinsic_unks.csv")
+            intrinsic_unk_csv = str(output_dir / "intrinsic_unks.parquet")
         results["intrinsic"] = evaluator.run_intrinsic(
             num_samples=config.evaluation.num_eval_samples,
             morphological_metrics=config.evaluation.morphological_metrics,
@@ -413,6 +413,10 @@ def run_experiment(config: ExperimentConfig) -> Dict[str, Any]:
                 udir = output_dir / "unk_reports"
                 ensure_dir(udir)
                 eval_kwargs["unk_report_dir"] = udir
+            if config.evaluation.eval_row_dump and "row_dump_dir" in eval_params:
+                rdir = output_dir / "eval_rows"
+                ensure_dir(rdir)
+                eval_kwargs["row_dump_dir"] = rdir
 
             # Tokenizer warmup (avoids cold-start charging the timer)
             try:

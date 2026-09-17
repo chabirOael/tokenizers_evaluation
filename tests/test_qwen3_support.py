@@ -423,18 +423,22 @@ def test_loglikelihood_without_bos(tiny_qwen3_path):
 # 8. No-UNK path
 # --------------------------------------------------------------------------
 
-def test_no_unk_key_yields_zero_unk_rate_and_header_only_csv(tmp_path):
+def test_no_unk_key_yields_zero_unk_rate_and_empty_report(tmp_path):
+    import pyarrow.parquet as pq
+
     tok = _std_tok()
     assert "unk_token" not in tok.special_tokens
-    csv_path = tmp_path / "intrinsic_unks.csv"
+    report_path = tmp_path / "intrinsic_unks.parquet"
     m = compute_intrinsic_metrics(tok, ARABIC_TEXTS, morphological_metrics=False,
-                                  unk_report_path=csv_path)
+                                  unk_report_path=report_path)
     assert m["unk_rate"] == 0.0
     assert m["vocab_coverage"] == 1.0
-    with open(csv_path, encoding="utf-8-sig") as f:
-        rows = list(csv.reader(f))
-    assert rows[0] == list(INTRINSIC_UNK_FIELDS)
-    assert len(rows) == 1, "header-only CSV expected"
+    # Qwen has byte fallback and therefore no UNK id at all: the report is a
+    # readable, empty file carrying the full schema, so every (tokenizer, task)
+    # pair in a sweep still produces a comparable artifact.
+    table = pq.read_table(report_path)
+    assert list(table.schema.names) == list(INTRINSIC_UNK_FIELDS)
+    assert table.num_rows == 0
     assert scan_text(tok, ARABIC_TEXTS[0]) == []
 
 

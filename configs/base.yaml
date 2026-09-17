@@ -173,6 +173,10 @@ evaluation:
   generation_temperature: 1.0
   generation_do_sample: false
   failure_reports: false
+  # Every scored eval row -> <output_dir>/eval_rows/<task>.parquet
+  # (exact prompt, continuations, per-choice scores, truncation flags).
+  # ~18 MB per sweep cell; read by the console's Eval-rows tab.
+  eval_row_dump: true
   score_normalization: "char+pmi"
 
 tracking:

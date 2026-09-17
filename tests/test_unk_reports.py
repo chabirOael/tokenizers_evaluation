@@ -5,7 +5,7 @@ Covers (this file grows across the feature's implementation steps):
      defaults, independence, YAML override.
   2. The shared UNK-attribution helper (``scan_text`` / aggregate /
      ``records_to_rows``).
-  3. ``compute_intrinsic_metrics(unk_report_path=...)`` CSV — populated
+  3. ``compute_intrinsic_metrics(unk_report_path=...)`` Parquet — populated
      case, header-only case (no UNK id, no UNK seen), and a regression
      guard that the scalar ``unk_rate`` / ``vocab_coverage`` are byte-
      identical with vs. without the path.
@@ -33,6 +33,14 @@ from arabic_eval.evaluation.unk_reports import (
 )
 from arabic_eval.tokenizers.base import BaseTokenizer, TokenizerOutput
 from arabic_eval.utils.io import write_failure_csv
+
+
+def _read_report(path: Path):
+    """Read a Parquet report back as (column names, list of row dicts)."""
+    import pyarrow.parquet as pq
+
+    table = pq.read_table(path)
+    return list(table.schema.names), table.to_pylist()
 
 
 # ===========================================================================
@@ -305,7 +313,9 @@ class TestRecordsToRows:
 
 
 # ===========================================================================
-# §2d. End-to-end: scan → aggregate → rows → write_failure_csv
+# §2d. End-to-end: scan → aggregate → rows → CSV export writer
+# (``write_failure_csv`` survives as the export path; the pipeline itself
+#  writes Parquet — covered in §3 and in the evaluate() wiring below.)
 # ===========================================================================
 
 class TestUnkCsvRoundTrip:
@@ -401,20 +411,19 @@ class TestIntrinsicUnkReport:
         )
         assert list(tmp_path.iterdir()) == []
 
-    def test_populated_csv(self, tmp_path: Path):
+    def test_populated_report(self, tmp_path: Path):
         tok = self._tokenizer_with_known_unk()
         texts = [
             "كتاب rare1",
             "rare1 مدرسة rare2",
             "كتاب",
         ]
-        p = tmp_path / "intrinsic_unks.csv"
+        p = tmp_path / "intrinsic_unks.parquet"
         compute_intrinsic_metrics(
             tok, texts, morphological_metrics=False, unk_report_path=p,
         )
         assert p.exists()
-        with open(p, encoding="utf-8-sig") as f:
-            rows = list(csv.DictReader(f))
+        _, rows = _read_report(p)
         words = {r["word"] for r in rows}
         # In-vocab words are NOT in the report; rare1/rare2 ARE.
         assert words == {"rare1", "rare2"}
@@ -422,9 +431,9 @@ class TestIntrinsicUnkReport:
         # rare1 produces UNK in two texts → unk_token_count = 2.
         assert int(rare1["unk_token_count"]) == 2
 
-    def test_no_unk_id_writes_header_only(self, tmp_path: Path):
+    def test_no_unk_id_writes_schema_only(self, tmp_path: Path):
         tok = _UnkFakeTokenizer({"كتاب": [10]}, has_unk=False)
-        p = tmp_path / "intrinsic_unks.csv"
+        p = tmp_path / "intrinsic_unks.parquet"
         compute_intrinsic_metrics(
             tok,
             ["كتاب rare1 rare2"],
@@ -432,26 +441,25 @@ class TestIntrinsicUnkReport:
             unk_report_path=p,
         )
         assert p.exists()
-        with open(p, encoding="utf-8-sig") as f:
-            header = next(csv.reader(f))
-            rest = list(csv.reader(f))
-        assert header == list(INTRINSIC_UNK_FIELDS)
-        assert rest == []
+        # A tokenizer with no UNK id still leaves a readable, empty file
+        # carrying the full schema — the Parquet equivalent of the
+        # header-only CSV, so every (tokenizer, task) pair is comparable.
+        names, rows = _read_report(p)
+        assert names == list(INTRINSIC_UNK_FIELDS)
+        assert rows == []
 
-    def test_zero_unk_seen_writes_header_only(self, tmp_path: Path):
+    def test_zero_unk_seen_writes_schema_only(self, tmp_path: Path):
         tok = _UnkFakeTokenizer({"كتاب": [10], "مدرسة": [11]})
-        p = tmp_path / "intrinsic_unks.csv"
+        p = tmp_path / "intrinsic_unks.parquet"
         compute_intrinsic_metrics(
             tok,
             ["كتاب مدرسة", "مدرسة كتاب"],
             morphological_metrics=False,
             unk_report_path=p,
         )
-        with open(p, encoding="utf-8-sig") as f:
-            header = next(csv.reader(f))
-            rest = list(csv.reader(f))
-        assert header == list(INTRINSIC_UNK_FIELDS)
-        assert rest == []
+        names, rows = _read_report(p)
+        assert names == list(INTRINSIC_UNK_FIELDS)
+        assert rows == []
 
     def test_scalars_unchanged_when_report_enabled(self, tmp_path: Path):
         """Regression guard: turning on the report must not change
@@ -462,7 +470,7 @@ class TestIntrinsicUnkReport:
         m_off = compute_intrinsic_metrics(
             tok, texts, morphological_metrics=False,
         )
-        p = tmp_path / "intrinsic_unks.csv"
+        p = tmp_path / "intrinsic_unks.parquet"
         m_on = compute_intrinsic_metrics(
             tok, texts, morphological_metrics=False, unk_report_path=p,
         )
@@ -616,7 +624,7 @@ class TestEvaluateUnkReportWiring:
         # got created in cwd or anywhere we can detect.
         assert not (tmp_path / "unk_reports").exists()
 
-    def test_unk_report_dir_writes_populated_csv(self, mock_ll, tmp_path: Path):
+    def test_unk_report_dir_writes_populated_report(self, mock_ll, tmp_path: Path):
         mock_ll.return_value = -1.0
         tok = _UnkFakeTokenizer({"ok": [10]})
         task = self._task([
@@ -627,14 +635,13 @@ class TestEvaluateUnkReportWiring:
             self._fake_model(), tok, max_samples=1,
             unk_report_dir=tmp_path,
         )
-        csv_path = tmp_path / "stub_unk_unks.csv"
-        assert csv_path.exists()
-        with open(csv_path, encoding="utf-8-sig") as f:
-            rows = list(csv.DictReader(f))
+        out_path = tmp_path / "stub_unk_unks.parquet"
+        assert out_path.exists()
+        _, rows = _read_report(out_path)
         words = {r["word"] for r in rows}
         assert words == {"rare1", "rare2"}
 
-    def test_unk_report_dir_writes_header_only_when_no_unk_id(
+    def test_unk_report_dir_writes_schema_only_when_no_unk_id(
         self, mock_ll, tmp_path: Path
     ):
         mock_ll.return_value = -1.0
@@ -647,13 +654,11 @@ class TestEvaluateUnkReportWiring:
             self._fake_model(), tok, max_samples=1,
             unk_report_dir=tmp_path,
         )
-        csv_path = tmp_path / "stub_unk_unks.csv"
-        assert csv_path.exists()
-        with open(csv_path, encoding="utf-8-sig") as f:
-            header = next(csv.reader(f))
-            rest = list(csv.reader(f))
-        assert header == list(DOWNSTREAM_UNK_FIELDS)
-        assert rest == []
+        out_path = tmp_path / "stub_unk_unks.parquet"
+        assert out_path.exists()
+        names, rows = _read_report(out_path)
+        assert names == list(DOWNSTREAM_UNK_FIELDS)
+        assert rows == []
 
 
 

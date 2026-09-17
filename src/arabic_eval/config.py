@@ -546,14 +546,23 @@ class EvaluationConfig(BaseModel):
     generation_do_sample: bool = False
     failure_reports: bool = False  # If true, write per-task CSVs of failing eval cases
     # If true, dump the per-word list underlying ``unk_rate`` to
-    # ``<output_dir>/intrinsic_unks.csv`` (one row per unique source word
+    # ``<output_dir>/intrinsic_unks.parquet`` (one row per unique source word
     # that produced an UNK token in the intrinsic eval split). Tokenizers
     # without a usable ``unk_token`` id produce a header-only CSV.
     intrinsic_unk_report: bool = False
     # If true, scan prompts + every continuation during LightEval MCQ
-    # evaluation and write per-task ``<output_dir>/unk_reports/<task>_unks.csv``
-    # listing UNK occurrences. Independent from ``intrinsic_unk_report``.
+    # evaluation and write per-task
+    # ``<output_dir>/unk_reports/<task>_unks.parquet`` listing UNK
+    # occurrences. Independent from ``intrinsic_unk_report``.
     downstream_unk_report: bool = False
+    # If true, write every scored eval row to
+    # ``<output_dir>/eval_rows/<task>.parquet``: the exact prompt the model
+    # received, the continuations, every per-choice score under every active
+    # normalization, and the truncation diagnostics. This is what the
+    # experiment console's Eval-rows tab reads. A strict superset of
+    # ``failure_reports`` — when both are on, the failure report is skipped.
+    # Roughly 18 MB per sweep cell across the four benchmarks.
+    eval_row_dump: bool = False
     # LightEval MCQ scoring normalization. ``"char"`` is the per-character-
     # length normalization; ``"pmi"`` subtracts the unconditioned per-
     # continuation log-likelihood (LightEval's ``LogProbPMINorm``) which
