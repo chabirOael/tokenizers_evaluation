@@ -34,11 +34,12 @@ from arabic_eval.tokenizers.araroopat import (  # noqa: E402
     PFX_PREP,
     PFX_ROOT,
     TOK_LIT_BEGIN,
+    TOK_PROP_BEGIN,
     AraRooPatTokenizer,
     _extract_alpha_chunks,
 )
 
-PATHS = ("ROOT+PAT", "PREP", "FUNC", "CLITIC", "LIT")
+PATHS = ("ROOT+PAT", "PREP", "FUNC", "CLITIC", "PROP", "LIT")
 
 
 def _eval_texts(n: int, seed: int) -> List[str]:
@@ -62,6 +63,8 @@ def _chunk_path(tok: AraRooPatTokenizer, chunk: str) -> str:
         return "PREP"
     if any(t.startswith(PFX_ROOT) for t in names):
         return "ROOT+PAT"
+    if TOK_PROP_BEGIN in names:
+        return "PROP"
     if TOK_LIT_BEGIN in names:
         return "LIT"
     if names and all(t.startswith((PFX_CLITICP, PFX_CLITICE)) for t in names):
@@ -88,7 +91,8 @@ def measure(tok_dir: Path, texts: List[str]) -> Dict[str, float]:
     res = {p: 100.0 * counts[p] / total for p in PATHS}
     res.update({"chunks": total, "vocab_size": tok.vocab_size,
                 "fertility": n_tokens / max(n_words, 1), "compression": n_chars / max(n_tokens, 1),
-                "func_inventory": len(tok.func_words), "prep_inventory": len(tok.prepositions)})
+                "func_inventory": len(tok.func_words), "prep_inventory": len(tok.prepositions),
+                "proper_nouns": getattr(tok, "proper_nouns", "-")})
     return res
 
 
@@ -101,14 +105,15 @@ def main() -> None:
 
     texts = _eval_texts(args.questions, args.seed)
     print(f"{len(texts)} Arabic-Exam questions (seed {args.seed}), question + choices text\n")
-    header = f"{'tokenizer':34s} {'vocab':>6s} {'ROOT+PAT':>9s} {'PREP':>6s} {'FUNC':>6s} {'CLITIC':>7s} {'LIT':>6s} {'fert':>6s} {'compr':>6s}  inventories"
+    header = (f"{'tokenizer':34s} {'vocab':>6s} {'ROOT+PAT':>9s} {'PREP':>6s} {'FUNC':>6s} {'CLITIC':>7s} "
+              f"{'PROP':>6s} {'LIT':>6s} {'fert':>6s} {'compr':>6s}  inventories")
     print(header)
     print("-" * len(header))
     for d in args.tokenizers:
         r = measure(Path(d), texts)
         print(f"{Path(d).name:34s} {r['vocab_size']:>6d} {r['ROOT+PAT']:>8.1f}% {r['PREP']:>5.1f}% {r['FUNC']:>5.1f}% "
-              f"{r['CLITIC']:>6.1f}% {r['LIT']:>5.1f}% {r['fertility']:>6.2f} {r['compression']:>6.2f}  "
-              f"prep={r['prep_inventory']} func={r['func_inventory']}")
+              f"{r['CLITIC']:>6.1f}% {r['PROP']:>5.1f}% {r['LIT']:>5.1f}% {r['fertility']:>6.2f} {r['compression']:>6.2f}  "
+              f"prep={r['prep_inventory']} func={r['func_inventory']} proper_nouns={r['proper_nouns']}")
 
 
 if __name__ == "__main__":

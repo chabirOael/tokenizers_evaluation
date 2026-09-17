@@ -172,7 +172,7 @@ def test_word_index_paths_records_and_query():
     counts = Counter({"الكتاب": 50, "كتب": 5, "قال": 40, "مدرسته": 3, "في": 900, "وعليه": 7, "وهم": 6, "له": 4, "أتكتب": 2, "مايكروسوفت": 20, "جوجل": 1})
     W = C.WordCategoryIndex(_entries(), counts)
     # exclusive pre-pass paths that sum to the number of unique chunks; a peeled particle would count as peeled
-    assert W.path_totals() == {"ROOT+PAT": 4, "PREP": 2, "FUNC": 1, "CLITIC": 1, "peeled": 1, "LIT": 2} and W.analyzed_count == 9
+    assert W.path_totals() == {"ROOT+PAT": 4, "PREP": 2, "FUNC": 1, "CLITIC": 1, "PROP": 0, "peeled": 1, "LIT": 2} and W.analyzed_count == 9
     assert [r[W.W] for r in W.rows[:3]] == ["في", "الكتاب", "قال"]          # sorted by occurrences
     rec = W.record("مدرسته")
     assert rec == {**rec, "path": "root_pat", "path_label": "ROOT+PAT", "analyzed": True, "root": "درس", "pattern": "مَ1ْ2َ3َ",
@@ -198,10 +198,10 @@ def test_word_index_paths_records_and_query():
              "[PREP_في]": 13, "[PREP_على]": 14, "[FUNC_هم]": 15, "[CLITICP_ل]": 16}
     root_freq, pat_freq = Counter({"كتب": 3, "درس": 1, "ق#ل": 1}), Counter({"1ِ2ا3": 1, "1َ2َ3َ": 1, "1ا3َ": 1, "مَ1ْ2َ3َ": 1, "تَ1ْ2ُ3": 1})
     W.attach_vocab(_fake_tok(vocab), root_freq, pat_freq)
-    assert W.counts == {"root_pat": 3, "root_pat_peeled": 1, "prep": 2, "func": 1, "clitic": 1, "lit_no_analysis": 2, "lit_root_cut": 0, "lit_pattern_cut": 1, "lit_clitic_missing": 0}
+    assert W.counts == {"root_pat": 3, "root_pat_peeled": 1, "prep": 2, "func": 1, "clitic": 1, "prop": 0, "lit_no_analysis": 2, "lit_root_cut": 0, "lit_pattern_cut": 1, "lit_clitic_missing": 0}
     assert W.cached("قال")["category"] == "lit_pattern_cut" and W.cached("قال")["path"] == "root_pat"
     s = W.summary()
-    assert [p["unique"] for p in s["paths"]] == [4, 2, 1, 1, 1, 2] and s["analyzed"] == 9 and s["path_aliases"]["analyzed"] == ["root_pat", "prep", "func", "clitic", "peeled"]
+    assert [p["unique"] for p in s["paths"]] == [4, 2, 1, 1, 0, 1, 2] and s["analyzed"] == 9 and s["path_aliases"]["analyzed"] == ["root_pat", "prep", "func", "clitic", "prop", "peeled"]
     assert W.query(category="lit_pattern_cut", path="analyzed")["total"] == 1 and W.query(category="lit_pattern_cut", path="lit")["total"] == 0
     assert "never produced" in W.budget_reason("pattern", "1ُ2ُو3", vocab)["reason"]
 
@@ -362,8 +362,10 @@ def test_corpus_job_train_cache_search_save_load():
             is_lit, is_prep, is_rp = "[LIT_BEGIN]" in toks, any(t.startswith("[PREP_") for t in toks), any(t.startswith("[ROOT_") for t in toks)
             is_func = any(t.startswith("[FUNC_") for t in toks)
             is_clitic = bool(toks) and all(t.startswith(("[CLITICP_", "[CLITICE_")) for t in toks if t not in ("<s>", "</s>"))
+            is_prop = "[PROP_BEGIN]" in toks
             assert (cat.startswith("lit") and is_lit and not is_rp) or (cat == "prep" and is_prep) or (cat == "func" and is_func) \
-                or (cat == "clitic" and is_clitic) or (cat.startswith("root_pat") and is_rp), (w, cat, toks)
+                or (cat == "clitic" and is_clitic) or (cat == "prop" and is_prop and not is_rp) \
+                or (cat.startswith("root_pat") and is_rp), (w, cat, toks)
         assert W.query("prep")["rows"] and all(r["category"] == "prep" for r in W.query("prep")["rows"])
         q = W.query(q="كتاب", limit=2); assert q["total"] >= 3 and len(q["rows"]) == 2 and W.query(q="كتاب", limit=2, offset=2)["rows"]
         with pytest.raises(ValueError):
@@ -371,9 +373,13 @@ def test_corpus_job_train_cache_search_save_load():
         enc = C.encode_text(j2, "قال المعلم: الكتاب جديد وسيدرسه الطلاب في 2024! مايكروسوفت")
         assert enc["ipc_calls"] == 0 and enc["match_ignoring_spacing"] is True
         bycat = {c["chunk"]: c["category"] for c in enc["chunks"]}
-        assert bycat["في"] == "prep" and bycat["مايكروسوفت"] == "lit_no_analysis" and bycat["قال"] == "root_pat"
+        # مايكروسوفت is a database noun_prop (NTWS): PROP since 2026-09-16; جوجل is unknown to CAMeL: LIT.
+        assert bycat["في"] == "prep" and bycat["مايكروسوفت"] == "prop" and bycat["قال"] == "root_pat"
         assert all(c["corpus"] for c in enc["chunks"] if c["chunk"] != "الطلاب" or True)  # every chunk of a corpus sentence has a corpus record
         tr_ = C.trace_word_process(j2, "مايكروسوفت")
+        assert tr_["category"] == "prop" and tr_["peel"] is None and tr_["stream"][1]["token"] == "[PROP_BEGIN]" and tr_["agrees_with_corpus"] is True
+        assert tr_["prepass"]["path"] == "prop" and tr_["agrees_with_prepass"] is True and tr_["vocab_check"]["prop_path"] is True
+        tr_ = C.trace_word_process(j2, "جوجل")
         assert tr_["category"] == "lit_no_analysis" and tr_["peel"] is not None and tr_["stream"][1]["token"] == "[LIT_BEGIN]" and tr_["agrees_with_corpus"] is True
         assert tr_["prepass"]["path"] == "lit" and tr_["agrees_with_prepass"] is True
         tr_ = C.trace_word_process(j2, "بيتنا")   # not in the corpus: root never a candidate

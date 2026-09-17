@@ -62,7 +62,7 @@ NEIGHBOUR_POS = frozenset({
 })
 
 CSV_FIELDS = (
-    "surface", "occurrences", "top_pos", "lemma", "lemma_bare", "proclitics", "enclitics",
+    "surface", "occurrences", "top_pos", "backoff", "lemma", "lemma_bare", "proclitics", "enclitics",
     "bucket", "in_requested_set", "alt_pos", "alt_lemmas", "current_path", "current_tokens",
 )
 
@@ -182,7 +182,11 @@ def main() -> None:
             cur = current.get(_alef_norm(w)) or current.get(w) or ("(not in cache)", "")
             bucket = "requested" if pos in requested else "neighbour"
             rows.append({
-                "surface": w, "occurrences": counts[w], "top_pos": pos, "lemma": lemma,
+                "surface": w, "occurrences": counts[w], "top_pos": pos,
+                # NOAN_PROP backoff: CAMeL's guess for an out-of-vocabulary word
+                # (root "O", pattern "backoff") — noun_prop in name only.
+                "backoff": (top.get("pattern") or "") == "backoff",
+                "lemma": lemma,
                 "lemma_bare": lemma_bare, "proclitics": "+".join(prc), "enclitics": enc or "",
                 "bucket": bucket, "in_requested_set": pos in requested,
                 "alt_pos": "|".join(p for p, _ in alt), "alt_lemmas": "|".join(l for _, l in alt),

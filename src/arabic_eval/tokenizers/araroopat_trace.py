@@ -49,6 +49,8 @@ from arabic_eval.tokenizers.araroopat import (
     SPECIAL_TOKENS_ORDERED,
     TOK_LIT_BEGIN,
     TOK_LIT_END,
+    TOK_PROP_BEGIN,
+    TOK_PROP_END,
     AraRooPatTokenizer,
     _classify_char,
     _extract_alpha_chunks,
@@ -62,6 +64,9 @@ from arabic_eval.tokenizers.araroopat_backend import (
     _dict_to_analysis,
     _clitic_only_analysis,
     _particle_analysis,
+    _proper_analysis,
+    is_db_proper,
+    PROPER_POS,
     canonical_particle,
     strip_fem_from_pattern,
     _is_arabic_root,
@@ -190,6 +195,8 @@ def _split_key(t: str) -> str:
         return "special"
     if t in (TOK_LIT_BEGIN, TOK_LIT_END):
         return "lit"
+    if t in (TOK_PROP_BEGIN, TOK_PROP_END):
+        return "prop"
     for pfx, fam in ((PFX_CLITICP, "cliticp"), (PFX_CLITICE, "clitice"),
                      (PFX_PREP, "prep"), (PFX_FUNC, "func"),
                      (PFX_CHAR, "char"), (PFX_DIGIT, "digit"),
@@ -326,13 +333,43 @@ def _trace_dict_to_analysis(d: Dict[str, str], particles: frozenset,
         )
         return t
 
+    # Proper nouns: a *database* noun_prop reading is always accepted — with
+    # its root when the gates below pass, as a rootless [PROP_*] word when
+    # they fail. CAMeL's NOAN_PROP backoff stamps noun_prop on every unknown
+    # word (root "O", pattern "backoff"); those are not names to us.
+    proper = is_db_proper(d)
+    if (d.get("pos") or "") == PROPER_POS:
+        gate("proper noun: database noun_prop (not a backoff guess)", proper, {
+            "pos": d.get("pos", ""), "root": d.get("root") or "", "pattern": d.get("pattern") or "",
+            "backoff": not proper,
+            "note": ("a failing root gate below does not reject the word: it becomes a rootless "
+                     "proper noun ([PROP_BEGIN] chars [PROP_END])" if proper else
+                     "backoff guess for an out-of-vocabulary word — treated like any unknown word"),
+        })
+
+    def reject(reason: str) -> Dict[str, Any]:
+        if proper:
+            pa = _proper_analysis(d, word)
+            t["proper_fallback"] = reason
+            t["analysis"] = {
+                "root": "", "pattern": "", "pattern_raw": d.get("pattern") or "", "stem": "",
+                "surface": pa.surface, "lemma": d.get("lex", ""), "pos": PROPER_POS,
+                "prc3": pa.prc3, "prc2": pa.prc2, "prc1": pa.prc1, "prc0": pa.prc0, "enc0": pa.enc0,
+                "particle": None, "fem": pa.fem, "proper": True,
+            }
+            t["matches_real"] = real is not None and all(
+                getattr(real, k) == v for k, v in t["analysis"].items()
+            )
+        else:
+            t["reject_reason"] = reason
+            t["matches_real"] = real is None
+        return t
+
     root_raw = d.get("root") or ""
     pattern_raw = d.get("pattern") or ""
     if not gate("has root & pattern", bool(root_raw and pattern_raw),
                 {"root": root_raw, "pattern": pattern_raw}):
-        t["reject_reason"] = "missing root or pattern"
-        t["matches_real"] = real is None
-        return t
+        return reject("missing root or pattern")
 
     radicals = [r for r in root_raw.replace("_", ".").split(".") if r]
     unseparated = False
@@ -346,21 +383,15 @@ def _trace_dict_to_analysis(d: Dict[str, str], particles: frozenset,
         "unseparated_fallback": unseparated,
     })
     if not gate("≥ 3 radicals", len(radicals) >= 3, {"count": len(radicals)}):
-        t["reject_reason"] = f"only {len(radicals)} radical(s)"
-        t["matches_real"] = real is None
-        return t
+        return reject(f"only {len(radicals)} radical(s)")
 
     is_ntws = root in ("NTWS", "FOREIGN") or "NTWS" in pattern_raw or "FOREIGN" in pattern_raw
     if not gate("not NTWS / FOREIGN", not is_ntws, {"root": root, "pattern": pattern_raw}):
-        t["reject_reason"] = "loanword / non-Arabic source (NTWS or FOREIGN)"
-        t["matches_real"] = real is None
-        return t
+        return reject("loanword / non-Arabic source (NTWS or FOREIGN)")
 
     if not gate("Arabic-letter root guard", _is_arabic_root(root),
                 {"root": root, "codepoints": [_cp(c) for c in root]}):
-        t["reject_reason"] = "root contains non-Arabic characters"
-        t["matches_real"] = real is None
-        return t
+        return reject("root contains non-Arabic characters")
 
     clitics: Dict[str, Dict[str, Any]] = {}
     for slot in ("prc3", "prc2", "prc1", "prc0", "enc0"):
@@ -405,7 +436,7 @@ def _trace_dict_to_analysis(d: Dict[str, str], particles: frozenset,
         "root": root, "pattern": pat_bare, "pattern_raw": pattern_raw, "stem": stem,
         "surface": d.get("diac") or "", "lemma": d.get("lex", ""), "pos": d.get("pos", ""),
         "prc3": prc[0], "prc2": prc[1], "prc1": prc[2], "prc0": prc[3], "enc0": enc0,
-        "particle": None, "fem": fem,
+        "particle": None, "fem": fem, "proper": proper,
     }
     t["matches_real"] = real is not None and all(
         getattr(real, k) == v for k, v in t["analysis"].items()
@@ -444,7 +475,9 @@ def trace_validate_words(
             "analyzed": real is not None,
             "path": (("FUNC" if real.particle_kind == "func" else "PREP") if real is not None and real.particle else
                      "CLITIC" if real is not None and real.clitic_only else
+                     "PROP" if real is not None and real.proper and not real.root else
                      "ROOT+PAT" if real is not None else "LIT (character fallback)"),
+            "proper": real is not None and real.proper,
             "surface_fallback": real is not None and real.particle is not None and not any(
                 c.get("accepted") for c in traced),
             "matches_real": all(c.get("matches_real", True) for c in traced),
@@ -580,9 +613,16 @@ def trace_probe_roundtrip(
             chunk_paths.append({"chunk": w, "path": "CLITIC" if not missing else "LIT",
                                 "why": "" if not missing else f"{missing[0]} not in vocab"})
             continue
+        if tok._routes_to_prop(a.proper, a.root):
+            chunk_paths.append({"chunk": w, "path": "PROP",
+                                "why": "proper noun" + ("" if a.root else " without a root (NTWS)")})
+            continue
         rt, pt = f"{PFX_ROOT}{a.root}{SFX}", f"{PFX_PAT}{a.pattern}{SFX}"
         if rt in vocab and pt in vocab:
             chunk_paths.append({"chunk": w, "path": "ROOT+PAT", "why": ""})
+        elif a.proper:
+            chunk_paths.append({"chunk": w, "path": "PROP",
+                                "why": f"{rt if rt not in vocab else pt} cut by the budget — a name keeps the [PROP_*] path"})
         else:
             chunk_paths.append({"chunk": w, "path": "LIT",
                                 "why": f"{rt if rt not in vocab else pt} cut by the budget"})
@@ -952,6 +992,7 @@ def trace_training_with_tokenizer(
             "layout": [
                 {"family": "special", "source": "SPECIAL_TOKENS_ORDERED", "items": SPECIAL_TOKENS_ORDERED},
                 {"family": "lit", "source": "TOK_LIT_BEGIN / TOK_LIT_END", "items": [TOK_LIT_BEGIN, TOK_LIT_END]},
+                {"family": "prop", "source": "TOK_PROP_BEGIN / TOK_PROP_END", "items": [TOK_PROP_BEGIN, TOK_PROP_END]},
                 {"family": "cliticp", "source": "proclitic_freq sorted by (-freq, surface)", "items": clitic_order(proclitic_freq)},
                 {"family": "clitice", "source": "enclitic_freq sorted by (-freq, surface)", "items": clitic_order(enclitic_freq)},
                 {"family": "prep", "source": "tok.prepositions (fixed order, corpus-independent)", "items": list(tok.prepositions)},
@@ -968,7 +1009,7 @@ def trace_training_with_tokenizer(
                       for t_, i in sorted(vocab.items(), key=lambda kv: kv[1])],
             "special_token_map": tok._special_token_map,
         }, t0, notes=[
-            "Fixed slots (specials, LIT markers, PREP, FUNC, CHAR, DIGIT, PUNCT) are always present so the "
+            "Fixed slots (specials, LIT and PROP markers, PREP, FUNC, CHAR, DIGIT, PUNCT) are always present so the "
             "character fallback can encode any Arabic string; only clitics/roots/patterns depend on the corpus.",
             "The budget loop uses `break`, not `continue`: because items are sorted by frequency, the "
             "first item below min_freq ends the loop for everything after it too.",
@@ -1203,17 +1244,20 @@ def trace_decode(tok: AraRooPatTokenizer, items: List[Any]) -> Dict[str, Any]:
             else:
                 note = "'?' emitted for <unk>"
             counters["unk"] += 1; flushed += 1
-        elif t == TOK_LIT_BEGIN:
+        elif t in (TOK_LIT_BEGIN, TOK_PROP_BEGIN):
+            what = "literal" if t == TOK_LIT_BEGIN else "proper noun"
             if pending:
-                note = "orphan root dumped as a bare word, then literal opened"; counters["orphan_root"] += 1; pending = None; flushed += 1
+                note = f"orphan root dumped as a bare word, then {what} opened"; counters["orphan_root"] += 1; pending = None; flushed += 1
             else:
-                note = "literal opened — following [CHAR_*] accumulate"
+                note = f"{what} opened — following [CHAR_*] accumulate"
             in_lit = True
-        elif t == TOK_LIT_END:
-            note = "literal closed → buffered chars flushed as one word (buffered proclitics prepended)" if in_lit else "[LIT_END] without an open literal — flushes an empty literal"
+        elif t in (TOK_LIT_END, TOK_PROP_END):
+            note = (f"{'literal' if t == TOK_LIT_END else 'proper noun'} closed → buffered chars flushed as one word "
+                    "(buffered proclitics prepended; either END closes either BEGIN)") if in_lit else \
+                f"{t} without an open literal — flushes an empty literal"
             in_lit = False; flushed += 1
         elif in_lit:
-            note = "char appended to the open literal" if fam == "char" else f"{fam} token inside an open literal — ignored until [LIT_END]"
+            note = "char appended to the open literal" if fam == "char" else f"{fam} token inside an open literal — ignored until the closing marker"
             if fam != "char":
                 counters["ignored_in_lit"] += 1
         elif fam == "cliticp":

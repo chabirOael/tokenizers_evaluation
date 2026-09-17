@@ -63,6 +63,8 @@ from arabic_eval.tokenizers.araroopat import (
     SPECIAL_TOKENS_ORDERED,
     TOK_LIT_BEGIN,
     TOK_LIT_END,
+    TOK_PROP_BEGIN,
+    TOK_PROP_END,
     AraRooPatTokenizer,
     _classify_char,
     _extract_alpha_chunks,
@@ -420,9 +422,10 @@ def list_sources(tokenizers_dir: Path = TOKENIZERS_DIR) -> Dict[str, Any]:
                                                 if (d / "reconstruction.pkl").exists() else None,
                         "has_prepositions": bool(cfg.get("prepositions")),
                         "has_func_words": bool(cfg.get("func_words")),
+                        "has_prop_markers": TOK_PROP_BEGIN in vocab,
                         "config": {k: cfg.get(k) for k in (
                             "max_roots", "max_patterns", "min_root_freq", "min_pattern_freq",
-                            "use_diacritized_surface", "clitic_peeler", "peel_bare_alef")},
+                            "use_diacritized_surface", "clitic_peeler", "peel_bare_alef", "proper_nouns")},
                     })
             pkl = d / "corpus_analysis.pkl"
             if pkl.exists():
@@ -539,6 +542,7 @@ def _entry_summary(e: CorpusEntry) -> Dict[str, Any]:
             "proclitics": list(e.proclitics or ()), "enclitics": list(e.enclitics or ()),
             "particle": e.particle, "particle_kind": getattr(e, "particle_kind", "prep"),
             "clitic_only": bool(getattr(e, "clitic_only", False)),
+            "proper": bool(getattr(e, "proper", False)),
             "peeled": bool(getattr(e, "peeled", False))}
 
 
@@ -547,7 +551,8 @@ def _analysis_summary(a: Optional[B.Analysis]) -> Dict[str, Any]:
         return {"analyzed": False}
     return {"analyzed": True, "root": a.root or None, "pattern": a.pattern or None,
             "proclitics": list(a.proclitics), "enclitics": list(a.enclitics),
-            "particle": a.particle, "particle_kind": a.particle_kind, "clitic_only": bool(a.clitic_only)}
+            "particle": a.particle, "particle_kind": a.particle_kind, "clitic_only": bool(a.clitic_only),
+            "proper": bool(a.proper)}
 
 
 def _agrees(entry: CorpusEntry, a: Optional[B.Analysis]) -> bool:
@@ -556,7 +561,7 @@ def _agrees(entry: CorpusEntry, a: Optional[B.Analysis]) -> bool:
         return True
     if es["analyzed"] != as_["analyzed"]:
         return False
-    return all(es[k] == as_[k] for k in ("root", "pattern", "proclitics", "enclitics", "particle", "clitic_only")) and \
+    return all(es[k] == as_[k] for k in ("root", "pattern", "proclitics", "enclitics", "particle", "clitic_only", "proper")) and \
         (not es["particle"] or es["particle_kind"] == as_["particle_kind"])
 
 
@@ -681,6 +686,7 @@ class CorpusTraceJob:
             "min_root_freq": tok.min_root_freq, "min_pattern_freq": tok.min_pattern_freq,
             "use_diacritized_surface": tok.use_diacritized_surface,
             "cache_corpus_analysis": tok.cache_corpus_analysis, "add_bos_eos": tok.add_bos_eos,
+            "proper_nouns": tok.proper_nouns,
         }
 
     @staticmethod
@@ -1507,6 +1513,7 @@ class CorpusTraceJob:
             "layout": [
                 {"family": "special", "source": "SPECIAL_TOKENS_ORDERED", "items": SPECIAL_TOKENS_ORDERED},
                 {"family": "lit", "source": "TOK_LIT_BEGIN / TOK_LIT_END", "items": [TOK_LIT_BEGIN, TOK_LIT_END]},
+                {"family": "prop", "source": "TOK_PROP_BEGIN / TOK_PROP_END", "items": [TOK_PROP_BEGIN, TOK_PROP_END]},
                 {"family": "cliticp", "source": "proclitic_freq sorted by (-freq, surface)", "items": clitic_order(proclitic_freq)},
                 {"family": "clitice", "source": "[CLITICE_ة] fixed first, then enclitic_freq sorted by (-freq, surface)",
                  "items": [B.TAA_MARBUTA] + [c for c in clitic_order(enclitic_freq) if c != B.TAA_MARBUTA]},
@@ -1589,6 +1596,7 @@ CATEGORIES: List[Tuple[str, str]] = [
     ("prep", "PREP"),
     ("func", "FUNC"),
     ("clitic", "CLITIC"),
+    ("prop", "PROP"),
     ("lit_no_analysis", "LIT: no analysis"),
     ("lit_root_cut", "LIT: root cut"),
     ("lit_pattern_cut", "LIT: pattern cut"),
@@ -1601,19 +1609,30 @@ _CAT_IDX = {k: i for i, (k, _) in enumerate(CATEGORIES)}
 def categorize(vocab: Dict[str, int], analyzed: bool, particle: Optional[str], root: Optional[str],
                pattern: Optional[str], proclitics: Tuple[str, ...], enclitics: Tuple[str, ...],
                peeled: bool = False, particle_kind: str = "prep",
-               clitic_only: bool = False) -> Tuple[str, str, List[str]]:
+               clitic_only: bool = False, proper: bool = False,
+               proper_mode: str = "unrooted") -> Tuple[str, str, List[str]]:
     """``(category, why, missing_tokens)`` for one alpha chunk — the exact rule of ``_emit_alpha``.
 
     ``enclitics`` is the emission-order tuple (fem ة + pronouns) — what both
     ``CorpusEntry.enclitics`` and ``Analysis.enclitics`` hold; for a particle
     it is the pronoun list (particles have no ة). ``particle_kind`` picks the
     closed group (``prep`` → [PREP_*], ``func`` → [FUNC_*]); ``clitic_only``
-    marks a pronoun-hosted preposition (له) emitted as clitic tokens only.
+    marks a pronoun-hosted preposition (له) emitted as clitic tokens only;
+    ``proper`` a database proper noun, routed to [PROP_*] under
+    ``proper_mode`` (``unrooted``: only when it has no root; ``all``: always)
+    or when its root / pattern was cut — the markers are fixed slots, so a
+    name never reaches LIT.
     """
     if not analyzed:
         return "lit_no_analysis", "no accepted CAMeL analysis (native miss, peeler exhausted or every candidate rejected by a gate)", []
     cl_p = [f"{A.PFX_CLITICP}{c}{SFX}" for c in proclitics if c]
     cl_e = [f"{A.PFX_CLITICE}{c}{SFX}" for c in enclitics if c]
+    prop_markers = TOK_PROP_BEGIN in vocab and TOK_PROP_END in vocab
+    if proper and (proper_mode == "all" or not root):
+        if prop_markers:
+            return "prop", ("proper noun (CAMeL database noun_prop" + ("" if root else ", no root") +
+                            "): its characters between [PROP_BEGIN] / [PROP_END], clitics outside"), []
+        return "lit_no_analysis", "proper noun, but this vocab has no [PROP_*] markers — plain literal", []
     if particle:
         is_func = particle_kind == "func"
         prep_tok = f"{A.PFX_FUNC if is_func else A.PFX_PREP}{particle}{SFX}"
@@ -1634,6 +1653,8 @@ def categorize(vocab: Dict[str, int], analyzed: bool, particle: Optional[str], r
     missing = [t for t in [root_tok, pat_tok] + cl_p + cl_e if t not in vocab]
     if not missing:
         return ("root_pat_peeled" if peeled else "root_pat"), ("analysis rescued by the clitic peeler; " if peeled else "") + "root, pattern and every clitic token are in the vocab", []
+    if proper and prop_markers:
+        return "prop", f"{' '.join(missing)} not in the vocab — a proper noun keeps the [PROP_*] path instead of LIT", missing
     if root_tok in missing:
         return "lit_root_cut", f"{root_tok} is not in the vocab" + (f" (nor {pat_tok})" if pat_tok in missing else "") + " — cut by the budget or below min_root_freq", missing
     if pat_tok in missing:
@@ -1641,27 +1662,34 @@ def categorize(vocab: Dict[str, int], analyzed: bool, particle: Optional[str], r
     return "lit_clitic_missing", f"{' '.join(missing)} not in the vocab — the all-or-nothing rule sends the whole chunk to LIT", missing
 
 
-def categorize_analysis(vocab: Dict[str, int], a: Optional[B.Analysis]) -> Tuple[str, str, List[str]]:
+def categorize_analysis(vocab: Dict[str, int], a: Optional[B.Analysis],
+                        proper_mode: str = "unrooted") -> Tuple[str, str, List[str]]:
     if a is None:
         return categorize(vocab, False, None, None, None, (), ())
     return categorize(vocab, True, a.particle, a.root, a.pattern, a.proclitics, a.enclitics, bool(a.peeled),
-                      a.particle_kind, bool(a.clitic_only))
+                      a.particle_kind, bool(a.clitic_only), bool(a.proper), proper_mode)
 
 
-def categorize_entry(vocab: Dict[str, int], e: CorpusEntry) -> Tuple[str, str, List[str]]:
+def categorize_entry(vocab: Dict[str, int], e: CorpusEntry,
+                     proper_mode: str = "unrooted") -> Tuple[str, str, List[str]]:
     return categorize(vocab, e.analyzed, e.particle, e.root, e.pattern, tuple(e.proclitics or ()),
                       tuple(e.enclitics or ()), bool(getattr(e, "peeled", False)),
-                      getattr(e, "particle_kind", "prep"), bool(getattr(e, "clitic_only", False)))
+                      getattr(e, "particle_kind", "prep"), bool(getattr(e, "clitic_only", False)),
+                      bool(getattr(e, "proper", False)), proper_mode)
 
 
 # Pre-pass paths: what the analyzer produced for a chunk, before any budget.
-# Exclusive (a peeled particle counts as "peeled"), so the five counts sum to
-# the number of unique chunks. Display order.
+# Exclusive (a peeled particle counts as "peeled"), so the counts sum to the
+# number of unique chunks. Display order. ``prop`` is the *rootless* proper
+# noun (NTWS name); a name with a root sits on ``root_pat`` with its
+# ``proper`` flag, whatever the tokenizer's ``proper_nouns`` mode does with
+# it at encode time.
 PATHS: List[Tuple[str, str]] = [
     ("root_pat", "ROOT+PAT"),
     ("prep", "PREP"),
     ("func", "FUNC"),
     ("clitic", "CLITIC"),
+    ("prop", "PROP"),
     ("peeled", "peeled"),
     ("lit", "LIT"),
 ]
@@ -1669,15 +1697,15 @@ PATH_LABEL = dict(PATHS)
 _PATH_IDX = {k: i for i, (k, _) in enumerate(PATHS)}
 # Aliases the cards use: the validate card's "analyzed" / "rejected" counters.
 PATH_ALIASES: Dict[str, Tuple[str, ...]] = {
-    "analyzed": ("root_pat", "prep", "func", "clitic", "peeled"),
+    "analyzed": ("root_pat", "prep", "func", "clitic", "prop", "peeled"),
     "rejected": ("lit",),
 }
 _PATH_TOTALS_KEY = {"root_pat": "ROOT+PAT", "prep": "PREP", "func": "FUNC", "clitic": "CLITIC",
-                    "peeled": "peeled", "lit": "LIT"}
+                    "prop": "PROP", "peeled": "peeled", "lit": "LIT"}
 
 
 def prepass_path(analyzed: bool, particle: Optional[str], peeled: bool, particle_kind: str = "prep",
-                 clitic_only: bool = False) -> str:
+                 clitic_only: bool = False, proper: bool = False, root: Optional[str] = None) -> str:
     """Exclusive pre-pass path of one entry (see ``PATHS``)."""
     if not analyzed:
         return "lit"
@@ -1687,6 +1715,8 @@ def prepass_path(analyzed: bool, particle: Optional[str], peeled: bool, particle
         return "func" if particle_kind == "func" else "prep"
     if clitic_only:
         return "clitic"
+    if proper and not root:
+        return "prop"
     return "root_pat"
 
 
@@ -1709,7 +1739,7 @@ class WordCategoryIndex:
     """
 
     # row layout (tuples; the encode-time category lives in ``self.cats``)
-    W, N, ROOT, PAT, PEELED, ANALYZED, PARTICLE, PRAW, STEM, SURF, PRC, ENC, PATH, KIND, CO = range(15)
+    W, N, ROOT, PAT, PEELED, ANALYZED, PARTICLE, PRAW, STEM, SURF, PRC, ENC, PATH, KIND, CO, PROP = range(16)
 
     def __init__(self, entries: List[CorpusEntry], word_counts: Counter) -> None:
         intern: Dict[str, str] = {}
@@ -1724,11 +1754,13 @@ class WordCategoryIndex:
             peeled = bool(getattr(e, "peeled", False))
             kind = getattr(e, "particle_kind", "prep") or "prep"
             co = bool(getattr(e, "clitic_only", False))
+            proper = bool(getattr(e, "proper", False))
             rows.append((
                 e.word, word_counts.get(e.word, 0), I(e.root), I(e.pattern), peeled, bool(e.analyzed),
                 I(e.particle), I(getattr(e, "pattern_raw", None)), I(e.stem), e.surface or None,
                 tuple(I(c) for c in (e.proclitics or ()) if c), tuple(I(c) for c in (e.enclitics or ()) if c),
-                _PATH_IDX[prepass_path(e.analyzed, e.particle, peeled, kind, co)], I(kind), co,
+                _PATH_IDX[prepass_path(e.analyzed, e.particle, peeled, kind, co, proper, e.root)], I(kind), co,
+                proper,
             ))
         rows.sort(key=lambda r: (-r[1], r[0]))
         self.rows = rows
@@ -1759,7 +1791,8 @@ class WordCategoryIndex:
         by_cat: Dict[str, List[int]] = {k: [] for k, _ in CATEGORIES}
         for i, r in enumerate(self.rows):
             cat, _, _ = categorize(vocab, r[self.ANALYZED], r[self.PARTICLE], r[self.ROOT], r[self.PAT],
-                                   r[self.PRC], r[self.ENC], r[self.PEELED], r[self.KIND] or "prep", r[self.CO])
+                                   r[self.PRC], r[self.ENC], r[self.PEELED], r[self.KIND] or "prep", r[self.CO],
+                                   r[self.PROP], getattr(tok, "proper_nouns", "unrooted"))
             cats[i] = _CAT_IDX[cat]
             by_cat[cat].append(i)
         self.cats = cats
@@ -1788,7 +1821,7 @@ class WordCategoryIndex:
                              "path": pk, "path_label": PATH_LABEL[pk]}
         if full:
             d.update({"analyzed": r[self.ANALYZED], "particle": r[self.PARTICLE], "particle_kind": r[self.KIND],
-                      "clitic_only": r[self.CO], "pattern_raw": r[self.PRAW],
+                      "clitic_only": r[self.CO], "proper": r[self.PROP], "pattern_raw": r[self.PRAW],
                       "stem": r[self.STEM], "surface": r[self.SURF],
                       "proclitics": list(r[self.PRC]), "enclitics": list(r[self.ENC])})
         return d
@@ -2017,12 +2050,13 @@ def encode_text(job: "CorpusTraceJob", text: str) -> Dict[str, Any]:
     cat_occ: Counter = Counter()
     for chunk, n in counts.items():
         a = backend._analyze_cache.get(chunk)   # filled by encode()
-        cat, why, missing = categorize_analysis(tok._vocab, a)
+        cat, why, missing = categorize_analysis(tok._vocab, a, tok.proper_nouns)
         cat_occ[cat] += n
         row = {"chunk": chunk, "count": n, "category": cat, "label": CATEGORY_LABEL[cat], "why": why, "missing": missing,
                "root": (a.root or None) if a else None, "pattern": (a.pattern or None) if a else None,
                "particle": a.particle if a else None, "particle_kind": a.particle_kind if a else None,
-               "clitic_only": bool(a.clitic_only) if a else False, "peeled": bool(a.peeled) if a else False,
+               "clitic_only": bool(a.clitic_only) if a else False, "proper": bool(a.proper) if a else False,
+               "peeled": bool(a.peeled) if a else False,
                "proclitics": list(a.proclitics) if a else [], "enclitics": list(a.enclitics) if a else []}
         if job.words is not None:
             c = job.words.cached(chunk)
@@ -2064,14 +2098,19 @@ def trace_word_process(job: "CorpusTraceJob", word: str) -> Dict[str, Any]:
         out = tok.encode(chunk)
         wire += tap.take()
     a = analyses[chunk]
-    cat, why, missing = categorize_analysis(tok._vocab, a)
+    cat, why, missing = categorize_analysis(tok._vocab, a, tok.proper_nouns)
     vocab = tok._vocab
-    check: Dict[str, Any] = {"root": None, "pattern": None, "particle": None, "clitics": [], "clitic_only": False}
+    check: Dict[str, Any] = {"root": None, "pattern": None, "particle": None, "clitics": [], "clitic_only": False,
+                             "proper": False, "prop_path": False, "proper_mode": tok.proper_nouns}
     if a is not None:
         check["clitic_only"] = bool(a.clitic_only)
+        check["proper"] = bool(a.proper)
+        check["prop_path"] = tok._routes_to_prop(a.proper, a.root)
         if a.particle:
             t_ = f"{A.PFX_FUNC if a.particle_kind == 'func' else A.PFX_PREP}{a.particle}{SFX}"
             check["particle"] = {"token": t_, "in_vocab": t_ in vocab, "kind": a.particle_kind}
+        elif a.proper and not a.root:
+            pass   # nothing to look up: the characters go between the fixed [PROP_*] markers
         else:
             if job.words is not None:
                 check["root"] = job.words.budget_reason("root", a.root, vocab)

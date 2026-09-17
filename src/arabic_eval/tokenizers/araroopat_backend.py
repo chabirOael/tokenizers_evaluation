@@ -70,6 +70,16 @@ class Analysis:
     nothing else — the same ``[CLITICP_ل]`` as in لكتاب, so the preposition
     has one token whatever its host. See ``_clitic_only_analysis``.
 
+    ``proper`` marks a proper noun: CAMeL's reading is POS ``noun_prop``
+    *from the database* (backoff guesses, which CAMeL stamps ``noun_prop``
+    on every out-of-vocabulary word, do not count — see ``is_db_proper``).
+    Many names have no root (NTWS: باريس, كوريا, أكتوبر) and then
+    ``root`` / ``pattern`` are empty; the tokenizer emits the characters
+    between ``[PROP_BEGIN]`` / ``[PROP_END]`` with the clitics outside. Names
+    that do have a root (محمد, مصر, القاهرة) keep it here and the
+    tokenizer's ``proper_nouns`` mode decides the path. See
+    ``_proper_analysis``.
+
     ``enc1`` is the second pronominal enclitic of a double-object verb
     (أعطيتكه = أعطيت + ك + ه). CAMeL's calima-msa-r13 has no ``enc1``
     feature at all, so this slot is only ever filled by the clitic peeler
@@ -96,6 +106,7 @@ class Analysis:
     peeled: bool = False            # True when produced by the clitic peeler
     aspect: Optional[str] = None    # CAMeL `asp` for verbs: p / i / c
     clitic_only: bool = False       # proclitic(s) + pronoun with no host (له, بها)
+    proper: bool = False            # database noun_prop reading (root may be empty)
 
     @property
     def enclitics(self) -> Tuple[str, ...]:
@@ -722,6 +733,54 @@ def _clitic_only_analysis(d: Dict[str, str], word: Optional[str] = None) -> Opti
     )
 
 
+PROPER_POS = "noun_prop"
+# CAMeL's MLE disambiguator runs the analyzer with backoff NOAN_PROP: a word
+# absent from the database gets a *guessed* noun_prop reading with
+# root "O" and pattern "backoff". On ArabicText-Large those guesses are
+# 93 % of the noun_prop surface types (150 K of 162 K) and include plain
+# words CAMeL does not know (معيلات, ترميز, المنقحة); only a database entry
+# counts as "recognized".
+_BACKOFF_PATTERN = "backoff"
+_BACKOFF_ROOT = "O"
+
+
+def is_db_proper(d: Dict[str, str]) -> bool:
+    """True for a database ``noun_prop`` reading (not a NOAN_PROP backoff guess)."""
+    return (
+        (d.get("pos") or "") == PROPER_POS
+        and (d.get("pattern") or "") != _BACKOFF_PATTERN
+        and (d.get("root") or "") != _BACKOFF_ROOT
+    )
+
+
+def _proper_analysis(d: Dict[str, str], word: Optional[str] = None) -> Analysis:
+    """A rootless proper-noun ``Analysis`` (NTWS name) from its trimmed dict.
+
+    Clitics come straight from CAMeL's slots; the ة is factored out as the
+    ``fem`` enclitic when the clitic-free surface ends in it and no pronoun
+    follows (فاطمة, القاهرة). The characters themselves are emitted by the
+    tokenizer from the input chunk, so nothing here has to reproduce the
+    surface.
+    """
+    prc3 = clitic_surface(_norm_clitic(d.get("prc3")))
+    prc2 = clitic_surface(_norm_clitic(d.get("prc2")))
+    prc1 = clitic_surface(_norm_clitic(d.get("prc1")))
+    prc0 = clitic_surface(_norm_clitic(d.get("prc0")))
+    enc0 = clitic_surface(_norm_clitic(d.get("enc0")))
+    surface = d.get("diac") or word or ""
+    core = strip_enclitics_from_end(
+        strip_proclitics_from_start(_strip_diac(surface), (prc3, prc2, prc1, prc0)),
+        (enc0,) if enc0 else (),
+    )
+    fem = TAA_MARBUTA if (not enc0 and core.endswith(TAA_MARBUTA)) else None
+    return Analysis(
+        root="", pattern="", pattern_raw=d.get("pattern") or "", stem="",
+        surface=surface, lemma=d.get("lex", ""), pos=PROPER_POS,
+        prc3=prc3, prc2=prc2, prc1=prc1, prc0=prc0, enc0=enc0,
+        fem=fem, proper=True,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Analysis dict → Analysis dataclass
 # ---------------------------------------------------------------------------
@@ -736,10 +795,13 @@ def _dict_to_analysis(
 
     Listed prepositions, then listed function words, short-circuit to a
     particle ``Analysis`` before any gate (they have no root to validate).
-    Otherwise returns None for analyses we reject: NTWS/FOREIGN database
-    markers, missing root/pattern, roots with fewer than 3 radicals, and
-    roots carrying characters that are neither Arabic letters nor CAMeL's
-    masked-radical placeholder.
+    A database proper noun (``is_db_proper``) is always accepted: with its
+    root and pattern when the gates below pass (محمد), as a rootless
+    ``proper`` analysis when they do not (باريس, NTWS) — see
+    ``_proper_analysis``. Otherwise returns None for analyses we reject:
+    NTWS/FOREIGN database markers, missing root/pattern, roots with fewer
+    than 3 radicals, and roots carrying characters that are neither Arabic
+    letters nor CAMeL's masked-radical placeholder.
     """
     particle = _particle_analysis(d, particles, word, kind="prep")
     if particle is None and func_words:
@@ -750,6 +812,15 @@ def _dict_to_analysis(
     if clitic_word is not None:
         return clitic_word
 
+    proper = is_db_proper(d)
+    rooted = _rooted_analysis(d, proper)
+    if rooted is None and proper:
+        return _proper_analysis(d, word)
+    return rooted
+
+
+def _rooted_analysis(d: Dict[str, str], proper: bool = False) -> Optional[Analysis]:
+    """The root + pattern gates of ``_dict_to_analysis`` (None when any fails)."""
     root = d.get("root") or ""
     pattern_raw = d.get("pattern") or ""
     if not root or not pattern_raw:
@@ -812,6 +883,7 @@ def _dict_to_analysis(
         prc3=prc3, prc2=prc2, prc1=prc1, prc0=prc0, enc0=enc0,
         fem=fem,
         aspect=_norm_clitic(d.get("asp")),
+        proper=proper,
     )
 
 
@@ -1021,6 +1093,13 @@ def peel_compatible(cand: PeelCandidate, residual: Analysis) -> bool:
         # A pronoun-hosted preposition never takes a peeled clitic: أبي is
         # "my father" (noun أب + ي that CAMeL cannot root), not أ + بِ + ي.
         return False
+    if residual.proper:
+        # Nor does a proper noun: the peeler exists for clitic stacks the
+        # database lacks on verbs and nouns (interrogative أ, two object
+        # pronouns); a name with either is not a thing, and a transliteration
+        # starting with أ or ending in a pronoun-like syllable is the
+        # classic false peel (أوباما, ماريا).
+        return False
     if residual.particle:
         kind = "particle"
     elif _is_verb(pos):
@@ -1143,6 +1222,7 @@ def merge_peeled(word: str, cand: PeelCandidate, residual: Analysis) -> Analysis
         peeled=True,
         aspect=residual.aspect,
         clitic_only=residual.clitic_only,
+        proper=residual.proper,
     )
 
 
@@ -1424,15 +1504,34 @@ class MorphAnalyzer:
         index 1+ matters for words where the top MLE pick is e.g. an
         NTWS loanword analysis but a lower-scored "real" one exists.
 
+        A *rootless* proper-noun reading (NTWS name) yields to a later
+        closed-class reading — a particle or a clitic-only word (بك:
+        noun_prop "Bey" first, بِ + ك second) — but not to a later root
+        reading (باريس: noun_prop first, then بِ + أَرِيس with root #.ر.س);
+        the name is the answer unless a high-precision reading follows. A
+        rooted name (محمد) is a full analysis and is taken as is. The
+        native path asks the bridge for one candidate, so this matters for
+        callers that pass more.
+
         If no candidate survives but the bare surface itself is a listed
         preposition or function word (modulo alef variants), return a
         particle analysis anyway — the token must not depend on CAMeL's
         database having an entry for it.
         """
+        deferred: Optional[Analysis] = None
         for cand in candidates:
             a = _dict_to_analysis(cand, particles, word, func_words)
-            if a is not None:
-                return a
+            if a is None:
+                continue
+            if a.proper and not a.root:
+                if deferred is None:
+                    deferred = a
+                continue
+            if deferred is not None and not (a.particle or a.clitic_only):
+                return deferred
+            return a
+        if deferred is not None:
+            return deferred
         if word:
             bare = _strip_diac(word)
             for inventory, kind in ((particles, "prep"), (func_words, "func")):
@@ -1515,6 +1614,7 @@ class CorpusEntry:
     particle_kind: str = "prep"          # which closed group ``particle`` belongs to
     peeled: bool = False                 # analysis came from the clitic peeler
     clitic_only: bool = False            # proclitic(s) + pronoun, no host (له, بها); root/pattern None
+    proper: bool = False                 # database noun_prop; root/pattern None when CAMeL has none (NTWS)
 
     @classmethod
     def from_analysis(cls, word: str, a: Optional[Analysis]) -> "CorpusEntry":
@@ -1536,14 +1636,15 @@ class CorpusEntry:
         return cls(
             word=word,
             analyzed=True,
-            root=a.root,
-            pattern=a.pattern,
+            root=a.root or None,
+            pattern=a.pattern or None,
             pattern_raw=a.pattern_raw,
-            stem=a.stem,
+            stem=a.stem or None,
             surface=a.surface,
             proclitics=proclitics,
             enclitics=enclitics,
             peeled=a.peeled,
+            proper=a.proper,
         )
 
     def to_dict(self) -> Dict:
@@ -1561,6 +1662,7 @@ class CorpusEntry:
             "particle_kind": self.particle_kind,
             "peeled": self.peeled,
             "clitic_only": self.clitic_only,
+            "proper": self.proper,
         }
 
     @classmethod
@@ -1579,4 +1681,5 @@ class CorpusEntry:
             particle_kind=d.get("particle_kind") or "prep",
             peeled=bool(d.get("peeled", False)),
             clitic_only=bool(d.get("clitic_only", False)),
+            proper=bool(d.get("proper", False)),
         )

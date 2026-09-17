@@ -75,6 +75,15 @@ TOK_EOS = "</s>"
 TOK_UNK = "<unk>"
 TOK_LIT_BEGIN = "[LIT_BEGIN]"
 TOK_LIT_END = "[LIT_END]"
+# Proper nouns: the same character path, with its own markers so the model
+# can tell "a name CAMeL knows" from "a word CAMeL does not know".
+TOK_PROP_BEGIN = "[PROP_BEGIN]"
+TOK_PROP_END = "[PROP_END]"
+# Which database proper nouns take the [PROP_*] path: "unrooted" = only the
+# names CAMeL has no root for (باريس, كوريا); "all" = every name, including
+# those with a root (محمد, مصر, القاهرة), which then no longer feed the
+# root / pattern tables.
+PROPER_NOUN_MODES = ("unrooted", "all")
 
 SPECIAL_TOKENS_ORDERED = [TOK_PAD, TOK_BOS, TOK_EOS, TOK_UNK]
 
@@ -193,6 +202,15 @@ class AraRooPatTokenizer(BaseTokenizer):
         # Also accept a bare ا as the interrogative (alef-normalised text).
         # Off by default — see BARE_ALEF_INTERROGATIVE in the backend.
         self.peel_bare_alef: bool = bool(kwargs.get("peel_bare_alef", False))
+        # Proper nouns (CAMeL database noun_prop) between [PROP_BEGIN] /
+        # [PROP_END]: "unrooted" (default) or "all". Applied at vocab-build
+        # and encode time, never in the pre-pass cache, so switching it
+        # re-runs only the vocab build.
+        self.proper_nouns: str = str(kwargs.get("proper_nouns") or "unrooted")
+        if self.proper_nouns not in PROPER_NOUN_MODES:
+            raise ValueError(
+                f"araroopat: proper_nouns must be one of {PROPER_NOUN_MODES}, got {self.proper_nouns!r}"
+            )
 
         # State.
         self._backend: Optional[MorphAnalyzer] = None
@@ -274,11 +292,14 @@ class AraRooPatTokenizer(BaseTokenizer):
         enclitic_freq: Counter = Counter()
         particle_freq: Counter = Counter()
         func_freq: Counter = Counter()
+        proper_count = 0
         for e in entries:
             if not e.analyzed:
                 continue
             if e.particle:
                 (func_freq if e.particle_kind == "func" else particle_freq)[e.particle] += 1
+            elif self._routes_to_prop(e.proper, e.root):
+                proper_count += 1   # characters between [PROP_*]: no root / pattern to count
             elif e.root and e.pattern:
                 root_freq[e.root] += 1
                 pat_freq[e.pattern] += 1
@@ -292,10 +313,11 @@ class AraRooPatTokenizer(BaseTokenizer):
                 enclitic_freq[c] += 1
 
         logger.info(
-            "Pre-pass stats: %d analyzed words (%d prepositions, %d function words), %d unique roots, "
-            "%d unique patterns, %d proclitic surfaces, %d enclitic surfaces.",
+            "Pre-pass stats: %d analyzed words (%d prepositions, %d function words, %d proper nouns on "
+            "[PROP_*], mode %s), %d unique roots, %d unique patterns, %d proclitic surfaces, "
+            "%d enclitic surfaces.",
             sum(1 for e in entries if e.analyzed), sum(particle_freq.values()), sum(func_freq.values()),
-            len(root_freq), len(pat_freq),
+            proper_count, self.proper_nouns, len(root_freq), len(pat_freq),
             len(proclitic_freq), len(enclitic_freq),
         )
 
@@ -322,9 +344,15 @@ class AraRooPatTokenizer(BaseTokenizer):
             len(self._reconstruction),
         )
 
+    def _routes_to_prop(self, proper: bool, root: Optional[str]) -> bool:
+        """Does a proper-noun analysis take the [PROP_*] path under ``proper_nouns``?"""
+        return bool(proper) and (self.proper_nouns == "all" or not root)
+
     # Bump when the post-processing in araroopat_backend changes shape
     # (_dict_to_analysis, normalize_pattern, strip_proclitics_from_start, ...).
-    _CACHE_FORMAT = 7   # 5: [FUNC_*] group + alef-insensitive matching; 6: clitic-only words; 7: no peel onto them (2026-09-16)
+    # 5: [FUNC_*] group + alef-insensitive matching; 6: clitic-only words; 7: no
+    # peel onto them; 8: database proper nouns kept as `proper` entries (2026-09-16)
+    _CACHE_FORMAT = 8
 
     def _cache_key(self) -> Tuple[Any, ...]:
         return (self._CACHE_FORMAT, tuple(self.prepositions), self.clitic_peeler,
@@ -443,9 +471,11 @@ class AraRooPatTokenizer(BaseTokenizer):
         # 0–3: specials.
         for s in SPECIAL_TOKENS_ORDERED:
             add(s)
-        # 4–5: literal markers.
+        # 4–5: literal markers; 6–7: proper-noun markers.
         add(TOK_LIT_BEGIN)
         add(TOK_LIT_END)
+        add(TOK_PROP_BEGIN)
+        add(TOK_PROP_END)
         # 6+: proclitics (CLITICP), then enclitics (CLITICE) — sorted by
         # freq desc, ties broken alphabetically. Distinct ranges so the
         # decoder never has to disambiguate prc vs enc from surface alone.
@@ -633,9 +663,23 @@ class AraRooPatTokenizer(BaseTokenizer):
                     "freq": func_freq.get(w, 0)}
                 for w in self.func_words
             },
+            # Proper nouns: database noun_prop readings, by path under the mode.
+            "proper_nouns": {
+                "mode": self.proper_nouns,
+                "count": sum(1 for e in entries if e.proper),
+                "unrooted": sum(1 for e in entries if e.proper and not e.root),
+                "rooted": sum(1 for e in entries if e.proper and e.root),
+                "on_prop_path": sum(1 for e in entries if self._routes_to_prop(e.proper, e.root)),
+                "examples": [
+                    {"word": e.word, "root": e.root, "pattern": e.pattern,
+                     "proclitics": list(e.proclitics), "enclitics": list(e.enclitics)}
+                    for e in [x for x in entries if x.proper][:50]
+                ],
+            },
             "config": {
                 "prepositions": list(self.prepositions),
                 "func_words": list(self.func_words),
+                "proper_nouns": self.proper_nouns,
                 "max_roots": self.max_roots,
                 "max_patterns": self.max_patterns,
                 "min_root_freq": self.min_root_freq,
@@ -784,6 +828,13 @@ class AraRooPatTokenizer(BaseTokenizer):
             self._emit_lit(chunk, ids, toks)
             return
 
+        if a is not None and self._routes_to_prop(a.proper, a.root):
+            # Proper noun (database noun_prop): characters between the
+            # [PROP_*] markers, clitics outside. Never falls to LIT — the
+            # markers are fixed slots.
+            self._emit_prop(chunk, ids, toks, a.proclitics, a.pronoun_enclitics)
+            return
+
         if a is not None and a.root and a.pattern:
             root_tok = f"{PFX_ROOT}{a.root}{SFX}"
             pat_tok = f"{PFX_PAT}{a.pattern}{SFX}"
@@ -817,9 +868,60 @@ class AraRooPatTokenizer(BaseTokenizer):
                 for c in pronouns:
                     self._emit_clitic(c, ids, toks, kind="e")
                 return
-            # Root, pattern or a clitic is OOV — fall through to LIT.
+            # Root, pattern or a clitic is OOV — fall through to LIT, or
+            # to PROP when the word is a name whose root the budget cut.
+            if a.proper:
+                self._emit_prop(chunk, ids, toks, proc, a.pronoun_enclitics)
+                return
 
         self._emit_lit(chunk, ids, toks)
+
+    def _emit_prop(self, chunk: str, ids: List[int], toks: List[str],
+                   proclitics: Tuple[str, ...] = (), pronouns: Tuple[str, ...] = ()) -> None:
+        """Emit a proper noun: clitic tokens outside, its characters between [PROP_*].
+
+        ``بمكة`` → ``[CLITICP_ب] [PROP_BEGIN] [CHAR_م] [CHAR_ك] [PROP_END] [CLITICE_ة]``.
+        The split is accepted only when the decoder's own joins reproduce
+        the chunk exactly (proclitics joined with the لِ+الـ contraction +
+        core + pronouns) and every clitic token exists; otherwise the whole
+        chunk goes between the markers unsplit — still a PROP, still
+        reversible. A tokenizer saved before the markers existed falls
+        back to the plain literal.
+        """
+        if TOK_PROP_BEGIN not in self._vocab or TOK_PROP_END not in self._vocab:
+            self._emit_lit(chunk, ids, toks)
+            return
+        proc: Tuple[str, ...] = tuple(c for c in proclitics if c)
+        enc: Tuple[str, ...] = tuple(c for c in pronouns if c)
+        core = _strip_clitic_surfaces(chunk, proc, enc)
+        clitic_toks = [f"{PFX_CLITICP}{c}{SFX}" for c in proc] + [f"{PFX_CLITICE}{c}{SFX}" for c in enc]
+        if (proc or enc) and not (
+            core and join_proclitics(list(proc)) + core + "".join(enc) == chunk
+            and all(t in self._vocab for t in clitic_toks)
+        ):
+            proc, enc, core = (), (), chunk
+        for c in proc:
+            self._emit_clitic(c, ids, toks, kind="p")
+        fem = core.endswith(TAA_MARBUTA) and f"{PFX_CLITICE}{TAA_MARBUTA}{SFX}" in self._vocab
+        if fem:
+            core = core[:-1]
+        ids.append(self._vocab[TOK_PROP_BEGIN])
+        toks.append("")
+        for ch in core:
+            tok = f"{PFX_CHAR}{ch}{SFX}"
+            if tok in self._vocab:
+                ids.append(self._vocab[tok])
+                toks.append(ch if ch in ARABIC_LETTERS else "")
+            else:
+                ids.append(self._special_token_map["unk_token"])
+                toks.append("")
+        ids.append(self._vocab[TOK_PROP_END])
+        toks.append("")
+        if fem:
+            # ة is written ت before a pronoun; the enclitic token is the same.
+            self._emit_clitic(TAA_MARBUTA, ids, toks, kind="e", metric="ت" if enc else TAA_MARBUTA)
+        for c in enc:
+            self._emit_clitic(c, ids, toks, kind="e")
 
     def _emit_clitic(self, clitic: str, ids: List[int], toks: List[str],
                      kind: str, metric: Optional[str] = None) -> None:
@@ -940,13 +1042,16 @@ class AraRooPatTokenizer(BaseTokenizer):
             if tok is None or tok in (TOK_PAD, TOK_BOS, TOK_EOS):
                 continue
 
-            if tok == TOK_LIT_BEGIN:
+            # [PROP_*] markers decode exactly like the literal markers: the
+            # characters between them are one word (either END closes
+            # either BEGIN, so a malformed stream still flushes).
+            if tok in (TOK_LIT_BEGIN, TOK_PROP_BEGIN):
                 dump_orphan_root()
                 in_lit = True
                 lit_buffer.clear()
                 continue
 
-            if tok == TOK_LIT_END:
+            if tok in (TOK_LIT_END, TOK_PROP_END):
                 # Always flush, even when empty: a lone ة encodes as an empty
                 # literal + [CLITICE_ة], and the enclitic must attach to it
                 # rather than to the previous word. Empty entries are dropped
@@ -1108,6 +1213,7 @@ class AraRooPatTokenizer(BaseTokenizer):
                 "func_words": list(self.func_words),
                 "clitic_peeler": self.clitic_peeler,
                 "peel_bare_alef": self.peel_bare_alef,
+                "proper_nouns": self.proper_nouns,
             }, f, ensure_ascii=False, indent=2)
 
     def load(self, path: Path | str) -> None:
@@ -1132,6 +1238,9 @@ class AraRooPatTokenizer(BaseTokenizer):
         # all-or-nothing clitic check in _emit_alpha keeps them consistent.
         self.clitic_peeler = bool(cfg.get("clitic_peeler", True))
         self.peel_bare_alef = bool(cfg.get("peel_bare_alef", False))
+        # A tokenizer saved before the [PROP_*] markers has none in its
+        # vocab; _emit_prop falls back to the plain literal there.
+        self.proper_nouns = str(cfg.get("proper_nouns") or "unrooted")
         self._backend = None  # rebuilt lazily with the loaded inventory
 
         with (path / "vocab.json").open("r", encoding="utf-8") as f:

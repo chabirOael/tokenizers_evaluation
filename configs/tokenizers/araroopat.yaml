@@ -63,6 +63,19 @@ tokenizer:
     # doubled false peels on CAMeL-rejected corpus types (0.6 % → 1.2 %).
     peel_bare_alef: false
 
+    # Proper nouns — a word whose CAMeL reading is a *database* noun_prop
+    # (not the NOAN_PROP backoff guess CAMeL stamps on every unknown word) is
+    # emitted as its characters between [PROP_BEGIN] / [PROP_END], clitics
+    # outside (بمكة → [CLITICP_ب] [PROP_BEGIN] م ك [PROP_END] [CLITICE_ة]).
+    #   unrooted — only the names CAMeL has no root for (باريس كوريا أكتوبر
+    #              بن أبي: 3.0 % of corpus words, all LIT before); names with
+    #              a root (محمد مصر القاهرة الله: 2.5 %) keep ROOT+PAT.
+    #   all      — every database name, rooted ones too (they then stop
+    #              feeding the root / pattern tables; +2.7 % fertility).
+    # Applied at vocab-build and encode time, not in the pre-pass cache:
+    # switching it re-runs only the vocab build.
+    proper_nouns: unrooted
+
     # Closed-class prepositions / particles emitted as ONE [PREP_*] token
     # each (clitics still ride outside: [CLITICP_و] [PREP_إلى] [CLITICE_ه]).
     # Matched on CAMeL's lemma, so عليه / منهم / وإلى all resolve to their

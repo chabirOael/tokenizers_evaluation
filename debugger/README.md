@@ -125,7 +125,8 @@ looked up in the reconstruction table (`reconstructs 'X'` hits). Family chips, p
 `encode()` on any text (`POST /api/corpus/encode`): the token stream, its `decode()` round-trip,
 and every alpha chunk classified by the path it took — the exact all-or-nothing rule of
 `_emit_alpha` (`categorize` in `araroopat_corpus_trace.py`): `ROOT+PAT`, `ROOT+PAT (peeled)`,
-`PREP`, `FUNC`, `LIT: no analysis`, `LIT: root cut`, `LIT: pattern cut`, `LIT: clitic / particle token
+`PREP`, `FUNC`, `CLITIC`, `PROP` (a database proper noun between `[PROP_BEGIN]` / `[PROP_END]`),
+`LIT: no analysis`, `LIT: root cut`, `LIT: pattern cut`, `LIT: clitic / particle token
 missing`. Filter the chunks by path, expand any of them (**process ▾**, `GET
 /api/corpus/word_trace?word=`) to replay it live: CAMeL's candidates with every
 `_dict_to_analysis` gate (tab 01's cards), the peeler's slicings, the vocab check with the
@@ -138,7 +139,7 @@ view. **Send to decode** copies any stream into the playground.
 
 **Every record, paged.** The corpus-scale cards keep their seeded samples but no longer stop
 there. In the *validate* card every counter (`analyzed`, `rejected → LIT`, `ROOT+PAT`, `PREP`, `FUNC`,
-`peeled`, `LIT`) is a button that opens a **records browser** inside the card: every unique
+`CLITIC`, `PROP`, `peeled`, `LIT`) is a button that opens a **records browser** inside the card: every unique
 chunk on that pre-pass path, by occurrences, with the analysis the pre-pass stored, the
 category `encode()` gives it under the built vocab (an analyzed word can still land in LIT
 when its root or pattern was cut by the budget), a substring filter, page sizes 25–200,

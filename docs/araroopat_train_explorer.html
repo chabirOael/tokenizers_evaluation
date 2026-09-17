@@ -18,6 +18,7 @@
   --prep:#6B4FA3; --prep-soft:#E9E2F5;
   --func:#9A4B7A; --func-soft:#F6E3EE;
   --lit:#6E807A; --lit-soft:#E5EAE8;
+  --prop:#3D7A57; --prop-soft:#DFF0E6;
   --unk:#8A5D00; --unk-soft:#F6ECD6;
   --special:#7C8496; --special-soft:#E9EBF0;
   --digit:#5B4B8A; --digit-soft:#E9E4F5;
@@ -41,6 +42,7 @@
     --prep:#B9A3E6; --prep-soft:#221A38;
     --func:#E0A0C6; --func-soft:#33182A;
     --lit:#8CA098; --lit-soft:#1B2422;
+  --prop:#7CC99A; --prop-soft:#14291D;
     --unk:#E0B35C; --unk-soft:#2E2413;
     --special:#98A0B4; --special-soft:#1C1F28;
     --digit:#B7A6E8; --digit-soft:#221B33;
@@ -59,6 +61,7 @@
   --prep:#B9A3E6; --prep-soft:#221A38;
   --func:#E0A0C6; --func-soft:#33182A;
   --lit:#8CA098; --lit-soft:#1B2422;
+  --prop:#7CC99A; --prop-soft:#14291D;
   --unk:#E0B35C; --unk-soft:#2E2413;
   --special:#98A0B4; --special-soft:#1C1F28;
   --digit:#B7A6E8; --digit-soft:#221B33;
@@ -184,6 +187,7 @@ td.ar,th.ar{text-align:right}
 .tok.prep{background:var(--prep-soft);color:var(--prep)}
 .tok.func{background:var(--func-soft);color:var(--func)}
 .tok.char,.tok.lit{background:var(--lit-soft);color:var(--lit)}
+.tok.prop{background:var(--prop-soft);color:var(--prop)}
 .tok.digit{background:var(--digit-soft);color:var(--digit)} .tok.punct{background:var(--punct-soft);color:var(--punct)}
 .tok.special{background:var(--special-soft);color:var(--special)} .tok.unk{background:var(--unk-soft);color:var(--unk)}
 .tok.hl{outline:2px solid var(--accent)}
@@ -242,7 +246,7 @@ td.ar,th.ar{text-align:right}
 /* vocab layout */
 .rangebar{display:flex;height:34px;border-radius:8px;overflow:hidden;border:1px solid var(--line);margin-bottom:10px}
 .rangebar div{display:flex;align-items:center;justify-content:center;font-family:var(--mono);font-size:10.5px;color:#fff;min-width:14px;transition:flex .6s ease}
-.rangebar .f-special{background:var(--special)} .rangebar .f-lit{background:var(--lit)} .rangebar .f-cliticp,.rangebar .f-clitice{background:var(--clitic)} .rangebar .f-prep{background:var(--prep)} .rangebar .f-func{background:var(--func)}
+.rangebar .f-special{background:var(--special)} .rangebar .f-lit{background:var(--lit)} .rangebar .f-prop{background:var(--prop)} .rangebar .f-cliticp,.rangebar .f-clitice{background:var(--clitic)} .rangebar .f-prep{background:var(--prep)} .rangebar .f-func{background:var(--func)}
 .rangebar .f-char{background:var(--lit);opacity:.75} .rangebar .f-digit{background:var(--digit)} .rangebar .f-punct{background:var(--punct)}
 .rangebar .f-root{background:var(--root)} .rangebar .f-pat{background:var(--pat)}
 .legend{display:flex;flex-wrap:wrap;gap:8px 14px;font-size:12px;color:var(--ink-2);margin-bottom:12px}
@@ -699,7 +703,7 @@ function patView(pat){
   return c;
 }
 const particleChip = (p, kind) => kind==='func' ? tok('[FUNC_'+p+']','func') : tok('[PREP_'+p+']','prep');
-const famOfTok = t => t.startsWith('[ROOT_')?'root':t.startsWith('[PAT_')?'pat':t.startsWith('[CLITICP_')?'cliticp':t.startsWith('[CLITICE_')?'clitice':t.startsWith('[PREP_')?'prep':t.startsWith('[FUNC_')?'func':t.startsWith('[CHAR_')?'char':t.startsWith('[DIGIT_')?'digit':t.startsWith('[PUNCT_')?'punct':t.startsWith('[LIT')?'lit':t==='<unk>'?'unk':'special';
+const famOfTok = t => t.startsWith('[ROOT_')?'root':t.startsWith('[PAT_')?'pat':t.startsWith('[CLITICP_')?'cliticp':t.startsWith('[CLITICE_')?'clitice':t.startsWith('[PREP_')?'prep':t.startsWith('[FUNC_')?'func':t.startsWith('[CHAR_')?'char':t.startsWith('[DIGIT_')?'digit':t.startsWith('[PUNCT_')?'punct':t.startsWith('[PROP')?'prop':t.startsWith('[LIT')?'lit':t==='<unk>'?'unk':'special';
 
 function table(cols, rows){
   const t = h('table', {}, h('thead', {}, h('tr', {}, ...cols.map(c => h('th', {class: c.ar?'ar':''}, c.label)))));
@@ -831,8 +835,10 @@ R.validate = d => {
       inner.append(h('div',{class:'subh'}, `candidate #${c.index} — raw dict from the server (12 trimmed fields)`), candidateDict(c.candidate));
       inner.append(h('div',{class:'subh'}, '_dict_to_analysis gates, in order'), gatesView(c.gates));
       if (c.accepted){
-        inner.append(h('div',{class:'subh'},'→ Analysis (emission order)'), h('div',{class:'tokrow ltr'}, ...[c.analysis.prc3,c.analysis.prc2,c.analysis.prc1,c.analysis.prc0].filter(Boolean).map(x=>tok('[CLITICP_'+x+']','cliticp')), ...(c.analysis.particle ? [particleChip(c.analysis.particle, c.analysis.particle_kind)] : c.analysis.clitic_only ? [] : [tok('[ROOT_'+c.analysis.root+']','root'), tok('[PAT_'+c.analysis.pattern+']','pat')]), c.analysis.fem?tok('[CLITICE_'+c.analysis.fem+']','clitice'):null, c.analysis.enc0?tok('[CLITICE_'+c.analysis.enc0+']','clitice'):null, c.analysis.enc1?tok('[CLITICE_'+c.analysis.enc1+']','clitice'):null),
+        inner.append(h('div',{class:'subh'},'→ Analysis (emission order)'), h('div',{class:'tokrow ltr'}, ...[c.analysis.prc3,c.analysis.prc2,c.analysis.prc1,c.analysis.prc0].filter(Boolean).map(x=>tok('[CLITICP_'+x+']','cliticp')), ...(c.analysis.particle ? [particleChip(c.analysis.particle, c.analysis.particle_kind)] : c.analysis.clitic_only ? [] : (c.analysis.proper && !c.analysis.root) ? [tok('[PROP_BEGIN]','prop'), tok('chars…','char'), tok('[PROP_END]','prop')] : [tok('[ROOT_'+c.analysis.root+']','root'), tok('[PAT_'+c.analysis.pattern+']','pat')]), c.analysis.fem?tok('[CLITICE_'+c.analysis.fem+']','clitice'):null, c.analysis.enc0?tok('[CLITICE_'+c.analysis.enc0+']','clitice'):null, c.analysis.enc1?tok('[CLITICE_'+c.analysis.enc1+']','clitice'):null),
           h('div',{class:'kv',style:'margin-top:8px'}, ...['stem','surface','lemma','pos'].map(k => h('div',{}, h('span',{class:'k'},k), h('span',{class:'v'+(k==='pos'?' lat':'')}, c.analysis[k])))));
+        if (c.proper_fallback) inner.append(h('div',{style:'margin-top:8px'}, badge('proper noun without a root ('+c.proper_fallback+') → [PROP_*] characters','info')));
+        else if (c.analysis.proper) inner.append(h('div',{style:'margin-top:8px'}, badge('proper noun with a root — the proper_nouns mode decides ROOT+PAT vs [PROP_*]','info')));
       } else {
         inner.append(h('div',{style:'margin-top:8px'}, badge('rejected: '+c.reject_reason,'bad')));
       }
@@ -1051,8 +1057,8 @@ $('#text').addEventListener('keydown', e => { if ((e.ctrlKey||e.metaKey) && e.ke
 /* decode playground                                                   */
 /* ------------------------------------------------------------------ */
 const PG = {vocab:[], byToken:new Map(), byId:new Map(), fam:'root', frozen:false, timer:null};
-const PG_FAMS = ['root','pat','cliticp','clitice','prep','func','lit','char','digit','punct','special'];
-const PG_WEIGHTS = {root:.32, pat:.32, cliticp:.1, clitice:.06, prep:.04, func:.04, punct:.04, digit:.03, lit:.02, char:.02, special:.01};
+const PG_FAMS = ['root','pat','cliticp','clitice','prep','func','lit','prop','char','digit','punct','special'];
+const PG_WEIGHTS = {root:.32, pat:.32, cliticp:.1, clitice:.06, prep:.04, func:.04, punct:.04, digit:.03, lit:.02, prop:.02, char:.02, special:.01};
 
 function pgInit(t, opts={}){
   const vstep = t.steps.find(s=>s.id==='vocab'); if (!vstep) return;
@@ -1315,9 +1321,10 @@ async function cxLoadSources(){
 function cxSavedInfo(){
   const d = (CX.sources?.saved||[]).find(x => x.name===$('#cx-saved').value); const box = $('#cx-savedinfo'); box.innerHTML = '';
   if (!d) return;
-  box.append(`config: ${Object.entries(d.config).map(([k,v])=>k+'='+v).join(' ')}`, h('br'), `metadata ${d.has_metadata?'✓':'✗'} · reconstruction ${d.has_reconstruction ? (d.reconstruction_bytes/1e6).toFixed(1)+' MB' : '✗'} · [PREP_*] inventory ${d.has_prepositions?'✓':'✗'} · [FUNC_*] inventory ${d.has_func_words?'✓':'✗'}`);
+  box.append(`config: ${Object.entries(d.config).map(([k,v])=>k+'='+v).join(' ')}`, h('br'), `metadata ${d.has_metadata?'✓':'✗'} · reconstruction ${d.has_reconstruction ? (d.reconstruction_bytes/1e6).toFixed(1)+' MB' : '✗'} · [PREP_*] inventory ${d.has_prepositions?'✓':'✗'} · [FUNC_*] inventory ${d.has_func_words?'✓':'✗'} · [PROP_*] markers ${d.has_prop_markers?'✓':'✗'}`);
   if (!d.has_prepositions) box.append(h('div', {style:'color:var(--warn);margin-top:4px'}, 'saved before the 2026-09-13 [PREP_*] / ة-enclitic changes: its [PAT_*] tokens still carry ة and it has no [PREP_*] range, so the current encode() routes more words to the character path (LIT) than at training time. Retrain to compare fairly.'));
   else if (!d.has_func_words) box.append(h('div', {style:'color:var(--warn);margin-top:4px'}, 'saved before the 2026-09-16 [FUNC_*] group: pronouns, conjunctions and particles still take the character path (LIT) here. Retrain to compare fairly.'));
+  else if (!d.has_prop_markers) box.append(h('div', {style:'color:var(--warn);margin-top:4px'}, 'saved before the 2026-09-16 [PROP_*] markers: proper nouns fall back to the plain literal (LIT) here. Retrain to compare fairly.'));
 }
 $('#cx-saved').addEventListener('change', cxSavedInfo);
 document.querySelectorAll('input[name=cx-mode]').forEach(r => r.addEventListener('change', () => {
@@ -1539,8 +1546,8 @@ $('#cx-search-q').addEventListener('keydown', e => { if (e.key==='Enter'){ if (C
 
 /* ---------------- playground (own instance; same protocol as tab 01) ---------------- */
 const PGX = CX.pg;
-const PGX_FAMS = ['root','pat','cliticp','clitice','prep','func','lit','char','digit','punct','special'];
-const PGX_WEIGHTS = {root:.32, pat:.32, cliticp:.1, clitice:.06, prep:.04, func:.04, punct:.04, digit:.03, lit:.02, char:.02, special:.01};
+const PGX_FAMS = ['root','pat','cliticp','clitice','prep','func','lit','prop','char','digit','punct','special'];
+const PGX_WEIGHTS = {root:.32, pat:.32, cliticp:.1, clitice:.06, prep:.04, func:.04, punct:.04, digit:.03, lit:.02, prop:.02, char:.02, special:.01};
 function cxPgInit(t){
   const vstep = t.steps.find(s=>s.id==='vocab'); if (!vstep) return;
   PGX.vocab = vstep.data.vocab; PGX.byToken = new Map(PGX.vocab.map(v=>[v.token, v])); PGX.byId = new Map(PGX.vocab.map(v=>[v.id, v]));
@@ -1644,10 +1651,10 @@ $('#cx-save-btn').onclick = async () => {
 
 
 /* ---------------- word categories: shared bits ---------------- */
-const CAT_KIND = {root_pat:'ok', root_pat_peeled:'ok', prep:'info', func:'info', clitic:'info', lit_no_analysis:'warn', lit_root_cut:'bad', lit_pattern_cut:'bad', lit_clitic_missing:'bad'};
+const CAT_KIND = {root_pat:'ok', root_pat_peeled:'ok', prep:'info', func:'info', clitic:'info', prop:'info', lit_no_analysis:'warn', lit_root_cut:'bad', lit_pattern_cut:'bad', lit_clitic_missing:'bad'};
 const catBadge = (key, label) => badge(label || key, CAT_KIND[key] || 'neutral');
 const tokChips = (stream, onclick) => h('span', {class:'tokrow ltr'}, ...stream.map(s => { const c = tok(s.token, s.token==='<unk>'?'unk':s.family, s.id, s.metric_string!==undefined ? `pos ${s.pos} · metric_string="${s.metric_string}"` : ''); if (onclick){ c.style.cursor='pointer'; c.onclick=()=>onclick(s); } return c; }));
-const analysisChips = a => !a || !a.analyzed ? badge('no analysis','warn') : h('span',{class:'tokrow ltr'}, ...(a.proclitics||[]).map(x=>tok('[CLITICP_'+x+']','cliticp')), ...(a.particle ? [particleChip(a.particle, a.particle_kind)] : a.clitic_only ? [] : [tok('[ROOT_'+a.root+']','root'), tok('[PAT_'+a.pattern+']','pat')]), ...(a.enclitics||[]).map(x=>tok('[CLITICE_'+x+']','clitice')));
+const analysisChips = a => !a || !a.analyzed ? badge('no analysis','warn') : h('span',{class:'tokrow ltr'}, ...(a.proclitics||[]).map(x=>tok('[CLITICP_'+x+']','cliticp')), ...(a.particle ? [particleChip(a.particle, a.particle_kind)] : a.clitic_only ? [] : (a.proper && !a.root) ? [tok('[PROP_BEGIN]','prop'), tok('chars…','char'), tok('[PROP_END]','prop')] : [tok('[ROOT_'+a.root+']','root'), tok('[PAT_'+a.pattern+']','pat')]), ...(a.enclitics||[]).map(x=>tok('[CLITICE_'+x+']','clitice')), ...(a.proper && a.root ? [badge('name','info')] : []));
 
 /* The process one chunk went through, replayed live by /api/corpus/word_trace. */
 function cxProcessView(res){
@@ -1765,7 +1772,7 @@ function cxEncRender(){
   tbl.append(tb); const wrap = h('div',{class:'tblwrap cx-hits'}, tbl); out.append(wrap); cxDecorate(out);
   const w = wirePane(res.wire, 'CAMeL calls made by encode()'); if (w) out.append(w);
 }
-const CATEGORY_LABEL_JS = {root_pat:'ROOT+PAT', root_pat_peeled:'ROOT+PAT (peeled)', prep:'PREP', func:'FUNC', clitic:'CLITIC', lit_no_analysis:'LIT: no analysis', lit_root_cut:'LIT: root cut', lit_pattern_cut:'LIT: pattern cut', lit_clitic_missing:'LIT: clitic / particle token missing'};
+const CATEGORY_LABEL_JS = {root_pat:'ROOT+PAT', root_pat_peeled:'ROOT+PAT (peeled)', prep:'PREP', func:'FUNC', clitic:'CLITIC', prop:'PROP', lit_no_analysis:'LIT: no analysis', lit_root_cut:'LIT: root cut', lit_pattern_cut:'LIT: pattern cut', lit_clitic_missing:'LIT: clitic / particle token missing'};
 $('#cx-enc-run').onclick = cxEncode;
 $('#cx-enc-text').addEventListener('keydown', e => { if ((e.ctrlKey||e.metaKey) && e.key==='Enter') cxEncode(); });
 $('#cx-enc-send').onclick = () => { if (!ENC.res) return; $('#cx-pg-input').value = ENC.res.stream.map(s=>s.token).join(' '); cxPgParse(); $('#cx-pg').scrollIntoView({behavior:'smooth'}); };
@@ -1778,9 +1785,9 @@ async function cxWordsSummary(){
   if (!r.ok || s.error) throw new Error(s.error || ('HTTP '+r.status));
   CX.wordsSummary = s; return s;
 }
-const PATH_KIND = {root_pat:'ok', prep:'ok', func:'ok', clitic:'ok', peeled:'info', lit:'warn'};
+const PATH_KIND = {root_pat:'ok', prep:'ok', func:'ok', clitic:'ok', prop:'ok', peeled:'info', lit:'warn'};
 const pathBadge = (key, label) => badge(label || key, PATH_KIND[key] || 'neutral');
-const PATH_OF_TOTAL = {'ROOT+PAT':'root_pat', PREP:'prep', FUNC:'func', CLITIC:'clitic', peeled:'peeled', LIT:'lit'};
+const PATH_OF_TOTAL = {'ROOT+PAT':'root_pat', PREP:'prep', FUNC:'func', CLITIC:'clitic', PROP:'prop', peeled:'peeled', LIT:'lit'};
 function cxBrowser(opts){
   const st = {chip: opts.chip || '', q:'', offset:0, limit: opts.pageSize || 50, res:null};
   const root = h('div', {class:'cx-browser', hidden: opts.open ? null : ''});

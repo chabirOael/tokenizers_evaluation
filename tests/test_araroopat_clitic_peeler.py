@@ -277,7 +277,6 @@ class TestAnalyzer:
 
     @pytest.mark.parametrize("word,why", [
         ("بيرنيني", "ب + يرني + ني — ب needs a nominal, not a verb"),
-        ("أندرسون", "transliteration; no residual analysis"),
         ("المجتهدي", "ال + المجتهد + ي — article and possessive are incompatible, and "
                     "CAMeL models ال + one pronoun natively: a native miss is informative"),
         ("عدناني", "عدّ + نا + ني — 'us me': second pronoun must be 3rd person"),
@@ -285,6 +284,13 @@ class TestAnalyzer:
     ])
     def test_wrong_peels_are_rejected(self, word, why):
         assert _analyzer().analyze(word) is None, why
+
+    def test_database_name_is_read_natively_never_peeled(self):
+        # أندرسون is a database noun_prop (NTWS): since 2026-09-16 it is a
+        # proper noun on the [PROP_*] path, so the peeler never sees it
+        # (before, the NTWS reading was rejected and أ + ندرسون was tried).
+        a = _analyzer().analyze("أندرسون")
+        assert a is not None and a.proper and not a.peeled and a.root == ""
 
     def test_surface_mismatch_is_rejected(self):
         # CAMeL reads the residual قرضة as قرض + ه (its ة/ه normalisation);
@@ -316,10 +322,10 @@ class TestAnalyzer:
         ma = _analyzer()
         with caplog.at_level(logging.DEBUG, logger="arabic_eval.tokenizers.araroopat.backend"):
             ma.analyze("أنلزمكموها")
-            ma.analyze("أندرسون")
+            ma.analyze("بيرنيني")
         msgs = [r.getMessage() for r in caplog.records if "clitic peeler" in r.getMessage()]
         assert any("أنلزمكموها" in m and "كمو+ها" in m for m in msgs)
-        assert any("أندرسون" in m and "character path" in m for m in msgs)
+        assert any("بيرنيني" in m and "character path" in m for m in msgs)
         assert ma.peel_stats == {"peeled": 1, "exhausted": 1}
 
     def test_merge_keeps_camel_inner_clitics_and_rebuilds_surface(self):
