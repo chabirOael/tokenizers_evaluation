@@ -76,6 +76,7 @@ def mix_cfg(tmp_path: Path, sources, total_words=1000, **overrides) -> Pretraini
         sources=[MixSourceConfig(name=n, share=s) for n, s in sources],
         pool={"total_words": total_words, "stream_shuffle_buffer": 0},
         quality={"min_words": 20, "max_words": 200},
+        heldout_filter={"enabled": False},   # the held-out filter has its own tests (test_contamination.py)
     )
     base.update(overrides)
     return PretrainingMixConfig(**base)
@@ -397,9 +398,12 @@ def test_qa_blend_config_rules(tmp_path):
         QABlendConfig(datasets=["pretraining_mix"])
     with pytest.raises(ValueError, match="duplicates"):
         QABlendConfig(datasets=["arcd", "arcd"])
-    # Phase 3 early-stops on TyDiQA-val + ARCD-val: never blendable.
-    with pytest.raises(ValueError, match="early-stop split"):
+    # TyDiQA / ARCD 'validation' is the held-out evaluation split and 'dev'
+    # steers Phase 3 early-stopping: neither is blendable.
+    with pytest.raises(ValueError, match="held-out evaluation split"):
         QABlendConfig(datasets=["arcd"], split="validation")
+    with pytest.raises(ValueError, match="early-stop split"):
+        QABlendConfig(datasets=["arcd"], split="dev")
     assert QABlendConfig(datasets=["arabic_squad"], split="train").split == "train"
     # Only a mix phase may carry a blend.
     with pytest.raises(ValueError, match="qa_blend is only valid"):

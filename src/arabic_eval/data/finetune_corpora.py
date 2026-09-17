@@ -58,10 +58,37 @@ logger = logging.getLogger(__name__)
 # Dataset revisions (git SHAs on the Hub) the free-form loaders read at.
 # Bump deliberately; the mixture manifest records the value in use.
 PINNED_REVISIONS: Dict[str, str] = {
+    "arabic_squad": "17d5b9dafdaa266f17aedfaa0154fe56411cdb44",
+    "tydiqa_arabic": "da78f23f9119363459acbaf46bf89426ff26c259",
+    "arcd": "cc6906b6eda547e4ffc63b8d88ccca7e0515187a",
     "cidar": "bc2f9d7a9de34b534b126c32b8cce98e098138df",
     "bactrian_x_ar": "3698480a001cb3f62c61c314d4acb181eb31e983",
     "aya_ar": "a3af2fde4b4cb5b2775830b11244a1a20b5f004f",
 }
+
+# Dev carve-out (added 2026-09-17). Phase 3 used to early-stop on the
+# official TyDiQA-AR / ARCD evaluation splits — model selection on the
+# test set. Now ``dev`` is a deterministic slice of the official *train*
+# split chosen by article title (so dev and train never share a passage):
+# ``train`` = official train minus dev, ``validation`` = the official
+# evaluation split, untouched. The selection hashes the title, not the
+# row order, so it is stable across loader versions.
+DEV_FRACTION = 0.05
+_DEV_SALT = "arabic-eval-dev-v1"
+
+
+def is_dev_title(corpus: str, title: Optional[str], fraction: float = DEV_FRACTION) -> bool:
+    """Deterministic article-level dev membership: sha1(salt:corpus:title) < fraction."""
+    import hashlib
+    h = hashlib.sha1(f"{_DEV_SALT}:{corpus}:{title or ''}".encode("utf-8")).hexdigest()[:8]
+    return int(h, 16) / 0x100000000 < fraction
+
+
+def _train_dev_split(split: str, corpus: str) -> str:
+    """Validate a ``train`` / ``dev`` / ``validation`` request; return the Hub split to read."""
+    if split not in {"train", "dev", "validation"}:
+        raise ValueError(f"{corpus} split must be 'train', 'dev' or 'validation', got {split!r}")
+    return "validation" if split == "validation" else "train"
 
 # Where filtered Hub subsets are cached as Parquet (``aya_ar``).
 SFT_CORPORA_CACHE_DIR = Path(os.environ.get("ARABIC_EVAL_SFT_CORPORA_CACHE", "outputs/data_cache/sft_corpora"))
@@ -196,7 +223,7 @@ def _load_arabic_squad(split: str) -> List[QARecord]:
             f"arabic_squad has no '{split}' split (only 'train' is available)"
         )
     from datasets import load_dataset
-    ds = load_dataset("Mostafa3zazi/Arabic_SQuAD", split="train")
+    ds = load_dataset("Mostafa3zazi/Arabic_SQuAD", split="train", revision=PINNED_REVISIONS["arabic_squad"])
     records: List[QARecord] = []
     for ex in ds:
         question = ex["question"]
@@ -216,15 +243,22 @@ def _load_arabic_squad(split: str) -> List[QARecord]:
 
 
 def _load_tydiqa_arabic(split: str) -> List[QARecord]:
-    """Load TyDiQA-Arabic from secondary_task (filter id starts with 'arabic-')."""
-    if split not in {"train", "validation"}:
-        raise ValueError(f"tydiqa_arabic split must be 'train' or 'validation', got {split!r}")
+    """Load TyDiQA-Arabic from secondary_task (filter id starts with 'arabic-').
+
+    ``train`` / ``dev`` are the official train split partitioned by article
+    title (``is_dev_title``); ``validation`` is the official dev split — the
+    held-out evaluation set (TyDi's test split is hidden).
+    """
+    hf_split = _train_dev_split(split, "tydiqa_arabic")
     from datasets import load_dataset
-    ds = load_dataset("google-research-datasets/tydiqa", "secondary_task", split=split)
+    ds = load_dataset("google-research-datasets/tydiqa", "secondary_task", split=hf_split,
+                      revision=PINNED_REVISIONS["tydiqa_arabic"])
     records: List[QARecord] = []
     for ex in ds:
         ex_id = ex["id"]
         if not ex_id.startswith("arabic-"):
+            continue
+        if split != "validation" and is_dev_title("tydiqa_arabic", ex.get("title")) != (split == "dev"):
             continue
         answers = ex["answers"]
         texts = answers.get("text") or []
@@ -246,13 +280,19 @@ def _load_tydiqa_arabic(split: str) -> List[QARecord]:
 
 
 def _load_arcd(split: str) -> List[QARecord]:
-    """Load hsseinmz/arcd (plain_text config)."""
-    if split not in {"train", "validation"}:
-        raise ValueError(f"arcd split must be 'train' or 'validation', got {split!r}")
+    """Load hsseinmz/arcd (plain_text config).
+
+    ``train`` / ``dev`` partition the official train split by article title
+    (``is_dev_title``); ``validation`` is the Hub's validation split — the
+    paper's test split, the held-out evaluation set.
+    """
+    hf_split = _train_dev_split(split, "arcd")
     from datasets import load_dataset
-    ds = load_dataset("hsseinmz/arcd", "plain_text", split=split)
+    ds = load_dataset("hsseinmz/arcd", "plain_text", split=hf_split, revision=PINNED_REVISIONS["arcd"])
     records: List[QARecord] = []
     for ex in ds:
+        if split != "validation" and is_dev_title("arcd", ex.get("title")) != (split == "dev"):
+            continue
         answers = ex["answers"]
         texts = answers.get("text") or []
         if not texts:
@@ -467,11 +507,14 @@ _LOADERS = {
 assert set(_LOADERS) == set(CORPUS_CATEGORY), (set(_LOADERS) ^ set(CORPUS_CATEGORY))
 
 
-def load_corpus(name: str, split: str, **params: Any) -> List[QARecord]:
+def load_corpus(name: str, split: str, exclusions: Any = None, **params: Any) -> List[QARecord]:
     """Resolve a registry name + split to a list of normalized QARecord.
 
     ``params`` are the corpus' entry of ``training.corpus_params`` (today
-    only ``aya_ar`` takes any: ``include_datasets``).
+    only ``aya_ar`` takes any: ``include_datasets``). ``exclusions`` is the
+    committed contamination list (``data.contamination.Exclusions``): its
+    ids are dropped from the ``train`` / ``dev`` splits, never from an
+    official evaluation split.
     """
     try:
         loader = _LOADERS[name]
@@ -479,20 +522,25 @@ def load_corpus(name: str, split: str, **params: Any) -> List[QARecord]:
         raise KeyError(
             f"unknown corpus name {name!r}; known names: {sorted(_LOADERS)}"
         ) from None
-    return loader(split, **params)
+    records = loader(split, **params)
+    if exclusions is not None:
+        records = exclusions.apply(name, split, records)
+    return records
 
 
 def load_corpora(
     names: Sequence[str],
     splits: Mapping[str, str] | str,
     corpus_params: Optional[Mapping[str, Mapping[str, Any]]] = None,
+    exclusions: Any = None,
 ) -> List[QARecord]:
     """Load and concatenate multiple corpora.
 
     ``splits`` may be a single string (applied to all names) or a mapping
     ``{corpus_name: split_name}`` (per-corpus override; useful when Phase 3
-    SFT trains on TyDiQA train + ARCD train but evaluates on TyDiQA val +
-    ARCD val). ``corpus_params`` is ``training.corpus_params``.
+    SFT trains on TyDiQA train + ARCD train but early-stops on their
+    ``dev`` slices). ``corpus_params`` is ``training.corpus_params``;
+    ``exclusions`` the contamination list (see ``load_corpus``).
     """
     if isinstance(splits, str):
         splits = {n: splits for n in names}
@@ -502,7 +550,10 @@ def load_corpora(
         s = splits.get(n)
         if s is None:
             raise KeyError(f"no split provided for corpus {n!r}")
-        out.extend(load_corpus(n, s, **dict(corpus_params.get(n, {}))))
+        kw: Dict[str, Any] = dict(corpus_params.get(n, {}))
+        if exclusions is not None:
+            kw["exclusions"] = exclusions
+        out.extend(load_corpus(n, s, **kw))
     return out
 
 

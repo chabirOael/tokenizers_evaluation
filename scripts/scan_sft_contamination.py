@@ -21,32 +21,20 @@ from __future__ import annotations
 
 import argparse
 import json
-import re
 import sys
-import unicodedata
 from collections import defaultdict
 from pathlib import Path
 from typing import Dict, Iterable, List, Set, Tuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
+from arabic_eval.data.contamination import normalize_text as normalize   # one normalizer for every scan
 from arabic_eval.data.finetune_corpora import load_corpus
 from arabic_eval.registry import task_registry
 from arabic_eval.utils.logging import setup_logger
 import arabic_eval.tasks  # noqa: F401  (registers the benchmarks)
 
 BENCHMARKS = ("acva", "alghafa", "culture_arabic_mmlu", "arabic_exam")
-_DIACRITICS = re.compile(r"[ً-ْٰـ]")
-_PUNCT = re.compile(r"[^\w\s]", re.UNICODE)
-
-
-def normalize(text: str) -> str:
-    text = unicodedata.normalize("NFKC", text or "")
-    text = _DIACRITICS.sub("", text)
-    text = text.replace("أ", "ا").replace("إ", "ا").replace("آ", "ا").replace("ٱ", "ا")
-    text = text.replace("ة", "ه").replace("ى", "ي")
-    text = _PUNCT.sub(" ", text)
-    return " ".join(text.split()).lower()
 
 
 def ngrams(words: List[str], n: int) -> Iterable[Tuple[str, ...]]:

@@ -103,10 +103,13 @@ class EarlyStoppingConfig(BaseModel):
     min_delta: float = 5e-4
     min_steps_before_stop: int = 500
     restore_best_at_end: bool = True
+    # ``dev`` = a title-level 5 % slice of each official *train* split
+    # (``finetune_corpora.is_dev_title``); the official evaluation splits
+    # (``validation``) are held out and never steer training (2026-09-17).
     eval_splits: Dict[DatasetName, str] = Field(
         default_factory=lambda: {
-            "tydiqa_arabic": "validation",
-            "arcd": "validation",
+            "tydiqa_arabic": "dev",
+            "arcd": "dev",
         }
     )
 
@@ -156,13 +159,15 @@ class QABlendConfig(BaseModel):
 
     @model_validator(mode="after")
     def _no_early_stop_splits(self):
-        # Phase 3 early-stops on TyDiQA-val + ARCD-val; blending those rows
-        # into an earlier phase would contaminate the stopping signal.
+        # TyDiQA / ARCD ``validation`` are the held-out evaluation splits and
+        # ``dev`` steers Phase 3 early-stopping; blending either into an
+        # earlier phase would contaminate evaluation or the stopping signal.
         if self.split != "train":
             for name in self.datasets:
                 if name in ("tydiqa_arabic", "arcd"):
+                    what = "the held-out evaluation split" if self.split == "validation" else "a Phase 3 early-stop split"
                     raise ValueError(
-                        f"qa_blend: split {self.split!r} of {name!r} is a Phase 3 early-stop split; "
+                        f"qa_blend: split {self.split!r} of {name!r} is {what}; "
                         f"only 'train' may be blended"
                     )
         return self
@@ -492,6 +497,17 @@ class MixMsaFilterConfig(BaseModel):
     camel_did: MixCamelDidConfig = Field(default_factory=MixCamelDidConfig)
 
 
+class MixHeldoutFilterConfig(BaseModel):
+    """Stage A filter: drop a pool document that contains a held-out
+    evaluation passage (``data.contamination``, by content, tier
+    ``contaminated``). ``sets_file`` declares the held-out sets; the pool
+    fingerprint includes their identity (pinned dataset revisions, the
+    prompt file's hash), so a changed held-out set rebuilds the pool.
+    Drop reason in the manifest: ``heldout_overlap``."""
+    enabled: bool = True
+    sets_file: str = "configs/contamination/heldout_sets.yaml"
+
+
 class MixQualityConfig(BaseModel):
     """Length + boilerplate rules. Every threshold is a drop reason counted
     in the pool manifest."""
@@ -531,6 +547,7 @@ class PretrainingMixConfig(BaseModel):
     dedup: MixDedupConfig = Field(default_factory=MixDedupConfig)
     msa_filter: MixMsaFilterConfig = Field(default_factory=MixMsaFilterConfig)
     quality: MixQualityConfig = Field(default_factory=MixQualityConfig)
+    heldout_filter: MixHeldoutFilterConfig = Field(default_factory=MixHeldoutFilterConfig)
 
     @field_validator("block_size")
     @classmethod
@@ -585,6 +602,13 @@ class TrainingConfig(BaseModel):
     # that corpus. Only ``aya_ar`` takes any today (``include_datasets``:
     # sub-dataset allowlist of the Aya collection).
     corpus_params: Dict[DatasetName, Dict[str, Any]] = Field(default_factory=dict)
+    # Committed list of training record ids that contain a held-out
+    # evaluation passage (``scripts/check_contamination.py``; see
+    # ``data/contamination.py``). Applied to the ``train`` / ``dev`` splits
+    # of every QA corpus a phase, an early-stop split or a qa_blend loads.
+    # ``null`` trains without it (the pool's own filter is separate:
+    # ``pretraining_mix.heldout_filter``).
+    contamination_exclusions: Optional[str] = "configs/contamination/exclusions.json"
 
     @field_validator("corpus_params")
     @classmethod

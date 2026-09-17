@@ -450,14 +450,19 @@ def load_mixture_pools(
     datasets: Sequence[str],
     corpus_params: Optional[Mapping[str, Mapping[str, Any]]] = None,
     clean_latin_rows: bool = False,
+    exclusions: Any = None,
 ) -> Tuple[Dict[str, List[QARecord]], Dict[str, int]]:
-    """Load every corpus' train split (with its ``training.corpus_params``)
-    and apply the phase's Latin filter. Returns ``(pools, sizes_before_filter)``."""
+    """Load every corpus' train split (with its ``training.corpus_params``
+    and the contamination ``exclusions``) and apply the phase's Latin
+    filter. Returns ``(pools, sizes_before_filter)``."""
     corpus_params = corpus_params or {}
     pools: Dict[str, List[QARecord]] = {}
     before: Dict[str, int] = {}
     for name in datasets:
-        recs = load_corpus(name, "train", **dict(corpus_params.get(name, {})))
+        kw: Dict[str, Any] = dict(corpus_params.get(name, {}))
+        if exclusions is not None:
+            kw["exclusions"] = exclusions
+        recs = load_corpus(name, "train", **kw)
         before[name] = len(recs)
         if clean_latin_rows:
             recs = filter_latin_records(recs)
@@ -475,10 +480,11 @@ def build_mixture_dataloader(
     loss_target: str,
     corpus_params: Optional[Mapping[str, Mapping[str, Any]]] = None,
     clean_latin_rows: bool = False,
+    exclusions: Any = None,
 ) -> Tuple[DataLoader, Dict[str, Any]]:
     """Load, compose and wrap the phase's mixture in a DataLoader with the
     tokenizer's collator (``embedding_type`` dispatch as ``build_qa_dataloader``)."""
-    pools, before = load_mixture_pools(datasets, corpus_params, clean_latin_rows)
+    pools, before = load_mixture_pools(datasets, corpus_params, clean_latin_rows, exclusions)
     encodings, manifest = compose_mixture(
         mixture, datasets, pools, tokenizer, max_length, loss_target,
         batch_size=batch_size, pool_sizes_before_filter=before, clean_latin_rows=clean_latin_rows,

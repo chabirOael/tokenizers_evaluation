@@ -68,7 +68,13 @@ def main() -> int:
         return 2
     mixture = phase.mixture
 
-    pools, before = load_mixture_pools(phase.datasets, config.training.corpus_params, phase.clean_latin_rows)
+    from arabic_eval.data.contamination import load_exclusions
+    exclusions = load_exclusions(config.training.contamination_exclusions)
+    pools, before = load_mixture_pools(phase.datasets, config.training.corpus_params, phase.clean_latin_rows,
+                                       exclusions)
+    if exclusions is not None and exclusions.dropped:
+        print(f"contamination exclusions ({exclusions.path}): "
+              + ", ".join(f"{k} −{v}" for k, v in exclusions.dropped.items()))
     capacities = {n: len(p) for n, p in pools.items()}
     plan = plan_mixture(mixture, phase.datasets, capacities, phase.batch_size)
 

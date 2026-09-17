@@ -172,9 +172,9 @@ training:
         min_delta: 5.0e-4                              # improvements smaller than this = noise
         min_steps_before_stop: 500                     # don't allow early-stop before this step
         restore_best_at_end: true                      # snapshot best weights, restore at end
-        eval_splits:                                   # which val split per corpus
-          tydiqa_arabic: "validation"
-          arcd: "validation"
+        eval_splits:                                   # "dev" = title-level 5 % of the official train split;
+          tydiqa_arabic: "dev"                         #   "validation" is the held-out evaluation split
+          arcd: "dev"
 
 
 # ---------------------------------------------------------------------------

@@ -58,7 +58,8 @@ from .sources import BaseSource, make_source
 
 logger = logging.getLogger(__name__)
 
-STAGE_A_FIELDS = frozenset({"seed", "normalization", "sources", "pool", "dedup", "msa_filter", "quality"})
+STAGE_A_FIELDS = frozenset({"seed", "normalization", "sources", "pool", "dedup", "msa_filter", "quality",
+                            "heldout_filter"})
 MANIFEST_NAME = "manifest.json"
 SAMPLE_PER_REASON = 30
 DIALECT_CSV_FIELDS = ["source", "id", "n_words", "n_markers", "per_1k_words", "top_markers", "snippet"]
@@ -73,7 +74,14 @@ def stage_a_config(cfg: PretrainingMixConfig) -> Dict[str, Any]:
 
 
 def pool_fingerprint(cfg: PretrainingMixConfig) -> str:
-    payload = json.dumps(stage_a_config(cfg), sort_keys=True, ensure_ascii=False)
+    """Stage A config, plus — when the held-out filter is on — the identity
+    of the held-out sets (declaration file hash, pinned dataset revisions,
+    the prompt file's hash), so a changed held-out set rebuilds the pool."""
+    payload_dict = stage_a_config(cfg)
+    if cfg.heldout_filter.enabled:
+        from ..contamination import heldout_fingerprint_payload
+        payload_dict["heldout_identity"] = heldout_fingerprint_payload(cfg.heldout_filter.sets_file)
+    payload = json.dumps(payload_dict, sort_keys=True, ensure_ascii=False)
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
 
 
@@ -187,6 +195,7 @@ def build_pool(
     did_scorer=None,
     sources_override: Optional[Dict[str, BaseSource]] = None,
     log_every: int = 2000,
+    heldout_index: Optional["HeldoutIndex"] = None,
 ) -> Path:
     """Build (or reuse) the pool. Returns its directory.
 
@@ -195,7 +204,9 @@ def build_pool(
     fixed number of raw docs per source and report every drop reason
     without stopping at the word target. ``did_scorer`` (a
     ``CamelDialectScorer``) is required when ``msa_filter.camel_did.enabled``.
-    ``sources_override`` injects in-memory sources (tests).
+    ``sources_override`` injects in-memory sources (tests); ``heldout_index``
+    injects the held-out contamination index (built from
+    ``cfg.heldout_filter.sets_file`` when omitted and the filter is on).
     """
     out_dir = Path(out_dir) if out_dir is not None else pool_dir(cfg)
     if out_dir.exists() and not force and pool_is_complete(out_dir):
@@ -209,6 +220,12 @@ def build_pool(
     if cfg.msa_filter.camel_did.enabled and did_scorer is None:
         from .dialect_id import CamelDialectScorer
         did_scorer = CamelDialectScorer(cfg.msa_filter.camel_did)
+    heldout = heldout_index
+    if heldout is None and cfg.heldout_filter.enabled:
+        from ..contamination import HeldoutIndex
+        heldout = HeldoutIndex.from_sets_file(cfg.heldout_filter.sets_file)
+        logger.info("pretraining_mix pool: held-out filter on — %d records, %d n-grams (%s)",
+                    len(heldout), heldout.summary()["ngrams"], cfg.heldout_filter.sets_file)
 
     norm = cfg.normalization.model_dump()
     quality = cfg.quality
@@ -278,6 +295,16 @@ def build_pool(
                         _sample(src_cfg.name, reason, doc.id, text, markers=top)
                 if reason is None and did_scorer is not None and did_scorer.is_dialect(text):
                     reason = "dialect_camel"
+                if reason is None and heldout is not None:
+                    # A document carrying a held-out evaluation passage
+                    # (exact paragraph, ≥ half its n-grams or a ≥ 20-word
+                    # run) never enters the pool.
+                    hit = heldout.is_contaminated(text)
+                    if hit is not None:
+                        reason = "heldout_overlap"
+                        _sample(src_cfg.name, reason, doc.id, text, heldout_set=hit.heldout_set,
+                                heldout_id=hit.heldout_id, exact=hit.exact, coverage=hit.coverage,
+                                run_words=hit.run_words)
                 if reason is None and minhash is not None:
                     # Positional key: source ids may repeat or be empty (101B).
                     dup_of = minhash.check_and_add(f"{src_cfg.name}#{stats.streamed}:{doc.id}", text)
@@ -294,7 +321,7 @@ def build_pool(
 
                 if reason is not None:
                     stats.dropped[reason] += 1
-                    if reason not in ("dialect_markers", "near_duplicate"):
+                    if reason not in ("dialect_markers", "near_duplicate", "heldout_overlap"):
                         _sample(src_cfg.name, reason, doc.id, text)
                 else:
                     text, truncated = truncate_words(text, quality.max_words)
@@ -365,6 +392,7 @@ def build_pool(
         "wall_sec": round(time.perf_counter() - t_all, 1),
         "stage_a_config": stage_a_config(cfg),
         "camel_did_sentences_scored": getattr(did_scorer, "n_sentences_scored", 0),
+        "heldout_filter": ({"enabled": True, **heldout.summary()} if heldout is not None else {"enabled": False}),
         "paragraph_hashes": len(para_dedup) if para_dedup is not None else None,
         "minhash_docs": len(minhash) if minhash is not None else None,
         "sources": manifest_sources,

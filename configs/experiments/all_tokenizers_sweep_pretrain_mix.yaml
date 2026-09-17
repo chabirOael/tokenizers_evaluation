@@ -83,7 +83,7 @@ training:
       qa_blend:                     # 560 QA blocks + raw-text blocks [8000, 15440), disjoint from Phase 1
         datasets: ["tydiqa_arabic", "arcd"]
         share: 0.07
-        split: "train"              # 'validation' is refused (Phase 3 early-stop splits)
+        split: "train"              # 'validation' (held-out evaluation) and 'dev' (Phase 3 early-stop) are refused
         seed: 42
 
 evaluation:

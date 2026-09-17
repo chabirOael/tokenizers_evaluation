@@ -71,6 +71,12 @@ training:
   bf16: true                                         # mixed-precision dtype (applies to all phases)
   fp16: false
   logging_steps: 50                                  # log frequency inside each phase
+  # Committed list of QA training records that contain a held-out evaluation
+  # passage (scripts/check_contamination.py --write-exclusions); dropped from
+  # every train / dev split a phase, an early-stop split or a qa_blend loads.
+  # null trains without it. The pool has its own by-content filter
+  # (pretraining_mix.heldout_filter, base.yaml).
+  contamination_exclusions: "configs/contamination/exclusions.json"
 
   # Per-corpus loader parameters, forwarded to load_corpus(name, split, **params)
   # wherever that corpus is loaded (a phase, an early-stop split, a qa_blend).
@@ -145,7 +151,7 @@ training:
       #                                              #   mix_tokens == steps × batch_size × block_size (steps may be omitted)
       # qa_blend:                                    # optional: SFT-format QA text replacing round(share × blocks)
       #   datasets: ["tydiqa_arabic", "arcd"]        #   of the phase's raw-text blocks (Phase 3 / eval surface form,
-      #   share: 0.07                                #   full-sequence loss, packed like the pool; 'validation' refused)
+      #   share: 0.07                                #   full-sequence loss, packed like the pool; 'validation' / 'dev' refused)
       #   split: "train"
       #   seed: 42
 
@@ -204,9 +210,9 @@ training:
         min_delta: 5.0e-4                            # treat improvements smaller than this as noise
         min_steps_before_stop: 500                   # don't allow early-stop before this step
         restore_best_at_end: true                    # snapshot best weights, restore at end
-        eval_splits:                                 # which val split per corpus
-          tydiqa_arabic: "validation"
-          arcd: "validation"
+        eval_splits:                                 # which split per corpus: "dev" = title-level 5 % of the official
+          tydiqa_arabic: "dev"                       #   train split; "validation" is the held-out evaluation split
+          arcd: "dev"                                #   (never steers training — see configs/contamination/)
 
 
 # ---------------------------------------------------------------------------

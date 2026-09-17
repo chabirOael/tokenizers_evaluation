@@ -59,6 +59,7 @@ def _phase_eval_loader(
     phase_cfg: PhaseConfig,
     tokenizer,
     corpus_params=None,
+    exclusions=None,
 ):
     """Build the eval loader for SFT (TyDiQA-val + ARCD-val by default).
 
@@ -68,7 +69,8 @@ def _phase_eval_loader(
     es = phase_cfg.early_stopping
     if es is None or not es.enabled:
         return None
-    eval_records = load_corpora(list(es.eval_splits.keys()), es.eval_splits, corpus_params=corpus_params)
+    eval_records = load_corpora(list(es.eval_splits.keys()), es.eval_splits, corpus_params=corpus_params,
+                                exclusions=exclusions)
     if not eval_records:
         raise RuntimeError(
             f"Eval split is empty for phase with early_stopping enabled "
@@ -172,6 +174,14 @@ def _run_all_phases(
     packed = None
     qa_packed = None
     data_dir = Path(data_dir) if data_dir is not None else Path(output_dir).parent / "data" / "pretraining_mix"
+    # Committed contamination list: training record ids carrying a held-out
+    # evaluation passage, dropped from every train / dev split loaded below
+    # (None when training.contamination_exclusions is null).
+    from arabic_eval.data.contamination import load_exclusions
+    exclusions = load_exclusions(getattr(training_cfg, "contamination_exclusions", None))
+    if exclusions is not None:
+        logger.info("contamination exclusions: %s (%d record ids over %d corpora)",
+                    exclusions.path, exclusions.total(), len(exclusions.ids))
     for phase_name in _PHASE_NAMES:
         phase_cfg: PhaseConfig = getattr(training_cfg.phases, phase_name)
         if not phase_cfg.enabled:
@@ -197,7 +207,7 @@ def _run_all_phases(
                     phase_cfg.qa_blend, training_cfg.pretraining_mix.block_size,
                     Path(training_cfg.pretraining_mix.cache_dir), tokenizer, tokenizer_type,
                     clean_latin_rows=phase_cfg.clean_latin_rows, cell_data_dir=data_dir,
-                    corpus_params=training_cfg.corpus_params,
+                    corpus_params=training_cfg.corpus_params, exclusions=exclusions,
                 )
             train_loader, data_info = _packed_mix_loader(
                 phase_name, phase_cfg, packed, tokenizer, training_cfg.pretraining_mix.block_size,
@@ -215,6 +225,7 @@ def _run_all_phases(
                 loss_target=phase_cfg.loss_target,
                 corpus_params=training_cfg.corpus_params,
                 clean_latin_rows=phase_cfg.clean_latin_rows,
+                exclusions=exclusions,
             )
             manifest_path = data_dir.parent / f"{phase_name}_mixture_manifest.json"
             save_json({"phase": phase_name, **manifest}, manifest_path)
@@ -227,7 +238,8 @@ def _run_all_phases(
             }
         else:
             # Build the train loader from the phase's own corpus list.
-            train_records = load_corpora(phase_cfg.datasets, splits="train", corpus_params=training_cfg.corpus_params)
+            train_records = load_corpora(phase_cfg.datasets, splits="train", corpus_params=training_cfg.corpus_params,
+                                         exclusions=exclusions)
             if phase_cfg.clean_latin_rows:
                 n_before = len(train_records)
                 train_records = filter_latin_records(train_records)
@@ -249,8 +261,11 @@ def _run_all_phases(
                 shuffle=True,
             )
             data_info = {"datasets": list(phase_cfg.datasets), "n_records": len(train_records)}
+        if exclusions is not None:
+            data_info["contamination"] = {"exclusions": str(exclusions.path), "records_excluded": dict(exclusions.dropped)}
 
-        eval_loader = _phase_eval_loader(phase_cfg, tokenizer, corpus_params=training_cfg.corpus_params)
+        eval_loader = _phase_eval_loader(phase_cfg, tokenizer, corpus_params=training_cfg.corpus_params,
+                                         exclusions=exclusions)
 
         result: PhaseResult = run_phase(
             phase_name=phase_name,

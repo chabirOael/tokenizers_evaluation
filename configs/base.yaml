@@ -28,6 +28,10 @@ training:
   bf16: true
   fp16: false
   logging_steps: 50
+  # Committed list of QA training records that contain a held-out evaluation
+  # passage (scripts/check_contamination.py); dropped from every train / dev
+  # split a phase, an early-stop split or a qa_blend loads. null = off.
+  contamination_exclusions: "configs/contamination/exclusions.json"
   # Packed raw-text mix for Phase 1 / Phase 2. Inert until a phase sets
   # ``datasets: ["pretraining_mix"]`` + ``mix_tokens`` (then loss_target must
   # be full_sequence, max_length must equal block_size, and
@@ -85,6 +89,9 @@ training:
       max_dup_line_ratio: 0.30
       max_symbol_ratio: 0.10
       wikipedia_strip_sections: ["المراجع", "مراجع", "وصلات خارجية", "انظر أيضا", "انظر أيضًا", "انظر أيضاً", "مصادر", "ملاحظات", "المصادر"]
+    heldout_filter:                 # drop a doc carrying a held-out evaluation passage (TyDiQA-AR dev, ARCD test,
+      enabled: true                 #   the free-form prompts once provided); by content, drop reason heldout_overlap;
+      sets_file: "configs/contamination/heldout_sets.yaml"   #   the sets' identity is part of the pool fingerprint
 
   phases:
     embedding_alignment:        # Phase 1
@@ -164,9 +171,13 @@ training:
         min_delta: 5.0e-4
         min_steps_before_stop: 500
         restore_best_at_end: true
+        # "dev" = a title-level 5 % slice of each official train split
+        # (finetune_corpora.is_dev_title). The official evaluation splits
+        # ("validation": TyDiQA-AR dev, ARCD test) are held out and never
+        # steer training — see configs/contamination/ (2026-09-17).
         eval_splits:
-          tydiqa_arabic: "validation"
-          arcd: "validation"
+          tydiqa_arabic: "dev"
+          arcd: "dev"
 
 evaluation:
   intrinsic_metrics: true

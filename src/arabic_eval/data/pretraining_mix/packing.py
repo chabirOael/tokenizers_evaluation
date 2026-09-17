@@ -466,10 +466,12 @@ def build_packed_corpus(
 # --------------------------------------------------------------------------
 
 def qa_blend_fingerprint(tok_id: Dict[str, Any], qa_cfg: QABlendConfig, block_size: int,
-                         clean_latin_rows: bool, corpus_params: Optional[Dict[str, Any]] = None) -> str:
+                         clean_latin_rows: bool, corpus_params: Optional[Dict[str, Any]] = None,
+                         exclusions_digest: str = "") -> str:
     """``corpus_params`` (``training.corpus_params`` restricted to the blend's
-    datasets) only enters the payload when non-empty, so entries packed
-    before it existed keep their fingerprint."""
+    datasets) and the contamination ``exclusions_digest`` only enter the
+    payload when non-empty, so entries packed before they existed keep
+    their fingerprint."""
     payload_dict: Dict[str, Any] = {
         "tokenizer": tok_id, "datasets": list(qa_cfg.datasets), "split": qa_cfg.split,
         "block_size": block_size, "seed": qa_cfg.seed, "clean_latin_rows": clean_latin_rows,
@@ -477,6 +479,8 @@ def qa_blend_fingerprint(tok_id: Dict[str, Any], qa_cfg: QABlendConfig, block_si
     relevant = {n: p for n, p in (corpus_params or {}).items() if n in qa_cfg.datasets and p}
     if relevant:
         payload_dict["corpus_params"] = relevant
+    if exclusions_digest:
+        payload_dict["exclusions"] = exclusions_digest
     payload = json.dumps(payload_dict, sort_keys=True, ensure_ascii=False)
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
 
@@ -490,6 +494,7 @@ def pack_qa_blend(
     clean_latin_rows: bool = False,
     cell_data_dir: Optional[Path] = None,
     corpus_params: Optional[Dict[str, Any]] = None,
+    exclusions: Any = None,
 ) -> PackedCorpus:
     """Pack (or load) the *whole* QA train split(s) for this tokenizer.
 
@@ -505,7 +510,8 @@ def pack_qa_blend(
     from ..finetune_corpora import _format_qa_full, filter_latin_records, load_corpora
 
     tok_id = tokenizer_identity(tokenizer, tokenizer_type)
-    fp = qa_blend_fingerprint(tok_id, qa_cfg, block_size, clean_latin_rows, corpus_params)
+    exclusions_digest = exclusions.digest() if exclusions is not None else ""
+    fp = qa_blend_fingerprint(tok_id, qa_cfg, block_size, clean_latin_rows, corpus_params, exclusions_digest)
     directory = Path(cache_dir) / QA_BLEND_SUBDIR / fp
     manifest_path = directory / QA_BLEND_MANIFEST
 
@@ -519,7 +525,8 @@ def pack_qa_blend(
 
     if corpus is None:
         t0 = time.perf_counter()
-        records = load_corpora(list(qa_cfg.datasets), splits=qa_cfg.split, corpus_params=corpus_params)
+        records = load_corpora(list(qa_cfg.datasets), splits=qa_cfg.split, corpus_params=corpus_params,
+                               exclusions=exclusions)
         n_loaded = len(records)
         if clean_latin_rows:
             records = filter_latin_records(records)
@@ -546,6 +553,7 @@ def pack_qa_blend(
             "datasets": list(qa_cfg.datasets),
             "split": qa_cfg.split,
             "clean_latin_rows": clean_latin_rows,
+            "exclusions_digest": exclusions_digest,
             "records_loaded": n_loaded,
             "n_records": len(records),
             "words": words,

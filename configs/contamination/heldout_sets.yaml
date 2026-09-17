@@ -1,0 +1,51 @@
+# Held-out evaluation sets — text the model must never train on.
+#
+# Read by scripts/check_contamination.py (which writes exclusions.json next
+# to this file), by the pretraining-mix pool builder (Stage A filter
+# `heldout_filter`, by content) and by the tests. Changing this file, a
+# pinned dataset revision (PINNED_REVISIONS in finetune_corpora.py) or the
+# prompt file changes the pool fingerprint, so the pool rebuilds.
+#
+# Matching (src/arabic_eval/data/contamination.py): both sides normalized
+# the same way (NFKC, no diacritics / tatweel, alef and ة / ى folded,
+# Arabic-Indic digits → ASCII, punctuation out); exact SHA-1 of passage /
+# paragraph / question, plus word n-gram containment. A training record is
+# `contaminated` (removed) on an exact match, on covering ≥ `tiers.coverage`
+# of a held-out record's n-grams, or on a shared run ≥ `tiers.run_words`
+# words; a shorter shared n-gram is `overlap` (reported only).
+
+ngram_default: 8
+tiers:
+  coverage: 0.5
+  run_words: 20
+
+sets:
+  # TyDi QA GoldP (secondary_task), Arabic rows of the public dev split.
+  # TyDi's test set is hidden; dev is what every paper reports on.
+  tydiqa_arabic_validation:
+    kind: corpus
+    corpus: tydiqa_arabic
+    split: validation
+    ngram: 8
+
+  # ARCD: the Hub's `validation` split is the paper's test split (702 rows).
+  arcd_validation:
+    kind: corpus
+    corpus: arcd
+    split: validation
+    ngram: 8
+
+  # Free-form eval prompts — PLACEHOLDER. Set `path` when the file exists
+  # (JSONL, one object per line; see freeform_prompts.template.jsonl):
+  #   {"id": "p1", "prompt": "...", "context": "...", "reference": "..."}
+  # `context` and `reference` are optional. Until then the set is
+  # `pending`: the scan reports it as not provided and nothing else changes.
+  freeform_prompts:
+    kind: file
+    path: null
+    ngram: 6
+    fields:
+      id: id
+      prompt: prompt
+      context: context
+      reference: reference
