@@ -70,6 +70,11 @@ sweep:
       params: {}
     - type: "arabic_exam"
       params: {}
+    # Free-form instruction following on the 250 held-out CIDAR prompts (greedy,
+    # 1 200-char budget, chrF + BERTScore inline; LLM judges run afterwards with
+    # scripts/judge/judge_freeform.py). Meaningful here because Phase 3 saw free-form corpora.
+    - type: "freeform_cidar"
+      params: {}
 
 evaluation:
   intrinsic_metrics: true

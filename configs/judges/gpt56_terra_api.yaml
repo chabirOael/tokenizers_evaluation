@@ -1,0 +1,20 @@
+# API judge over an OpenAI-compatible chat endpoint. Verified 2026-09-18 against
+# gpt-5.6-terra: the model rejects an explicit temperature (reasoning model, default only),
+# so temperature is null (field omitted); reasoning_effort "low" keeps verdicts fast
+# (~0.7 s each at concurrency 8) and matched Gemma-4-31B on the probe set. Export the
+# key in the variable named by api_key_env before running (or before starting the console).
+judge:
+  name: "gpt56_terra"
+  backend: "openai"
+  model: "gpt-5.6-terra"
+  rubric: "default_v1"
+  temperature: null              # null = omit the field (this model accepts only the default)
+  max_tokens: 1024               # sent as max_completion_tokens; reasoning tokens count against it
+  seed: 0
+  structured_json: true          # response_format json_schema (strict); false = prose parser
+  base_url: null                 # null = https://api.openai.com/v1
+  api_key_env: "OPENAI_API_KEY"
+  concurrency: 8
+  timeout_sec: 120
+  max_retries: 5
+  extra_body: {reasoning_effort: "low"}   # merged into the request body last

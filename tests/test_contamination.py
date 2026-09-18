@@ -134,16 +134,21 @@ def _sets_yaml(tmp_path: Path, prompt_path=None, extra: str = "") -> Path:
 
 
 class TestHeldoutSets:
-    def test_repo_declaration_parses_with_the_prompts_pending(self):
+    def test_repo_declaration_parses_with_the_free_form_prompts_live(self):
+        """Since 2026-09-18 the free-form set points at the committed CIDAR
+        held-out file (250 rows, built by scripts/build_freeform_heldout.py)."""
         specs, thr = C.load_heldout_sets(C.DEFAULT_SETS_FILE)
         by = {s.name: s for s in specs}
         assert set(by) == {"tydiqa_arabic_validation", "arcd_validation", "freeform_prompts"}
         assert by["tydiqa_arabic_validation"].corpus == "tydiqa_arabic" and by["tydiqa_arabic_validation"].split == "validation"
-        assert by["freeform_prompts"].pending and by["freeform_prompts"].ngram == 6
-        assert by["freeform_prompts"].identity() == {"kind": "file", "status": "pending", "ngram": 6}
+        ff = by["freeform_prompts"]
+        assert not ff.pending and ff.ngram == 6 and ff.path.name == "freeform_cidar_heldout_v1.jsonl" and ff.path.exists()
+        ident = ff.identity()
+        assert ident["kind"] == "file" and ident["ngram"] == 6 and len(ident["sha256"]) == 64
+        recs = C.heldout_records(ff)
+        assert len(recs) == 250 and len({r.rec_id for r in recs}) == 250 and all(r.question for r in recs)
         assert by["arcd_validation"].identity()["revision"] == PINNED_REVISIONS["arcd"]
         assert (thr.coverage, thr.run_words) == (0.5, 20)
-        assert C.heldout_records(by["freeform_prompts"]) == []
 
     def test_pending_then_provided(self, tmp_path):
         specs, thr = C.load_heldout_sets(_sets_yaml(tmp_path))

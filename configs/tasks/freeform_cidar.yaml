@@ -1,0 +1,22 @@
+task:
+  type: "freeform_cidar"
+  params:
+    # Held-out CIDAR prompts (250 rows, built by scripts/build_freeform_heldout.py and
+    # declared as the `freeform_prompts` held-out set of configs/contamination/heldout_sets.yaml).
+    heldout_path: "configs/contamination/freeform_cidar_heldout_v1.jsonl"
+    # Fixed decoding across every tokenizer: greedy, no repetition penalty, budget in
+    # CHARACTERS of decoded text. The per-tokenizer token cap is derived from the
+    # tokenizer's measured chars/token on the references (× margin), then clamped.
+    max_output_chars: 1200
+    max_prompt_tokens: 512
+    batch_size: 16
+    token_cap_margin: 1.15
+    token_cap_floor: 32
+    token_cap_ceiling: 4096
+    stop_markers: ["\nالسؤال:", "\nالسياق:", "\nالإجابة:", "\n###"]
+    marker_check_every: 16
+    seed: 42
+    # BERTScore (in-house implementation, tasks/freeform/bertscore.py). null = skip.
+    bertscore_model: "xlm-roberta-large"
+    bertscore_layer: 17
+    bertscore_batch_size: 32

@@ -7,3 +7,8 @@ try:
     from arabic_eval.tasks import lighteval  # noqa: F401
 except ImportError:
     pass
+
+try:
+    from arabic_eval.tasks import freeform  # noqa: F401
+except ImportError:
+    pass

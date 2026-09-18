@@ -289,7 +289,54 @@ Tasks live in `src/arabic_eval/tasks/` and register via `task_registry`.
   - `السياق: ...`
   - `السؤال: ...`
   - `الإجابة:`
-- **`acva`**, **`alghafa`**, **`culture_arabic_mmlu`**, **`arabic_exam`**: LightEval log-likelihood MCQ benchmarks. Each fine-tunes on its 10 % SFT split and evaluates on the 90 % held-out split.
+- **`acva`**, **`alghafa`**, **`culture_arabic_mmlu`**, **`arabic_exam`**: LightEval log-likelihood MCQ benchmarks, evaluated on the full benchmark (training is the task-agnostic 3-phase pipeline).
+- **`freeform_cidar`**: greedy generation on the 250 held-out CIDAR instructions, scored inline (chrF, BERTScore, loop / empty / cap rates, decode round-trip) and by LLM judges in a separate stage — see *Free-form eval* below.
+
+## Free-form eval — generation, LLM judges, human check
+
+The MCQ benchmarks score log-likelihoods; the free-form eval is the one task that makes every
+tokenizer *generate*. 250 held-out CIDAR instructions
+(`configs/contamination/freeform_cidar_heldout_v1.jsonl`, declared as the `freeform_prompts`
+held-out set so they never train), greedy decoding under a shared **character** budget, chrF and
+an in-house BERTScore inline, LLM judges afterwards, and a blind human check to calibrate the
+judges. Details and the measured caveats are in `CLAUDE.md` (*Free-form eval*).
+
+```bash
+# 1. (once) rebuild the held-out set — then rerun the contamination scan; the pretraining-mix
+#    pool rebuilds by itself on the next run because its fingerprint includes the file's hash
+.venv/bin/python scripts/build_freeform_heldout.py --embed-threshold 0.93
+.venv/bin/python scripts/check_contamination.py --write-exclusions
+
+# 2. run an experiment whose Phase 3 saw free-form corpora, with the task in sweep.tasks
+.venv/bin/python scripts/run_experiment.py --config configs/experiments/native_llama_3phase_sft_mixture.yaml
+#    → <cell>/eval_rows/freeform_cidar.parquet (prompt, reference, generation, per-row metrics)
+
+# 3. judge the generations (a separate stage: a 31B judge cannot share the GPU with training)
+scripts/judge/setup_judge_env.sh                                   # once: .venv-judge (vLLM) + local Python headers, no sudo
+.venv/bin/python -c "from huggingface_hub import snapshot_download; snapshot_download('google/gemma-4-31b-it')"   # once, ~62 GB
+scripts/judge/run_judge.sh --experiment outputs/experiments/<sweep> --judge configs/judges/gemma4_31b_local.yaml
+export OPENAI_API_KEY=…                                      # API judge (gpt-5.6-terra), main venv
+.venv/bin/python scripts/judge/judge_freeform.py --experiment outputs/experiments/<sweep> --judge configs/judges/gpt56_terra_api.yaml
+#    → <cell>/freeform_judge/<judge>.parquet, summaries in all_metrics.json, comparison_report.txt gains a judge section
+```
+
+Judge YAMLs live in `configs/judges/` (`backend: vllm` = local, `backend: openai` = any
+OpenAI-compatible endpoint; `structured_json` toggles constrained JSON per judge). Verdicts are
+pointwise 1–5 on a fixed reference-guided rubric with sub-scores and flags; comparisons are paired
+(bootstrap CI and win rate against the baseline cell) because every variant answers the same prompts.
+
+**The judge environment** (`scripts/judge/setup_judge_env.sh`) is a second venv because vLLM pins its own
+torch: on this machine the driver is CUDA 12.8, so the script installs the `+cu129` vLLM wheel from
+the GitHub release with torch from the PyTorch cu129 index (PyPI's default vLLM pulls a CUDA 13 torch
+that cannot initialize), extracts `python3.10-dev` headers under `.local-pkgs/` (Triton's JIT needs
+`Python.h`; `apt-get download` + `dpkg -x` need no root) and verifies GPU access and Gemma 4 support.
+`scripts/judge/run_judge.sh` sets `CPATH` and `VLLM_USE_FLASHINFER_SAMPLER=0` and runs the judge from that venv.
+
+**In the experiment console** (`debugger/serve_experiment_console.py`, see `debugger/README.md`):
+the *Free-form* tab browses generations joined with judge verdicts and starts the judge stage as a
+detached run (*judge…*: pick judges — readiness shows whether `.venv-judge` / the API key are there —
+a baseline cell, a limit, then watch it in *Runs*); the *Rate* tab is the blind human check
+(build a set, rate, then *agreement* reveals the cells and compares raters with judges).
 
 ## Intrinsic metrics
 

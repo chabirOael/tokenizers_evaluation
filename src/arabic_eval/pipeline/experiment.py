@@ -501,7 +501,8 @@ def run_experiment(config: ExperimentConfig) -> Dict[str, Any]:
 
 def _summarize_metrics(metrics: Dict[str, Any]) -> str:
     """One-line metrics summary for log readability."""
-    keys = ("accuracy", "accuracy_char_norm", "accuracy_pmi", "f1", "exact_match", "perplexity")
+    keys = ("accuracy", "accuracy_char_norm", "accuracy_pmi", "f1", "exact_match", "perplexity",
+            "chrf", "bertscore_f1", "degenerate_rate")
     parts = []
     for k in keys:
         if k in metrics and isinstance(metrics[k], (int, float)):

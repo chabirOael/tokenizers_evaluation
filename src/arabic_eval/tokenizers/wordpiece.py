@@ -5,7 +5,7 @@ import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from tokenizers import Tokenizer, models, pre_tokenizers, trainers, processors
+from tokenizers import Tokenizer, decoders, models, pre_tokenizers, trainers, processors
 
 from arabic_eval.registry import tokenizer_registry
 from arabic_eval.tokenizers.base import BaseTokenizer, EmbeddingType, TokenizerOutput
@@ -28,6 +28,12 @@ class WordPieceTokenizer(BaseTokenizer):
 
         tokenizer = Tokenizer(models.WordPiece(unk_token="<unk>"))
         tokenizer.pre_tokenizer = pre_tokenizers.Whitespace()
+        # Without the matching decoder, decode() joins the ## pieces with spaces
+        # ("المجا ##ز") — unnoticed while the pipeline only scored log-likelihoods;
+        # the free-form eval decodes (fixed 2026-09-18). Whitespace pre-tokenization
+        # still detaches punctuation on decode ("وضع ،"); reference_roundtrip_chrf
+        # measures what that costs.
+        tokenizer.decoder = decoders.WordPiece(prefix="##", cleanup=True)
 
         trainer = trainers.WordPieceTrainer(
             vocab_size=vocab_size,
@@ -93,6 +99,8 @@ class WordPieceTokenizer(BaseTokenizer):
     def load(self, path: Path | str) -> None:
         path = Path(path)
         self._tokenizer = Tokenizer.from_file(str(path / "tokenizer.json"))
+        # Tokenizers saved before 2026-09-18 carry no decoder; setting it is idempotent.
+        self._tokenizer.decoder = decoders.WordPiece(prefix="##", cleanup=True)
         self._build_special_token_map()
 
     @property

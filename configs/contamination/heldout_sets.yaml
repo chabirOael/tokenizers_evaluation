@@ -35,14 +35,15 @@ sets:
     split: validation
     ngram: 8
 
-  # Free-form eval prompts — PLACEHOLDER. Set `path` when the file exists
-  # (JSONL, one object per line; see freeform_prompts.template.jsonl):
-  #   {"id": "p1", "prompt": "...", "context": "...", "reference": "..."}
-  # `context` and `reference` are optional. Until then the set is
-  # `pending`: the scan reports it as not provided and nothing else changes.
+  # Free-form eval prompts: 250 held-out CIDAR rows built by
+  # scripts/build_freeform_heldout.py (v1, 2026-09-18; manifest next to it).
+  # JSONL, one object per line: {"id", "prompt", "reference", "stratum", ...};
+  # `context` is optional (see freeform_prompts.template.jsonl). Rebuilding the
+  # file changes its hash → the pool fingerprint → the pool rebuilds; rerun
+  # scripts/check_contamination.py --write-exclusions afterwards.
   freeform_prompts:
     kind: file
-    path: null
+    path: configs/contamination/freeform_cidar_heldout_v1.jsonl
     ngram: 6
     fields:
       id: id

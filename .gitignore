@@ -20,3 +20,5 @@ wandb/
 .ipynb_checkpoints/
 .pytest_cache/
 .venv-camel/
+.venv-judge/
+.local-pkgs/

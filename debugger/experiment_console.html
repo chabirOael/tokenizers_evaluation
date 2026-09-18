@@ -214,6 +214,17 @@ table.ev-ch tr.gold td{background:var(--good-soft)}
 table.ev-ch tr.pred td{outline:1px solid var(--accent);outline-offset:-1px}
 .ev-pager{display:flex;gap:8px;align-items:center;justify-content:center;padding:12px}
 .ev-warn{padding:8px 14px;background:var(--warn-soft);color:var(--warn);border-bottom:1px solid var(--line)}
+/* free-form + rating tabs */
+.ff-ar{direction:rtl;text-align:right;font-family:'IBM Plex Sans',sans-serif;font-size:13.5px;line-height:1.7}
+.ff-s1,.ff-s2{color:var(--bad);font-weight:600}
+.ff-s3{color:var(--warn);font-weight:600}
+.ff-s4,.ff-s5{color:var(--good);font-weight:600}
+.rt-card{padding:12px 14px}
+.rt-score{display:flex;gap:6px;margin:6px 0}
+.rt-score button{width:44px;height:36px;border:1px solid var(--line-2);border-radius:8px;background:var(--surface);color:var(--ink);font-weight:600;cursor:pointer}
+.rt-score button:hover{border-color:var(--accent)}
+.rt-score button.on{background:var(--accent);color:#fff;border-color:var(--accent)}
+.rt-flags{display:flex;gap:6px;flex-wrap:wrap}
 </style>
 </head>
 <body>
@@ -223,6 +234,8 @@ table.ev-ch tr.pred td{outline:1px solid var(--accent);outline-offset:-1px}
     <button class="tab on" data-view="configs">Configs</button>
     <button class="tab" data-view="runs">Runs <span id="runs-badge"></span></button>
     <button class="tab" data-view="eval">Eval rows</button>
+    <button class="tab" data-view="freeform">Free-form</button>
+    <button class="tab" data-view="rate">Rate</button>
   </div>
   <div class="spacer"></div>
   <span id="gpu-chip" class="chip">GPU …</span>
@@ -353,6 +366,105 @@ table.ev-ch tr.pred td{outline:1px solid var(--accent);outline-offset:-1px}
     <div class="ev-sum" id="ev-sum"><span class="chip">no selection</span></div>
     <div id="ev-body"><div class="empty">pick an experiment above</div></div>
     <div class="ev-pager" id="ev-pager"></div>
+  </div>
+</section>
+<section class="view" id="view-freeform">
+  <div class="panel">
+    <div class="panel-h">
+      <h2>free-form</h2>
+      <span id="ff-title" class="chip" style="text-transform:none"></span>
+      <span class="spacer"></span>
+      <button class="btn sm primary" id="ff-judge-toggle" title="score this experiment's generations with one or more LLM judges, as a detached run">judge…</button>
+      <button class="btn sm" id="ff-refresh" title="rescan outputs/experiments">↻</button>
+    </div>
+    <div class="ev-bar" id="ff-judge-bar" style="display:none">
+      <label class="k" title="configs/judges/*.yaml; a GPU judge (vLLM) cannot run beside a training run">judges</label>
+      <span id="ff-jb-judges" style="display:flex;gap:6px;flex-wrap:wrap"></span>
+      <button class="btn sm" id="ff-jb-refresh" title="re-read configs/judges and the readiness checks">↻</button>
+      <label class="k" for="ff-jb-base">baseline</label>
+      <select id="ff-jb-base"></select>
+      <label class="k" for="ff-jb-limit" title="score only the first N generations per cell (a quick check)">limit</label>
+      <input type="number" id="ff-jb-limit" placeholder="all" style="width:5rem">
+      <label class="chip" title="re-judge cells that already have this judge's file"><input type="checkbox" id="ff-jb-over"> overwrite</label>
+      <label class="chip" title="start even while another run is active (API judges do not need the GPU)"><input type="checkbox" id="ff-jb-force"> run concurrently</label>
+      <button class="btn sm primary" id="ff-jb-go">start judge run</button>
+      <span id="ff-jb-msg" class="chip" style="text-transform:none"></span>
+    </div>
+    <div class="ev-bar">
+      <label class="k" for="ff-exp">experiment</label>
+      <select id="ff-exp"></select>
+      <label class="k" for="ff-cell">tokenizer</label>
+      <select id="ff-cell"></select>
+      <label class="k" for="ff-judge" title="the judge whose score the score filter, the score sort and the score column refer to">judge</label>
+      <select id="ff-judge"></select>
+      <label class="k" for="ff-smin">score</label>
+      <select id="ff-smin"><option value="">any</option><option>1</option><option>2</option><option>3</option><option>4</option><option>5</option></select>
+      <span>–</span>
+      <select id="ff-smax"><option value="">any</option><option>1</option><option>2</option><option>3</option><option>4</option><option>5</option></select>
+      <label class="k" for="ff-jflag">judge flag</label>
+      <select id="ff-jflag"><option value="">any</option><option value="any">flagged</option><option value="repetition">repetition</option><option value="wrong_language">wrong language</option><option value="empty">empty</option><option value="off_topic">off topic</option><option value="truncated">truncated</option></select>
+    </div>
+    <div class="ev-bar">
+      <label class="k" for="ff-stop" title="why generation ended: the tokenizer's EOS, a stop marker (a new السؤال:/السياق: block), or the token cap">stop</label>
+      <select id="ff-stop"><option value="">all</option><option value="eos">eos</option><option value="marker">marker</option><option value="cap">cap</option></select>
+      <label class="k" for="ff-flag">row flag</label>
+      <select id="ff-flag"><option value="">all</option><option value="degenerate">repetition loop</option><option value="empty">empty</option><option value="latin">latin letters</option><option value="hit_cap">hit the cap</option><option value="char_truncated">cut to the char budget</option></select>
+      <label class="k" for="ff-stratum" title="reference-length stratum of the held-out set">length</label>
+      <select id="ff-stratum"><option value="">all</option><option value="short">short</option><option value="medium">medium</option><option value="long">long</option></select>
+      <label class="k" for="ff-sort">sort</label>
+      <select id="ff-sort">
+        <option value="row">row order</option>
+        <option value="score_asc">lowest judge score first</option>
+        <option value="score_desc">highest judge score first</option>
+        <option value="disagree">judges disagree most</option>
+        <option value="chrf_asc">lowest chrF first</option>
+        <option value="chrf_desc">highest chrF first</option>
+        <option value="gen_len_desc">longest generation first</option>
+        <option value="gen_len_asc">shortest generation first</option>
+      </select>
+      <input type="text" id="ff-q" placeholder="search instruction / generation / reference…" style="min-width:240px">
+      <span class="spacer"></span>
+      <label class="k" for="ff-size">per page</label>
+      <select id="ff-size"><option>25</option><option selected>50</option><option>100</option><option>250</option></select>
+    </div>
+    <div id="ff-note"></div>
+    <div class="ev-sum" id="ff-sum"><span class="chip">no selection</span></div>
+    <div id="ff-body"><div class="empty">pick an experiment above</div></div>
+    <div class="ev-pager" id="ff-pager"></div>
+  </div>
+</section>
+
+<section class="view" id="view-rate">
+  <div class="panel">
+    <div class="panel-h">
+      <h2>human check</h2>
+      <span id="rt-title" class="chip" style="text-transform:none">blind: the tokenizer behind each answer is hidden until the agreement view</span>
+      <span class="spacer"></span>
+      <button class="btn sm" id="rt-refresh" title="rescan">↻</button>
+    </div>
+    <div class="ev-bar">
+      <label class="k" for="rt-exp">experiment</label>
+      <select id="rt-exp"></select>
+      <label class="k" for="rt-set">set</label>
+      <select id="rt-set"></select>
+      <label class="k" for="rt-rater">rater</label>
+      <input type="text" id="rt-rater" placeholder="your name" style="width:9rem">
+      <button class="btn sm primary" id="rt-start">rate</button>
+      <button class="btn sm" id="rt-agree" title="reveal the cells and compare every rater with every judge">agreement</button>
+      <span class="spacer"></span>
+      <button class="btn sm" id="rt-build-toggle">build a set…</button>
+    </div>
+    <div class="ev-bar" id="rt-build" style="display:none">
+      <label class="k">name</label><input type="text" id="rt-b-name" value="v1" style="width:6rem">
+      <label class="k" title="half drawn at random, half where the judges disagree most">prompts</label><input type="number" id="rt-b-n" value="50" style="width:5rem">
+      <label class="k" title="the baseline cell plus this many minus one other cells, round-robin so every cell is rated evenly">variants / prompt</label><input type="number" id="rt-b-k" value="3" style="width:4.5rem">
+      <label class="k">seed</label><input type="number" id="rt-b-seed" value="42" style="width:5rem">
+      <label class="chip"><input type="checkbox" id="rt-b-over"> overwrite</label>
+      <button class="btn sm primary" id="rt-b-go">build</button>
+      <span id="rt-b-msg" class="chip" style="text-transform:none"></span>
+    </div>
+    <div class="ev-sum" id="rt-sum"><span class="chip">pick a set and type your name</span></div>
+    <div id="rt-body"><div class="empty">…</div></div>
   </div>
 </section>
 </main>
@@ -1161,7 +1273,7 @@ function renderRunList(){
     const it = h('div', {class:'run-item' + (S.run===r.run_id?' on':''), onclick: () => selectRun(r.run_id)});
     const started = new Date(r.started_at); const end = r.finished_at ? new Date(r.finished_at) : new Date();
     it.append(h('div', {class:'name'}, r.experiment_name, statusChip(r.status)),
-      h('div', {class:'meta'}, `${r.run_id} · ${r.sweep?`${r.cells.length} cells`:r.tokenizer} · ${fmtTime(r.started_at)} · ${fmtDur((end-started)/1000)}${r.exit_code!=null&&r.exit_code!==0?` · exit ${r.exit_code}`:''}`));
+      h('div', {class:'meta'}, `${r.run_id} · ${r.kind==='judge' ? 'judge: ' + (r.judges||[]).join(', ') : r.sweep?`${r.cells.length} cells`:r.tokenizer} · ${fmtTime(r.started_at)} · ${fmtDur((end-started)/1000)}${r.exit_code!=null&&r.exit_code!==0?` · exit ${r.exit_code}`:''}`));
     list.append(it);
   }
 }
@@ -1207,7 +1319,13 @@ function renderRunDetail(scrollToEnd){
   add('output_dir', h('span', {class:'mono'}, d.output_dir)); add('command', h('span', {class:'mono', style:'word-break:break-all'}, d.argv.join(' ')));
   add('started', `${fmtTime(d.started_at)} · ${fmtDur((end-started)/1000)}${d.finished_at?` · ended ${fmtTime(d.finished_at)}`:''}`);
   add('pid / pgid', `${d.pid} / ${d.pgid}${d.exit_code!=null?` · exit code ${d.exit_code}`:''}`);
-  add('logs', h('span', {}, textLink(d.console_log, 'console.log'), ' · ', textLink(d.experiment_log, 'experiment.log')));
+  add('logs', h('span', {}, textLink(d.console_log, 'console.log'), ...(d.experiment_log ? [' · ', textLink(d.experiment_log, 'experiment.log')] : [])));
+  if (d.kind==='judge'){
+    add('judges', (d.judges||[]).map(j => `${j} (${(d.judge_backends||{})[j]||'?'}: ${(d.judge_models||{})[j]||'?'})`).join(' · '));
+    add('cells', (d.cells||[]).join(', ')); add('baseline', d.baseline || 'auto');
+    if (d.limit) add('limit', String(d.limit));
+    add('needs GPU', d.gpu ? 'yes (vLLM judge)' : 'no (API only)');
+  }
   box.append(kv);
 
   // progress
@@ -1239,10 +1357,34 @@ function renderRunDetail(scrollToEnd){
     const ev = p.eval; const pct = ev.total ? Math.min(100, 100*ev.done/ev.total) : 0;
     prog.append(h('div', {}, h('div', {class:'line'}, h('b', {}, `eval ${ev.task||''}`), h('span', {class:'mono'}, `${ev.done}/${ev.total}`)), h('div', {class:'bar eval'}, h('i', {style:`width:${pct}%`}))));
   }
+  if (p.judge){
+    for (const [j, info] of Object.entries(p.judge.judges||{})){
+      const l = h('div', {class:'line'}, h('b', {}, `judge ${j}`), info.model ? h('span', {class:'chip accent'}, `loading ${info.model}`) : null);
+      for (const c of (d.cells||[])){
+        const cell = (info.cells||{})[c];
+        l.append(h('span', {class:'chip ' + (cell ? 'good' : '')}, cell ? `✓ ${c} (${cell.n}${cell.reused ? ', reused' : ''})` : c));
+      }
+      prog.append(l);
+    }
+    if (p.judge.done) prog.append(h('div', {class:'line'}, h('span', {class:'chip good'}, '✓ judge stage done'),
+      h('button', {class:'btn sm', onclick: () => { S.ff.tree = null; S.ff.exp = d.experiment_name; setView('freeform'); }}, 'open in Free-form')));
+  }
   if (p.error) prog.append(h('div', {class:'chip bad', style:'white-space:normal'}, p.error));
-  if (!p.stage_label && !p.phase && !p.eval && ['running','cancelling'].includes(d.status)) prog.append(h('div', {class:'hint'}, 'starting up… (imports, dataset download)'));
+  if (!p.stage_label && !p.phase && !p.eval && !p.judge && ['running','cancelling'].includes(d.status)) prog.append(h('div', {class:'hint'}, d.kind==='judge' ? 'starting up… (a vLLM judge loads ~60 GB and compiles; 2–8 min)' : 'starting up… (imports, dataset download)'));
   box.append(prog);
 
+  if (d.results && d.results.judge){
+    box.append(h('h3', {style:'margin:10px 0 6px;font-size:13px'}, `judge results (baseline ${d.results.baseline||'—'})`));
+    const t = h('table', {class:'ev'});
+    t.append(h('tr', {}, h('th', {}, 'judge'), h('th', {}, 'cell'), h('th', {}, 'n'), h('th', {}, 'score'), h('th', {}, 'Δ vs baseline'), h('th', {}, 'parse fail')));
+    for (const [j, cells] of Object.entries(d.results.summary||{})) for (const [c, sm] of Object.entries(cells))
+      t.append(h('tr', {}, h('td', {class:'mono'}, j), h('td', {class:'mono'}, c), h('td', {class:'mono'}, String(sm.n??'—')),
+        h('td', {class:'mono'}, sm.score_mean==null?'—':sm.score_mean.toFixed(3)), h('td', {class:'mono'}, sm.delta==null?'—':(sm.delta>0?'+':'')+sm.delta.toFixed(3)),
+        h('td', {class:'mono'}, sm.parse_fail_rate==null?'—':(100*sm.parse_fail_rate).toFixed(1)+'%')));
+    box.append(t);
+    if (d.results.report) box.append(h('div', {style:'margin-top:6px'}, textLink(d.results.report, 'freeform_judge_report.json')));
+    if (d.results.comparison_report) box.append(h('div', {style:'margin-top:4px'}, textLink(d.results.comparison_report, 'comparison_report.txt')));
+  }
   if (d.results && d.results.cells){ box.append(h('h3', {style:'margin:10px 0 6px;font-size:13px'}, 'results'), resultsTable(d.results.cells)); if (d.results.report) box.append(h('div', {style:'margin-top:6px'}, textLink(d.results.report, 'comparison_report.txt'))); }
 
   const log = h('div', {class:'log', id:'log'});
@@ -1569,6 +1711,424 @@ function wireEvalTab(){
 }
 
 /* =========================================================================
+   free-form tab: generations + judge verdicts
+   ========================================================================= */
+S.ff = {tree:null, exp:null, cell:null, judge:'', smin:'', smax:'', jflag:'', stop:'', flag:'', stratum:'', q:'',
+        sort:'row', page:1, size:50, data:null, open:null, detail:null, busy:false};
+S.rt = {exp:null, sets:null, set:null, rater:'', items:null, pos:0, agreement:null, mode:'idle'};
+try { S.rt.rater = localStorage.getItem('xc-rater') || ''; } catch(e){}
+const ffNum = (v, d=1) => (v==null || isNaN(v)) ? '—' : Number(v).toFixed(d);
+function ffToast(cls, msg){ if (typeof status === 'function') status(cls, msg); else console.log(cls, msg); }
+
+async function loadFfTree(force){
+  if (S.ff.tree && !force) return renderFfPickers();
+  try { const d = await api('GET', '/api/freeform/tree'); S.ff.tree = d.experiments || []; renderFfPickers(); }
+  catch(e){ $('#ff-body').innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
+}
+function ffExperiment(){ return (S.ff.tree||[]).find(e => e.experiment===S.ff.exp) || null; }
+function ffCell(){ const x = ffExperiment(); return x ? (x.cells.find(c => c.cell===S.ff.cell) || x.cells[0]) : null; }
+function renderFfPickers(){
+  const tree = S.ff.tree || [];
+  if (!tree.length){
+    $('#ff-body').innerHTML = '<div class="empty">no free-form generations yet.<br><br>'
+      + 'Add <code>- type: "freeform_cidar"</code> to <code>sweep.tasks</code> of a mixture config '
+      + '(Phase 3 must have seen free-form corpora) and run it; judge scores come afterwards with '
+      + '<code>scripts/judge/judge_freeform.py</code> (local Gemma: <code>scripts/judge/run_judge.sh</code>).</div>';
+    $('#ff-sum').innerHTML = '<span class="chip">nothing to show</span>';
+    ['#ff-exp','#ff-cell','#ff-judge'].forEach(x => $(x).innerHTML = '');
+    $('#ff-pager').innerHTML = '';
+    return;
+  }
+  S.ff.exp = evOptions($('#ff-exp'),
+    tree.map(e => ({value: e.experiment, label: `${e.experiment} (${e.cells.length} cell${e.cells.length===1?'':'s'})`})), S.ff.exp);
+  const exp = ffExperiment();
+  S.ff.cell = evOptions($('#ff-cell'),
+    exp.cells.map(c => ({value: c.cell, label: `${c.cell}${c.tokenizer && c.tokenizer!==c.cell ? ' · '+c.tokenizer : ''}${c.has_generations ? '' : ' (no generation)'}`})),
+    S.ff.cell);
+  const cell = ffCell();
+  $('#ff-note').innerHTML = '';
+  if (!cell.has_generations){
+    $('#ff-note').innerHTML = `<div class="ev-warn">${esc(cell.cell)}: ${esc(cell.reason || 'no generations')}</div>`;
+    $('#ff-body').innerHTML = '<div class="empty">this tokenizer cannot generate — its task record carries a typed status instead of scores</div>';
+    $('#ff-sum').innerHTML = '<span class="chip">generation unsupported</span>';
+    $('#ff-pager').innerHTML = ''; $('#ff-judge').innerHTML = '';
+    return;
+  }
+  loadFfRows();
+}
+function ffParams(){
+  const c = ffCell();
+  const p = new URLSearchParams({cell: c.dir, page: S.ff.page, page_size: S.ff.size, sort: S.ff.sort});
+  if (S.ff.judge) p.set('judge', S.ff.judge);
+  if (S.ff.smin) p.set('score_min', S.ff.smin);
+  if (S.ff.smax) p.set('score_max', S.ff.smax);
+  if (S.ff.jflag) p.set('jflag', S.ff.jflag);
+  if (S.ff.stop) p.set('stop', S.ff.stop);
+  if (S.ff.flag) p.set(S.ff.flag, '1');
+  if (S.ff.stratum) p.set('stratum', S.ff.stratum);
+  if (S.ff.q) p.set('q', S.ff.q);
+  return p;
+}
+async function loadFfRows(){
+  if (S.ff.busy) return;
+  S.ff.busy = true;
+  try {
+    const d = await api('GET', '/api/freeform/rows?' + ffParams().toString());
+    S.ff.data = d; S.ff.open = null; S.ff.detail = null;
+    S.ff.judge = evOptions($('#ff-judge'),
+      d.judges.length ? d.judges.map(j => ({value: j.name, label: `${j.name} (${j.n})`})) : [{value: '', label: '— no judge yet —'}],
+      d.judge || '');
+    renderFfSummary(d); renderFfTable(d); renderFfPager(d);
+    const m = d.metadata || {};
+    $('#ff-title').textContent = `${d.n_rows_file} prompts · greedy · cap ${m.token_cap ?? '?'} tokens for ${(m.decoding||{}).max_output_chars ?? '?'} chars`;
+  } catch(e){
+    $('#ff-body').innerHTML = `<div class="empty">${esc(e.message)}</div>`;
+    $('#ff-pager').innerHTML = '';
+  } finally { S.ff.busy = false; }
+}
+function renderFfSummary(d){
+  const s = d.summary || {}, box = $('#ff-sum'); box.innerHTML = '';
+  const chip = (label, cls, title, onclick) =>
+    h('span', {class: 'chip' + (cls?' '+cls:'') + (onclick?' act':''), title: title||'', onclick: onclick||undefined}, label);
+  const n = s.n_rows || 0;
+  box.append(chip(`${n} of ${d.n_rows_file} rows`, n?'':'warn'));
+  box.append(chip(`chrF ${ffNum(s.chrf_mean)}`, 'good', 'mean sentence chrF of the selected rows against the reference'));
+  if (s.bertscore_mean != null) box.append(chip(`BERTScore F1 ${ffNum(s.bertscore_mean, 3)}`, '', 'in-house BERTScore, xlm-roberta-large layer 17, no rescaling'));
+  box.append(chip(`${ffNum(s.gen_chars_mean, 0)} chars avg`, '', 'mean length of the generated text'));
+  for (const [j, js] of Object.entries(s.judges || {})){
+    const bars = h('span', {class: 'ev-hist'});
+    const max = Math.max(...js.hist, 1);
+    js.hist.forEach((v, i) => bars.append(h('i', {style: `height:${Math.max(2, Math.round(20*v/max))}px`, title: `score ${i+1}: ${v} rows`})));
+    box.append(h('span', {class: 'chip act', title: `judge ${j}: mean score over the selection; bars = how many rows scored 1…5`,
+      onclick: () => { S.ff.judge = j; $('#ff-judge').value = j; S.ff.page = 1; loadFfRows(); }},
+      `${j} ${ffNum(js.mean, 2)} `, bars, js.flagged ? ` · ${js.flagged} flagged` : '', js.unparsed ? ` · ${js.unparsed} unparsed` : '', js.missing ? ` · ${js.missing} without verdict` : ''));
+  }
+  const fl = (key, label, cls, title) => {
+    const v = s[key] || 0; if (!v) return;
+    box.append(chip(`${label} ${v}`, cls, title, () => { S.ff.flag = key; $('#ff-flag').value = key; S.ff.page = 1; loadFfRows(); }));
+  };
+  fl('degenerate', 'loops', 'bad', 'repetition loops by the detector');
+  fl('empty', 'empty', 'bad', 'nothing generated');
+  fl('latin', 'latin', 'warn', 'Latin letters in the generation');
+  fl('hit_cap', 'hit the cap', 'warn', 'ran to the token cap without EOS or a stop marker');
+  fl('char_truncated', 'char-cut', '', 'cut to the character budget');
+  const st = s.stop || {};
+  box.append(chip(`stops: eos ${st.eos||0} · marker ${st.marker||0} · cap ${st.cap||0}`, '', 'why generation ended'));
+}
+function ffPills(r){
+  const out = [];
+  if (r.empty) out.push(h('span', {class: 'chip bad'}, 'empty'));
+  if (r.degenerate) out.push(h('span', {class: 'chip bad', title: 'repetition loop'}, 'loop'));
+  if (r.latin) out.push(h('span', {class: 'chip warn'}, 'latin'));
+  if (r.hit_cap) out.push(h('span', {class: 'chip warn', title: 'ran to the token cap'}, 'cap'));
+  if (r.stop_reason==='marker') out.push(h('span', {class: 'chip', title: 'stopped at a new السؤال:/السياق: block'}, 'marker'));
+  return out;
+}
+function renderFfTable(d){
+  const box = $('#ff-body'); box.innerHTML = '';
+  if (!d.rows.length){ box.innerHTML = '<div class="empty">no rows match these filters</div>'; return; }
+  const judges = d.judges.map(j => j.name);
+  const t = h('table', {class: 'ev'});
+  t.append(h('tr', {},
+    h('th', {style: 'width:5rem'}, 'id'), h('th', {style: 'width:4.5rem'}, 'len'),
+    h('th', {}, 'instruction'), h('th', {}, 'generation'),
+    h('th', {style: 'width:4rem', title: 'generated characters'}, 'chars'),
+    h('th', {style: 'width:4.5rem'}, 'chrF'),
+    ...judges.map(j => h('th', {style: 'width:4.5rem', title: `judge ${j}`}, j.length > 10 ? j.slice(0, 10) + '…' : j)),
+    h('th', {style: 'width:9rem'}, 'flags')));
+  for (const r of d.rows){
+    const tr = h('tr', {class: 'r' + (S.ff.open===r.id ? ' on' : ''), onclick: () => toggleFfRow(r.id)});
+    tr.append(
+      h('td', {class: 'mono'}, r.id.replace('cidar-', '')),
+      h('td', {}, r.stratum || ''),
+      h('td', {class: 'ev-ar'}, h('span', {class: 'ev-clip', title: r.instruction}, r.instruction || '—')),
+      h('td', {class: 'ev-ar'}, h('span', {class: 'ev-clip', title: r.generation}, r.generation || '—')),
+      h('td', {class: 'mono'}, String(r.gen_chars ?? '—')),
+      h('td', {class: 'mono'}, ffNum(r.chrf)),
+      ...judges.map(j => { const v = r.judges[j]; return h('td', {class: 'mono ' + (v && v.score!=null ? 'ff-s'+v.score : '')}, v ? (v.score==null ? '?' : String(v.score)) : '—'); }),
+      h('td', {}, ...ffPills(r)));
+    t.append(tr);
+    if (S.ff.open === r.id) t.append(ffRowDetail(judges.length + 7));
+  }
+  box.append(t);
+}
+async function toggleFfRow(id){
+  if (S.ff.open === id){ S.ff.open = null; S.ff.detail = null; renderFfTable(S.ff.data); return; }
+  S.ff.open = id; S.ff.detail = null; renderFfTable(S.ff.data);
+  try { S.ff.detail = await api('GET', '/api/freeform/row?' + new URLSearchParams({cell: ffCell().dir, id}).toString()); }
+  catch(e){ S.ff.detail = {error: e.message}; }
+  if (S.ff.open === id) renderFfTable(S.ff.data);
+}
+function ffBlock(title, text, extra){
+  return h('div', {}, h('div', {class: 'ev-h'}, h('h4', {}, title), ...(extra || [])), h('pre', {class: 'ev-pre ff-ar'}, text || '—'));
+}
+function ffRowDetail(colspan){
+  const det = S.ff.detail;
+  if (!det) return h('tr', {class: 'ev-det'}, h('td', {colspan}, h('div', {class: 'empty'}, 'loading…')));
+  if (det.error) return h('tr', {class: 'ev-det'}, h('td', {colspan}, h('div', {class: 'empty'}, det.error)));
+  const r = det.row;
+  const left = h('div', {},
+    ffBlock('instruction', r.instruction),
+    r.context ? ffBlock('input', r.context) : null,
+    ffBlock('reference', r.reference, [h('span', {class: 'chip'}, `${r.ref_chars} chars`)]),
+    ffBlock('generation', r.generation, [
+      h('span', {class: 'chip'}, `${r.gen_chars} chars · ${r.gen_tokens} tokens`),
+      h('span', {class: 'chip ' + (r.stop_reason==='cap' ? 'warn' : '')}, `stop: ${r.stop_reason}`),
+      h('button', {class: 'btn sm', onclick: e => { e.stopPropagation(); navigator.clipboard?.writeText(r.generation || ''); }}, 'copy')]),
+    r.generation_raw && r.generation_raw.trim() !== (r.generation || '').trim() ? ffBlock('raw generation (before the stop-marker cut)', r.generation_raw) : null);
+  const jt = h('table', {class: 'ev-ch'});
+  jt.append(h('tr', {}, h('th', {}, 'judge'), h('th', {}, 'score'),
+    h('th', {title: 'correctness / fluency / instruction following'}, 'sub'), h('th', {}, 'flags'), h('th', {}, 'rationale')));
+  for (const [j, v] of Object.entries(r.judges || {})){
+    jt.append(h('tr', {},
+      h('td', {class: 'mono'}, j),
+      h('td', {class: 'mono ' + (v && v.score!=null ? 'ff-s'+v.score : '')}, v ? (v.score==null ? 'unparsed' : String(v.score)) : '—'),
+      h('td', {class: 'mono'}, v ? `${v.correctness ?? '-'}/${v.fluency ?? '-'}/${v.instruction_following ?? '-'}` : '—'),
+      h('td', {}, v ? (v.flags || []).join(', ') : ''),
+      h('td', {}, v ? (v.rationale || '') : '')));
+  }
+  const kv = h('div', {class: 'kv', style: 'margin-top:10px'});
+  const add = (k, v) => { if (v!==null && v!==undefined && v!=='') kv.append(h('span', {class: 'k'}, k), h('span', {}, String(v))); };
+  add('chrF', ffNum(r.chrf));
+  add('BERTScore P/R/F1', r.bertscore_f1==null ? null : `${ffNum(r.bertscore_p, 3)} / ${ffNum(r.bertscore_r, 3)} / ${ffNum(r.bertscore_f1, 3)}`);
+  add('reference round-trip chrF', ffNum(r.reference_roundtrip_chrf));
+  add('Arabic letters', r.arabic_letter_ratio==null ? null : (r.arabic_letter_ratio*100).toFixed(0) + '%');
+  add('prompt tokens', r.prompt_tokens);
+  add('generation time', r.gen_time_sec==null ? null : r.gen_time_sec.toFixed(2) + ' s');
+  const across = h('table', {class: 'ev-ch', style: 'margin-top:12px'});
+  across.append(h('tr', {}, h('th', {}, 'cell'), h('th', {}, 'generation'), h('th', {}, 'chrF'), h('th', {}, 'judges')));
+  for (const a of det.across || []){
+    across.append(h('tr', {},
+      h('td', {class: 'mono'}, a.cell),
+      h('td', {class: 'ev-ar'}, h('span', {class: 'ev-clip', title: a.generation}, a.generation || '—')),
+      h('td', {class: 'mono'}, ffNum(a.chrf)),
+      h('td', {class: 'mono'}, Object.entries(a.judges || {}).map(([j, s]) => `${j}: ${s==null ? '—' : s}`).join(' · ') || '—')));
+  }
+  const hasAcross = (det.across || []).length > 0;
+  const right = h('div', {},
+    h('div', {class: 'ev-h'}, h('h4', {}, 'judge verdicts')), jt, kv,
+    hasAcross ? h('div', {class: 'ev-h', style: 'margin-top:12px'}, h('h4', {}, 'the same prompt in the other cells')) : null,
+    hasAcross ? across : null);
+  return h('tr', {class: 'ev-det'}, h('td', {colspan}, h('div', {class: 'ev-grid'}, left, right)));
+}
+function renderFfPager(d){
+  const box = $('#ff-pager'); box.innerHTML = '';
+  if (!d.total) return;
+  const go = p => { S.ff.page = p; loadFfRows(); };
+  const jump = h('input', {type: 'number', min: 1, max: d.pages, value: d.page, style: 'width:5.5rem',
+    onchange: e => go(Math.max(1, Math.min(d.pages, Number(e.target.value)||1)))});
+  box.append(
+    h('button', {class: 'btn sm', disabled: d.page<=1, onclick: () => go(1)}, '« first'),
+    h('button', {class: 'btn sm', disabled: d.page<=1, onclick: () => go(d.page-1)}, '‹ prev'),
+    h('span', {}, 'page '), jump, h('span', {}, ` of ${d.pages} · ${d.total} rows`),
+    h('button', {class: 'btn sm', disabled: d.page>=d.pages, onclick: () => go(d.page+1)}, 'next ›'),
+    h('button', {class: 'btn sm', disabled: d.page>=d.pages, onclick: () => go(d.pages)}, 'last »'));
+}
+function wireFfTab(){
+  const reload = () => { S.ff.page = 1; loadFfRows(); };
+  $('#ff-exp').onchange = () => { S.ff.exp = evPick('#ff-exp'); S.ff.cell = null; S.ff.judge = ''; S.ff.page = 1; renderFfPickers(); };
+  $('#ff-cell').onchange = () => { S.ff.cell = evPick('#ff-cell'); S.ff.page = 1; renderFfPickers(); };
+  $('#ff-judge').onchange = () => { S.ff.judge = evPick('#ff-judge'); reload(); };
+  for (const [id, key] of [['#ff-smin','smin'], ['#ff-smax','smax'], ['#ff-jflag','jflag'], ['#ff-stop','stop'],
+                           ['#ff-flag','flag'], ['#ff-stratum','stratum'], ['#ff-sort','sort']])
+    $(id).onchange = () => { S.ff[key] = evPick(id); reload(); };
+  $('#ff-size').onchange = () => { S.ff.size = Number(evPick('#ff-size')); reload(); };
+  let qT = null;
+  $('#ff-q').oninput = () => { clearTimeout(qT); qT = setTimeout(() => { S.ff.q = $('#ff-q').value.trim(); reload(); }, 300); };
+  $('#ff-refresh').onclick = () => loadFfTree(true);
+}
+
+/* ---- judge launcher (Free-form tab) ------------------------------------- */
+S.jd = {configs: null, open: false};
+async function loadJudgeConfigs(force){
+  if (S.jd.configs && !force) return S.jd.configs;
+  try { const d = await api('GET', '/api/judge/configs'); S.jd.configs = d.judges || []; }
+  catch(e){ S.jd.configs = []; ffToast('bad', e.message); }
+  return S.jd.configs;
+}
+async function renderJudgeBar(){
+  const bar = $('#ff-judge-bar'); bar.style.display = S.jd.open ? '' : 'none';
+  if (!S.jd.open) return;
+  const cfgs = await loadJudgeConfigs();
+  const box = $('#ff-jb-judges'); box.innerHTML = '';
+  if (!cfgs.length) box.append(h('span', {class: 'chip warn'}, 'no configs/judges/*.yaml'));
+  for (const c of cfgs){
+    const title = c.error ? c.error : (c.ready ? `${c.model} · ${c.backend}${c.gpu ? ' · needs the GPU' : ''}` : c.why);
+    box.append(h('label', {class: 'chip ' + (c.ready ? '' : 'warn'), title},
+      h('input', {type: 'checkbox', value: c.id, disabled: !c.ready, checked: c.ready && !c.gpu}),
+      ` ${c.name}`, h('span', {class: 'hint'}, ` ${c.backend}${c.gpu ? ' · GPU' : ''}${c.ready ? '' : ' · not ready'}`)));
+  }
+  const exp = ffExperiment();
+  const cells = exp ? exp.cells.filter(c => c.has_generations).map(c => c.cell) : [];
+  const base = $('#ff-jb-base'); base.innerHTML = '';
+  base.append(h('option', {value: ''}, 'auto (native_* cell)'));
+  for (const c of cells) base.append(h('option', {value: c}, c));
+}
+async function startJudgeRun(){
+  const exp = ffExperiment(); if (!exp){ ffToast('bad', 'pick an experiment'); return; }
+  const judges = $$('#ff-jb-judges input:checked').map(i => i.value);
+  if (!judges.length){ ffToast('bad', 'pick at least one judge'); return; }
+  const msg = $('#ff-jb-msg'); msg.textContent = 'starting…';
+  try {
+    const rec = await api('POST', '/api/judge/start', {experiment: exp.dir, judges,
+      baseline: $('#ff-jb-base').value || null, limit: Number($('#ff-jb-limit').value) || null,
+      overwrite: $('#ff-jb-over').checked, force: $('#ff-jb-force').checked});
+    msg.innerHTML = '';
+    msg.append(`started ${rec.run_id} `, h('button', {class: 'btn sm', onclick: () => { selectRun(rec.run_id); setView('runs'); }}, 'open in Runs'));
+    pollRuns();
+  } catch(e){ msg.textContent = e.message; }
+}
+function wireJudgeBar(){
+  $('#ff-judge-toggle').onclick = () => { S.jd.open = !S.jd.open; renderJudgeBar(); };
+  $('#ff-jb-go').onclick = startJudgeRun;
+  $('#ff-jb-refresh').onclick = () => { S.jd.configs = null; renderJudgeBar(); };
+}
+
+/* =========================================================================
+   rate tab: blind human check
+   ========================================================================= */
+async function loadRtTab(force){
+  if (!S.ff.tree || force){
+    try { const d = await api('GET', '/api/freeform/tree'); S.ff.tree = d.experiments || []; }
+    catch(e){ $('#rt-body').innerHTML = `<div class="empty">${esc(e.message)}</div>`; return; }
+  }
+  const exps = (S.ff.tree || []).filter(e => e.cells.some(c => c.has_generations));
+  if (!exps.length){
+    $('#rt-body').innerHTML = '<div class="empty">no free-form generations yet</div>';
+    $('#rt-exp').innerHTML = ''; $('#rt-set').innerHTML = '';
+    return;
+  }
+  S.rt.exp = evOptions($('#rt-exp'), exps.map(e => ({value: e.dir, label: e.experiment})), S.rt.exp);
+  $('#rt-rater').value = S.rt.rater;
+  await loadRtSets();
+}
+async function loadRtSets(){
+  try { const d = await api('GET', '/api/rating/sets?' + new URLSearchParams({experiment: S.rt.exp}).toString()); S.rt.sets = d.sets; }
+  catch(e){ S.rt.sets = []; }
+  const sets = S.rt.sets || [];
+  S.rt.set = evOptions($('#rt-set'),
+    sets.length ? sets.map(s => ({value: s.name, label: `${s.name} · ${s.n_items} items · ${s.raters.length} rater${s.raters.length===1?'':'s'}`}))
+                : [{value: '', label: '— none yet: build one —'}],
+    S.rt.set);
+  renderRtSummary();
+  if (S.rt.mode === 'rate') await loadRtItems();
+  else if (S.rt.mode === 'agree') await loadRtAgreement();
+  else $('#rt-body').innerHTML = '<div class="empty">' + (sets.length
+    ? 'type your name and press <b>rate</b>; the answers come in a shuffled order with the tokenizer hidden'
+    : 'no rating set for this experiment yet — build one (with judge files the harder half is drawn where the judges disagree; otherwise all at random)') + '</div>';
+}
+function renderRtSummary(){
+  const box = $('#rt-sum'); box.innerHTML = '';
+  const s = (S.rt.sets || []).find(x => x.name === S.rt.set);
+  if (!s){ box.append(h('span', {class: 'chip'}, 'no set')); return; }
+  box.append(h('span', {class: 'chip'}, `${s.n_prompts} prompts × ${s.variants_per_prompt} variants = ${s.n_items} items`));
+  box.append(h('span', {class: 'chip'}, `baseline ${s.baseline}`));
+  box.append(h('span', {class: 'chip'}, `judges: ${(s.judges || []).join(', ') || 'none'}`));
+  for (const r of s.raters) box.append(h('span', {class: 'chip ' + (r.n_rated >= s.n_items ? 'good' : 'warn')}, `${r.rater} ${r.n_rated}/${s.n_items}`));
+}
+async function loadRtItems(){
+  if (!S.rt.set || !S.rt.rater){ $('#rt-body').innerHTML = '<div class="empty">pick a set and type your name</div>'; return; }
+  try {
+    const d = await api('GET', '/api/rating/items?' + new URLSearchParams({experiment: S.rt.exp, set: S.rt.set, rater: S.rt.rater}).toString());
+    S.rt.items = d;
+  } catch(e){ $('#rt-body').innerHTML = `<div class="empty">${esc(e.message)}</div>`; return; }
+  const first = S.rt.items.items.findIndex(it => !it.rating);
+  S.rt.pos = first < 0 ? 0 : first;
+  renderRtItem();
+}
+function renderRtItem(){
+  const d = S.rt.items, box = $('#rt-body'); box.innerHTML = '';
+  if (!d || !d.items.length){ box.innerHTML = '<div class="empty">empty set</div>'; return; }
+  const it = d.items[S.rt.pos];
+  const rated = d.items.filter(x => x.rating).length;
+  const cur = it.rating || {score: null, flags: [], note: ''};
+  const state = {score: cur.score, flags: new Set(cur.flags || []), note: cur.note || ''};
+  const scoreBtns = h('div', {class: 'rt-score'},
+    ...[1,2,3,4,5].map(k => h('button', {class: state.score===k ? 'on' : '', onclick: () => { state.score = k; submitRt(it, state, true); }}, String(k))));
+  const flags = h('div', {class: 'rt-flags'},
+    ...d.flags.map(f => h('label', {class: 'chip'},
+      h('input', {type: 'checkbox', checked: state.flags.has(f), onchange: e => { if (e.target.checked) state.flags.add(f); else state.flags.delete(f); }}), ' ' + f)));
+  const note = h('input', {type: 'text', placeholder: 'note (optional)', value: state.note, style: 'min-width:16rem', oninput: e => { state.note = e.target.value; }});
+  const nav = h('div', {class: 'ev-bar', style: 'border:0;padding:0 0 8px 0'},
+    h('button', {class: 'btn sm', disabled: S.rt.pos <= 0, onclick: () => { S.rt.pos--; renderRtItem(); }}, '‹ prev'),
+    h('span', {class: 'chip'}, `item ${S.rt.pos+1} / ${d.items.length} · ${rated} rated`),
+    h('button', {class: 'btn sm', disabled: S.rt.pos >= d.items.length-1, onclick: () => { S.rt.pos++; renderRtItem(); }}, 'next ›'),
+    h('span', {class: 'spacer'}),
+    h('button', {class: 'btn sm primary', disabled: state.score==null, onclick: () => submitRt(it, state, true)}, 'save & next'));
+  box.append(h('div', {class: 'rt-card'},
+    nav,
+    h('div', {class: 'ev-grid'},
+      h('div', {},
+        ffBlock('instruction', it.instruction),
+        it.context ? ffBlock('input', it.context) : null,
+        ffBlock('reference answer (a guide, not the only acceptable answer)', it.reference)),
+      h('div', {},
+        ffBlock('candidate answer — score this', it.generation && it.generation.trim() ? it.generation : '[EMPTY ANSWER]'),
+        h('div', {class: 'ev-h', style: 'margin-top:10px'}, h('h4', {}, 'score 1–5'),
+          h('span', {class: 'chip', title: '5 correct, complete, fluent MSA · 4 minor omissions or small errors · 3 partial · 2 mostly wrong or barely follows · 1 empty, not Arabic, a loop, gibberish or off-topic. Do not reward length.'}, 'rubric')),
+        scoreBtns,
+        h('div', {class: 'ev-h', style: 'margin-top:8px'}, h('h4', {}, 'flags')), flags,
+        h('div', {style: 'margin-top:8px'}, note)))));
+}
+async function submitRt(it, state, advance){
+  if (state.score == null) return;
+  try {
+    const r = await api('POST', '/api/rating/submit', {experiment: S.rt.exp, set: S.rt.set, rater: S.rt.rater,
+      item_id: it.item_id, score: state.score, flags: Array.from(state.flags), note: state.note});
+    it.rating = {score: state.score, flags: Array.from(state.flags), note: state.note};
+    if (advance && S.rt.pos < S.rt.items.items.length - 1) S.rt.pos++;
+    renderRtItem();
+    if (r.progress.rated >= r.progress.total) ffToast('good', 'every item rated — open the agreement view');
+  } catch(e){ ffToast('bad', e.message); }
+}
+async function loadRtAgreement(){
+  if (!S.rt.set) return;
+  try { S.rt.agreement = await api('GET', '/api/rating/agreement?' + new URLSearchParams({experiment: S.rt.exp, set: S.rt.set}).toString()); }
+  catch(e){ $('#rt-body').innerHTML = `<div class="empty">${esc(e.message)}</div>`; return; }
+  const a = S.rt.agreement, box = $('#rt-body'); box.innerHTML = '';
+  const f = v => v==null ? '—' : (typeof v === 'number' ? v.toFixed(3) : String(v));
+  const t = h('table', {class: 'ev'});
+  t.append(h('tr', {}, h('th', {}, 'who'), h('th', {}, 'against'), h('th', {}, 'n'), h('th', {}, 'spearman'), h('th', {}, 'exact'),
+    h('th', {title: 'quadratic-weighted kappa'}, 'QWK'), h('th', {}, 'mean |Δ|'), h('th', {}, 'mean (who)'), h('th', {}, 'mean (against)')));
+  const row = (a1, a2, s) => t.append(h('tr', {}, h('td', {}, a1), h('td', {}, a2), h('td', {class: 'mono'}, String(s.n)),
+    h('td', {class: 'mono'}, f(s.spearman)), h('td', {class: 'mono'}, f(s.exact)), h('td', {class: 'mono'}, f(s.qwk)),
+    h('td', {class: 'mono'}, f(s.mean_abs_diff)), h('td', {class: 'mono'}, f(s.mean_x)), h('td', {class: 'mono'}, f(s.mean_y))));
+  for (const [rn, e] of Object.entries(a.raters || {})) for (const [jn, s] of Object.entries(e.vs_judge || {})) row(rn, `judge ${jn}`, s);
+  for (const [pair, s] of Object.entries(a.rater_vs_rater || {})) row(pair.split('|')[0], pair.split('|')[1] + ' (rater)', s);
+  for (const [pair, s] of Object.entries(a.judge_vs_judge_on_items || {})) row(`judge ${pair.split('|')[0]}`, `judge ${pair.split('|')[1]} (these items)`, s);
+  const pc = h('table', {class: 'ev', style: 'margin-top:12px'});
+  pc.append(h('tr', {}, h('th', {}, 'cell (revealed)'), h('th', {}, 'items'), h('th', {}, 'human ratings'), h('th', {}, 'human mean'), h('th', {}, 'judge means on the same items')));
+  for (const [cell, s] of Object.entries(a.per_cell || {}))
+    pc.append(h('tr', {}, h('td', {class: 'mono'}, cell), h('td', {class: 'mono'}, String(s.n_items)), h('td', {class: 'mono'}, String(s.human_n)),
+      h('td', {class: 'mono'}, f(s.human_mean)), h('td', {class: 'mono'}, Object.entries(s.judges || {}).map(([j, m]) => `${j}: ${f(m)}`).join(' · ') || '—')));
+  box.append(h('div', {class: 'rt-card'}, h('div', {class: 'ev-h'}, h('h4', {}, `agreement on ${a.n_items} items`)), t, pc));
+}
+function wireRtTab(){
+  $('#rt-exp').onchange = () => { S.rt.exp = evPick('#rt-exp'); S.rt.set = null; S.rt.mode = 'idle'; loadRtSets(); };
+  $('#rt-set').onchange = () => { S.rt.set = evPick('#rt-set'); S.rt.mode = 'idle'; loadRtSets(); };
+  $('#rt-rater').onchange = () => { S.rt.rater = $('#rt-rater').value.trim(); try { localStorage.setItem('xc-rater', S.rt.rater); } catch(e){} };
+  $('#rt-start').onclick = () => {
+    S.rt.rater = $('#rt-rater').value.trim();
+    if (!S.rt.rater){ ffToast('bad', 'type a rater name first'); return; }
+    try { localStorage.setItem('xc-rater', S.rt.rater); } catch(e){}
+    S.rt.mode = 'rate'; loadRtItems();
+  };
+  $('#rt-agree').onclick = () => { S.rt.mode = 'agree'; loadRtAgreement(); };
+  $('#rt-refresh').onclick = () => loadRtTab(true);
+  $('#rt-build-toggle').onclick = () => { const b = $('#rt-build'); b.style.display = b.style.display === 'none' ? '' : 'none'; };
+  $('#rt-b-go').onclick = async () => {
+    const msg = $('#rt-b-msg'); msg.textContent = 'building…';
+    try {
+      const r = await api('POST', '/api/rating/build', {experiment: S.rt.exp, name: $('#rt-b-name').value.trim() || 'v1',
+        n_prompts: Number($('#rt-b-n').value) || 50, variants: Number($('#rt-b-k').value) || 3,
+        seed: Number($('#rt-b-seed').value) || 42, overwrite: $('#rt-b-over').checked});
+      msg.textContent = `built ${r.name}: ${r.n_items} items (${r.selection.disagreement.length} disagreement + ${r.selection.random.length} random prompts)`;
+      S.rt.set = r.name; S.rt.mode = 'idle'; await loadRtSets();
+    } catch(e){ msg.textContent = e.message; }
+  };
+}
+
+/* =========================================================================
    wiring
    ========================================================================= */
 function setView(v){
@@ -1576,6 +2136,8 @@ function setView(v){
   $$('.view').forEach(x => x.classList.toggle('on', x.id==='view-'+v));
   if (v==='runs') pollRuns();
   if (v==='eval') loadEvalTree();
+  if (v==='freeform') loadFfTree();
+  if (v==='rate') loadRtTab();
 }
 function setEtab(t){
   if (t==='yaml' && S.etab!=='yaml' && !S.yamlDirty && S.cfg && (S.dirty || !$('#yaml').value)) formToYaml();
@@ -1598,6 +2160,9 @@ document.addEventListener('DOMContentLoaded', async () => {
   $('#btn-start').onclick = startFlow; $('#start-go').onclick = doStart;
   $('#btn-cancel').onclick = cancelRun;
   wireEvalTab();
+  wireFfTab();
+  wireJudgeBar();
+  wireRtTab();
   $$('[data-close]').forEach(b => b.onclick = closeModals);
   $$('.modal-bg').forEach(m => m.addEventListener('click', e => { if (e.target===m) closeModals(); }));
   $('#theme-btn').onclick = () => { const r = document.documentElement; const cur = r.dataset.theme || (matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light'); r.dataset.theme = cur==='dark'?'light':'dark'; try { localStorage.setItem('xc-theme', r.dataset.theme); } catch(e){} };

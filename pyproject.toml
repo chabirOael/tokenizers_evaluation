@@ -37,6 +37,7 @@ dependencies = [
     # evaluation/eval_rows.py imports it directly. Imported lazily, so
     # tokenizer-only workflows still run without it.
     "pyarrow>=14.0.0",
+    "sacrebleu>=2.3.0",     # chrF for the free-form eval (tasks/freeform/metrics.py)
 ]
 
 [project.optional-dependencies]

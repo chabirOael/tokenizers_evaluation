@@ -61,6 +61,20 @@ After training, eval runs on **every task in `sweep.tasks`** (default ACVA + Alg
 - Early-stop now uses `dev` (title-level 5 % of the official train split, `is_dev_title`), never the official splits; `qa_blend` refuses `validation` and `dev`. Runs before 2026-09-17 early-stopped on the test splits and trained on ~480 contaminated rows — not comparable.
 - Paraphrase overlap (Arabic-SQuAD = translated English Wikipedia) is invisible to this check; say so when reporting.
 
+### The free-form eval generates; everything else scores log-likelihoods (2026-09-18)
+
+`freeform_cidar` (`tasks/freeform/`) greedy-decodes an answer to each of 250 held-out CIDAR instructions (`configs/contamination/freeform_cidar_heldout_v1.jsonl`, also the `freeform_prompts` held-out set, so its rows are excluded from `cidar/train` and the pool filters against it), scores the decoded text inline (chrF, in-house BERTScore, loop / empty / Latin / cap rates, `reference_roundtrip_chrf`), dumps every row, and leaves judging to a separate stage (`scripts/judge/judge_freeform.py`, `judge/freeform_judge.py`; local Gemma-4-31B under vLLM from `.venv-judge` via `scripts/judge/run_judge.sh`, or an OpenAI-compatible API) and the human check to the console's Rate tab. Things to keep straight:
+
+- **The budget is in characters, not tokens.** `max_output_chars` becomes a per-tokenizer `max_new_tokens` from measured chars/token; the same token count would give char-JABER a quarter of BPE's text. Keep decoding pure greedy: a repetition penalty or n-gram block is granularity-dependent and a confound — loops are for `degenerate_rate` and the judge.
+- **Strip the trailing EOS of the prompt encoding** (every from-scratch tokenizer appends one); the marker stop (`\nالسؤال:` …) is checked on decoded text, so it works for every tokenizer.
+- **CharacterBERT, Farasa-CharacterBERT and Charformer cannot generate** — typed status `generation_unsupported`, never a 0; MEI skips the task.
+- **Only run it on configs whose Phase 3 saw free-form corpora** (the `*_sft_mixture` YAMLs).
+- **Held-out leakage is semantic, not lexical.** CIDAR is Alpaca-derived and Bactrian-X holds all of Alpaca: the same instruction reappears as a different translation with a paraphrased output. The builder gates on an E5 cosine (0.93 in v1) on top of the n-gram twins; the leak-free set is CIDAR's own material (18 % grammar questions). Rebuilding the file changes its hash → exclusions and the pool fingerprint → rerun `check_contamination.py --write-exclusions`.
+- **The judge is a stage over the dumps, not part of the experiment.** It rewrites `all_metrics.json` (`downstream.freeform_cidar.judge.<name>`) and the comparison report; comparisons are paired (bootstrap CI vs the baseline cell). `structured_json` is per judge with a prose fallback. The API judge's model id in `configs/judges/gpt56_terra_api.yaml` is whatever you named — verify it against your account.
+- **`decode()` was never exercised before this eval.** BPE and WordPiece had no HF decoder (byte-level surrogates / `##` joined with spaces) until 2026-09-18; every tokenizer's `load()` must set its decoder because archived JSONs carry none. MorphoBPE decode is lossy by construction (Farasa `+` → spaces before BPE). Always look at `reference_roundtrip_chrf` before reading a variant's chrF / BERTScore.
+- **The `bert_score` package is broken under transformers 5**; `tasks/freeform/bertscore.py` reimplements it (verified to 1e-6 on non-empty strings). Do not add it back as a dependency.
+- **vLLM on this machine:** cu129 wheel + torch cu129 (the driver is CUDA 12.8; the default cu130 build fails), Python headers extracted locally on `CPATH`, `VLLM_USE_FLASHINFER_SAMPLER=0`. All in `run_judge.sh`.
+
 ### The 8 tokenizers split into 4 architectural families
 
 | Family | Members | Embedding type | Unit |
@@ -391,5 +405,15 @@ evaluation:
 - **"Let the model see 50 K SFT examples by bumping `steps` — the mixture will wrap."** No — `steps` is derived from `total_examples / batch_size` and validated; a category short of its quota is an error, not a repeat. Raise `total_examples` (the error prints the ceiling at these shares), change the shares, or set `upsample: true` explicitly so the repetition is recorded in the manifest.
 
 - **"30 % free-form is a modest share, the ratio ablation is fair."** It is 30 % of *examples*; measured 87 % of *loss tokens* under the native tokenizer. Report `loss_token_share` alongside `example_share` (both in the manifest) — a ratio study that only quotes the example share misreads what the gradient saw.
+
+- **"Score the free-form eval with a fixed `max_new_tokens` for everyone — that's what fixed decoding means."** No — a token is a different amount of text per tokenizer (1 char for char-JABER, ~3.5 for BPE-32K). The shared rule is a character budget plus identical greedy decoding; the per-tokenizer token cap is derived from measured chars/token and recorded per cell.
+
+- **"Add a repetition penalty so the small models stop looping."** It is granularity-dependent (a character tokenizer repeats characters by nature) and would penalize the char-level variants for their unit, not their quality. Loops are measured (`degenerate_rate`, the `repetition` judge flag) and scored 1 by the rubric.
+
+- **"CharacterBERT gets no free-form score, so put 0."** It gets `status: generation_unsupported` — the same typed-status convention as MEI. A 0 would be read as "generated garbage".
+
+- **"Run the judge inside `run_experiment` so the numbers land in one pass."** A 59 GiB judge does not fit next to a training run, judges get swapped, and the human check needs the same generation files. The stage over the dumps merges its summary into `all_metrics.json` afterwards; that is the design.
+
+- **"Loosen the E5 threshold so the held-out set has more ordinary instructions."** Above ~0.93 the nearest training prompt is the same Alpaca instruction in another translation with a paraphrased output — the model has seen the answer. If you need more rows, the honest options are a different source corpus or accepting the leak and saying so.
 
 - **"Bring back per-benchmark SFT — the 3-phase pipeline doesn't expose the model to the actual benchmark format during training."** That's by design. The previous 10/90 split silently mapped from-scratch tokenizer indices onto Llama's pretrained rows and 10% benchmark SFT couldn't drift them far enough to be useful. The 3-phase pipeline alternative — Phase 1 embedding alignment + Phase 2 translated QA + Phase 3 native QA — is task-agnostic precisely so every condition (native + 8 from-scratch tokenizers) trains on the *same* data and the only experimental variable is the tokenizer. If you want to compare a per-benchmark SFT regime against the 3-phase one, that's a new experiment, not a pipeline rewrite.

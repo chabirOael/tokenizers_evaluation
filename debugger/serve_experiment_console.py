@@ -36,6 +36,17 @@ Routes
                                     (outcome, scoring, subconfig, flags, q, sort, page, page_size)
     GET  /api/eval/row?path=&position=   one full record
     GET  /api/eval/export?path=&…   the current selection as a CSV download
+    GET  /api/judge/configs         configs/judges/*.yaml with backend, model and readiness (venv / API key)
+    POST /api/judge/start           {"experiment", "judges": [names], "baseline", "limit", "overwrite", "force"}
+                                    → a detached judge run (Runs tab); GPU judges conflict with active runs
+    GET  /api/freeform/tree         every free-form generation dump: experiment → cell (+ unsupported cells)
+    GET  /api/freeform/rows?cell=&… one cell's generations joined with its judge files, filtered / sorted / paged
+    GET  /api/freeform/row?cell=&id= one full record + the same prompt in the sibling cells
+    GET  /api/rating/sets?experiment=        blind rating sets of an experiment and who rated what
+    POST /api/rating/build          {"experiment", "name", "n_prompts", "variants", "seed", "overwrite"} → the set (blind)
+    GET  /api/rating/items?experiment=&set=&rater=   the items (cell hidden) with this rater's ratings
+    POST /api/rating/submit         {"experiment", "set", "rater", "item_id", "score", "flags", "note"}
+    GET  /api/rating/agreement?experiment=&set=      rater vs judge / rater vs rater / judge vs judge, cells revealed
 
 Stdlib only (http.server) — no new dependencies.
 """
@@ -55,7 +66,10 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT / "src"))
 
 from arabic_eval.tools import eval_rows_browser as eval_rows  # noqa: E402
+from arabic_eval.tools import freeform_rating  # noqa: E402
+from arabic_eval.tools import freeform_rows_browser as freeform_rows  # noqa: E402
 from arabic_eval.tools.experiment_console import (  # noqa: E402
+    judge_configs,
     ConsoleError,
     ConsolePaths,
     RunConflict,
@@ -196,6 +210,20 @@ class Handler(SimpleHTTPRequestHandler):
         elif route == "/api/eval/export":
             name, text = eval_rows.export_csv(REPO_ROOT, q.get("path", ""), q)
             self._send_csv(name, text)
+        elif route == "/api/judge/configs":
+            self._send_json({"judges": judge_configs(PATHS)})
+        elif route == "/api/freeform/tree":
+            self._send_json(freeform_rows.discover(REPO_ROOT))
+        elif route == "/api/freeform/rows":
+            self._send_json(freeform_rows.query(REPO_ROOT, q.get("cell", ""), q))
+        elif route == "/api/freeform/row":
+            self._send_json(freeform_rows.row(REPO_ROOT, q.get("cell", ""), q.get("id", "")))
+        elif route == "/api/rating/sets":
+            self._send_json(freeform_rating.list_sets(REPO_ROOT, q.get("experiment", "")))
+        elif route == "/api/rating/items":
+            self._send_json(freeform_rating.get_items(REPO_ROOT, q.get("experiment", ""), q.get("set", ""), q.get("rater", "")))
+        elif route == "/api/rating/agreement":
+            self._send_json(freeform_rating.agreement(REPO_ROOT, q.get("experiment", ""), q.get("set", "")))
         else:
             self._send_json({"error": "not found"}, HTTPStatus.NOT_FOUND)
 
@@ -222,6 +250,25 @@ class Handler(SimpleHTTPRequestHandler):
             )
             log.info("started run %s (pid %s): %s", rec["run_id"], rec["pid"], " ".join(rec["argv"]))
             self._send_json(rec, HTTPStatus.ACCEPTED)
+        elif route == "/api/judge/start":
+            lim = req.get("limit")
+            rec = RUNS.start_judge(
+                str(req.get("experiment") or ""), list(req.get("judges") or []),
+                baseline=(str(req["baseline"]) if req.get("baseline") else None),
+                limit=int(lim) if lim not in (None, "", 0, "0") else None,
+                overwrite=bool(req.get("overwrite")), force=bool(req.get("force")))
+            log.info("started judge run %s (pid %s): %s", rec["run_id"], rec["pid"], " ".join(rec["argv"]))
+            self._send_json(rec, HTTPStatus.ACCEPTED)
+        elif route == "/api/rating/build":
+            self._send_json(freeform_rating.build_set(
+                REPO_ROOT, str(req.get("experiment") or ""), name=str(req.get("name") or "v1"),
+                n_prompts=int(req.get("n_prompts") or 50), variants_per_prompt=int(req.get("variants") or 3),
+                seed=int(req.get("seed") or 42), baseline=(str(req["baseline"]) if req.get("baseline") else None),
+                overwrite=bool(req.get("overwrite"))))
+        elif route == "/api/rating/submit":
+            self._send_json(freeform_rating.submit(
+                REPO_ROOT, str(req.get("experiment") or ""), str(req.get("set") or ""), str(req.get("rater") or ""),
+                str(req.get("item_id") or ""), req.get("score"), req.get("flags") or [], str(req.get("note") or "")))
         elif route.startswith("/api/runs/") and route.endswith("/cancel"):
             run_id = route[len("/api/runs/"):-len("/cancel")]
             rec = RUNS.cancel(run_id)

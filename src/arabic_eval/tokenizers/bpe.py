@@ -6,7 +6,7 @@ import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from tokenizers import Tokenizer, models, pre_tokenizers, trainers, processors
+from tokenizers import Tokenizer, decoders, models, pre_tokenizers, trainers, processors
 
 from arabic_eval.registry import tokenizer_registry
 from arabic_eval.tokenizers.base import BaseTokenizer, EmbeddingType, TokenizerOutput
@@ -29,6 +29,10 @@ class BPETokenizer(BaseTokenizer):
 
         tokenizer = Tokenizer(models.BPE(unk_token="<unk>"))
         tokenizer.pre_tokenizer = pre_tokenizers.ByteLevel(add_prefix_space=False)
+        # Without the matching decoder, decode() returns the byte-level surrogate
+        # characters ("Ø§ÙĦ…" for "ال…") — unnoticed while the pipeline only scored
+        # log-likelihoods; the free-form eval decodes (fixed 2026-09-18).
+        tokenizer.decoder = decoders.ByteLevel()
 
         trainer = trainers.BpeTrainer(
             vocab_size=vocab_size,
@@ -93,6 +97,8 @@ class BPETokenizer(BaseTokenizer):
     def load(self, path: Path | str) -> None:
         path = Path(path)
         self._tokenizer = Tokenizer.from_file(str(path / "tokenizer.json"))
+        # Tokenizers saved before 2026-09-18 carry no decoder; setting it is idempotent.
+        self._tokenizer.decoder = decoders.ByteLevel()
         self._build_special_token_map()
 
     @property

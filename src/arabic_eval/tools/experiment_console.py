@@ -37,7 +37,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, get_args
+from typing import Any, Dict, List, Optional, Sequence, Tuple, get_args
 
 import yaml
 from pydantic import ValidationError
@@ -239,6 +239,7 @@ def schema_bundle(paths: ConsolePaths) -> dict:
         "presets": presets,
         "env": {
             "hf_token_set": bool(os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN")),
+            "openai_key_set": bool(os.environ.get("OPENAI_API_KEY")),
             "python": paths.rel(paths.python),
             "script": paths.rel(paths.script),
         },
@@ -437,6 +438,38 @@ def _strip_ts(line: str) -> str:
     return _RE_TS.sub("", line, count=1)
 
 
+_RE_JUDGE_LOAD = re.compile(r"\[judge:([\w.-]+)\] vLLM (\S+?),")
+_RE_JUDGE_CELL = re.compile(r"\[judge:([\w.-]+)\] (\S+): (reusing )?(\d+) verdicts(?: in ([\d.]+)s)?")
+_RE_JUDGE_REPORT = re.compile(r"^report → (\S+)")
+
+
+def parse_judge_progress(text: str) -> Optional[dict]:
+    """The judge stage's state from its console log (``scripts/judge/judge_freeform.py``):
+    per judge the model being loaded and the cells scored so far (``n`` verdicts,
+    ``reused`` when an earlier file was kept), plus the report path once written.
+    ``None`` when the log carries no judge line at all."""
+    judges: Dict[str, dict] = {}
+    report = None
+    for raw in re.split(r"\r\n|\n|\r", text):
+        line = _RE_TS.sub("", raw.rstrip())
+        m = _RE_JUDGE_LOAD.search(line)
+        if m:
+            judges.setdefault(m.group(1), {"model": None, "cells": {}})["model"] = m.group(2)
+            continue
+        m = _RE_JUDGE_CELL.search(line)
+        if m:
+            j = judges.setdefault(m.group(1), {"model": None, "cells": {}})
+            j["cells"][m.group(2)] = {"n": int(m.group(4)), "reused": bool(m.group(3)),
+                                      "seconds": float(m.group(5)) if m.group(5) else None}
+            continue
+        m = _RE_JUDGE_REPORT.match(line)
+        if m:
+            report = m.group(1)
+    if not judges and report is None:
+        return None
+    return {"judges": judges, "report": report, "done": report is not None}
+
+
 def parse_progress(text: str) -> dict:
     """Reduce a console log to the run's current state (see module doc)."""
     state: Dict[str, Any] = {
@@ -536,14 +569,19 @@ def parse_progress(text: str) -> dict:
             if state["cell"]:
                 state["cells_done"].append(state["cell"])
             continue
+    judge = parse_judge_progress(text)
+    if judge is not None:
+        state["judge"] = judge
+        if judge["done"]:
+            state["done"] = True
     return state
-
 
 # ---------------------------------------------------------------------------
 # Runs
 # ---------------------------------------------------------------------------
 
 STATUS_ACTIVE = ("running", "cancelling")
+RUN_DIR_PLACEHOLDER = "{RUN_DIR}"      # in an argv before launch: the run directory once allocated
 
 
 def _proc_start_ticks(pid: int) -> Optional[int]:
@@ -633,8 +671,81 @@ def gpu_snapshot() -> Optional[List[dict]]:
     return gpus
 
 
+# ---------------------------------------------------------------------------
+# Judge stage (free-form eval): configs, readiness, command
+# ---------------------------------------------------------------------------
+
+def judge_headers_ok(repo_root: Path) -> bool:
+    """The locally extracted Python headers vLLM's Triton JIT needs (see scripts/judge/setup_judge_env.sh)."""
+    return any((repo_root / ".local-pkgs" / "extracted" / "usr" / "include").glob("python3*/Python.h"))
+
+
+def judge_ready(paths: ConsolePaths, cfg: Any) -> Tuple[bool, str]:
+    """Whether a judge can be launched from this machine right now, and why not."""
+    if cfg.backend == "vllm":
+        venv = paths.repo_root / ".venv-judge" / "bin" / "python"
+        if not venv.exists():
+            return False, "no .venv-judge — run scripts/judge/setup_judge_env.sh"
+        if not judge_headers_ok(paths.repo_root):
+            return False, "Python headers missing under .local-pkgs/extracted — run scripts/judge/setup_judge_env.sh"
+        return True, ""
+    if not os.environ.get(cfg.api_key_env):
+        return False, f"{cfg.api_key_env} is not set in the console server's environment (export it before starting the server)"
+    return True, ""
+
+
+def judge_config_path(paths: ConsolePaths, ref: str) -> Path:
+    """``<name>`` or ``configs/judges/<name>.yaml`` → the file, confined to configs/judges."""
+    d = (paths.repo_root / "configs" / "judges").resolve()
+    ref = str(ref or "").strip()
+    if not ref:
+        raise ConsoleError("judge required")
+    cand = (paths.repo_root / ref).resolve() if ref.endswith(".yaml") else (d / f"{ref}.yaml").resolve()
+    if d not in cand.parents:
+        raise ConsoleError("judge configs live under configs/judges/")
+    if not cand.is_file():
+        raise ConsoleError(f"no such judge config: {ref}")
+    return cand
+
+
+def judge_configs(paths: ConsolePaths) -> List[dict]:
+    """Every ``configs/judges/*.yaml`` with its parsed essentials and readiness."""
+    from arabic_eval.judge.freeform_judge import JudgeConfig
+    d = paths.repo_root / "configs" / "judges"
+    out: List[dict] = []
+    for p in sorted(d.glob("*.yaml")) if d.is_dir() else []:
+        entry: Dict[str, Any] = {"file": paths.rel(p), "id": p.stem}
+        try:
+            cfg = JudgeConfig.from_yaml(p)
+            ready, why = judge_ready(paths, cfg)
+            entry.update({"name": cfg.name, "backend": cfg.backend, "model": cfg.model, "rubric": cfg.rubric,
+                          "structured_json": cfg.structured_json, "gpu": cfg.backend == "vllm",
+                          "api_key_env": cfg.api_key_env if cfg.backend == "openai" else None,
+                          "ready": ready, "why": why})
+        except Exception as e:  # noqa: BLE001 — a broken YAML is listed, not hidden
+            entry.update({"name": p.stem, "error": f"{type(e).__name__}: {e}", "ready": False, "why": "invalid config"})
+        out.append(entry)
+    return out
+
+
+def judge_cells(repo_root: Path, experiment: str) -> Tuple[Path, List[str]]:
+    """The experiment dir (confined to outputs/experiments) and its cells that have free-form generations."""
+    base = (repo_root / "outputs" / "experiments").resolve()
+    exp = (repo_root / str(experiment or "")).resolve()
+    if base not in exp.parents or not exp.is_dir():
+        raise ConsoleError(f"no such experiment under outputs/experiments: {experiment}")
+    gen = Path("eval_rows") / "freeform_cidar.parquet"
+    if (exp / gen).exists():
+        return exp, [exp.name]
+    cells = sorted(p.name for p in exp.iterdir() if p.is_dir() and (p / gen).exists())
+    if not cells:
+        raise ConsoleError(f"{experiment} has no cell with eval_rows/freeform_cidar.parquet — run the free-form task first")
+    return exp, cells
+
+
 class RunManager:
-    """Detached experiment runs under ``outputs/runs/<run_id>/``."""
+    """Detached experiment runs under ``outputs/runs/<run_id>/`` — experiments
+    (``start``) and free-form judge stages (``start_judge``), one lifecycle."""
 
     def __init__(self, paths: ConsolePaths, grace_sec: float = CANCEL_GRACE_SEC) -> None:
         self.paths = paths
@@ -677,6 +788,25 @@ class RunManager:
             cmd += ["--seed", str(int(seed))]
         return cmd
 
+    def build_judge_command(self, experiment_rel: str, judge_yamls: Sequence[str], gpu: bool,
+                            baseline: Optional[str], limit: Optional[int], overwrite: bool) -> List[str]:
+        """``scripts/judge/run_judge.sh`` (the vLLM venv with its environment) when any judge
+        needs the GPU, else ``scripts/judge/judge_freeform.py`` in the main venv."""
+        if gpu:
+            cmd = [str(self.paths.repo_root / "scripts" / "judge" / "run_judge.sh")]
+        else:
+            cmd = [str(self.paths.python), str(self.paths.repo_root / "scripts" / "judge" / "judge_freeform.py")]
+        cmd += ["--experiment", experiment_rel]
+        for y in judge_yamls:
+            cmd += ["--judge", str(y)]
+        if baseline:
+            cmd += ["--baseline", str(baseline)]
+        if limit:
+            cmd += ["--limit", str(int(limit))]
+        if overwrite:
+            cmd.append("--overwrite")
+        return cmd
+
     # ---- lifecycle -----------------------------------------------------------
     def active(self) -> List[dict]:
         return [r for r in self.list() if r["status"] in STATUS_ACTIVE]
@@ -706,7 +836,71 @@ class RunManager:
         cfg = ExperimentConfig(**v["resolved"])
         if sweep is None:
             sweep = is_sweep(cfg)
+        # The snapshot lives in the run dir, which is allocated inside _launch;
+        # RUN_DIR_PLACEHOLDER is substituted there.
+        argv = command or self.build_command(Path(RUN_DIR_PLACEHOLDER) / "config.yaml", sweep, device, seed)
+        record = {
+            "kind": "experiment", "config": config_ref,
+            "experiment_name": cfg.name, "output_dir": cfg.output_dir,
+            "sweep": bool(sweep), "cells": cell_names(cfg) if sweep else [],
+            "tasks": [t.type for t in cfg.sweep.tasks] if cfg.sweep else [],
+            "tokenizer": cfg.tokenizer.type, "model": cfg.model.name_or_path,
+            "experiment_log": f"outputs/logs/{cfg.name}/experiment.log",
+        }
+        snapshots = {"config.yaml": yaml_text if yaml_text.endswith("\n") else yaml_text + "\n"}
+        return self._launch(label, argv, record, snapshots, snapshot_main="config.yaml", force=force, env=env)
 
+    def start_judge(self, experiment: str, judges: Sequence[str], *, baseline: Optional[str] = None,
+                    limit: Optional[int] = None, overwrite: bool = False, force: bool = False,
+                    command: Optional[List[str]] = None, env: Optional[Dict[str, str]] = None) -> dict:
+        """Launch the free-form judge stage on a finished experiment (or sweep) as
+        a detached run: the judge YAMLs are snapshotted into the run dir and the
+        script is pointed at the snapshots. A GPU judge (vLLM) conflicts with an
+        active run like an experiment does; API-only judges run alongside.
+
+        ``command`` overrides the launched argv (tests use a stub)."""
+        from arabic_eval.judge.freeform_judge import JudgeConfig
+        exp_dir, cells = judge_cells(self.paths.repo_root, experiment)
+        exp_rel = self.paths.rel(exp_dir)
+        if not judges:
+            raise ConsoleError("pick at least one judge")
+        cfgs = []
+        for ref in judges:
+            path = judge_config_path(self.paths, ref)
+            cfg = JudgeConfig.from_yaml(path)
+            ready, why = judge_ready(self.paths, cfg)
+            if not ready:
+                raise ConsoleError(f"judge {cfg.name}: {why}")
+            cfgs.append((path, cfg))
+        names = [c.name for _, c in cfgs]
+        if len(set(names)) != len(names):
+            raise ConsoleError(f"duplicate judge names: {names}")
+        if baseline and baseline not in cells:
+            raise ConsoleError(f"baseline {baseline!r} is not a cell with generations ({', '.join(cells)})")
+        gpu = any(c.backend == "vllm" for _, c in cfgs)
+        snapshots = {f"judges/{c.name}.yaml": path.read_text(encoding="utf-8") for path, c in cfgs}
+        request = {"experiment": exp_rel, "judges": names, "baseline": baseline, "limit": limit,
+                   "overwrite": bool(overwrite), "gpu": gpu, "backends": {c.name: c.backend for _, c in cfgs}}
+        snapshots["judge.json"] = json.dumps(request, ensure_ascii=False, indent=1) + "\n"
+        argv = command or self.build_judge_command(
+            exp_rel, [f"{RUN_DIR_PLACEHOLDER}/judges/{c.name}.yaml" for _, c in cfgs], gpu, baseline, limit, overwrite)
+        record = {
+            "kind": "judge", "config": None,
+            "experiment_name": exp_dir.name, "output_dir": exp_rel,
+            "sweep": False, "cells": cells, "tasks": ["freeform_cidar"],
+            "tokenizer": "judge", "model": ", ".join(c.model for _, c in cfgs),
+            "judges": names, "judge_backends": request["backends"], "judge_models": {c.name: c.model for _, c in cfgs},
+            "baseline": baseline, "limit": limit, "overwrite": bool(overwrite), "gpu": gpu,
+            "experiment_log": None,
+        }
+        return self._launch(f"judge_{exp_dir.name}", argv, record, snapshots, snapshot_main="judge.json",
+                            force=force or not gpu, env=env)
+
+    def _launch(self, label: str, argv: List[str], record: dict, snapshots: Dict[str, str], *,
+                snapshot_main: str, force: bool, env: Optional[Dict[str, str]] = None) -> dict:
+        """Allocate the run dir, write the snapshots, start the detached session
+        and write ``run.json``. ``RUN_DIR_PLACEHOLDER`` in ``argv`` becomes the
+        run dir (snapshots are addressed through it)."""
         with self._lock:
             active = self.active()
             if active and not force:
@@ -721,11 +915,13 @@ class RunManager:
                 run_id = f"{ts.strftime('%Y%m%d-%H%M%S')}_{label}_{n}"
             rd = self.run_dir(run_id)
             rd.mkdir(parents=True)
-            snapshot = rd / "config.yaml"
-            snapshot.write_text(yaml_text if yaml_text.endswith("\n") else yaml_text + "\n", encoding="utf-8")
+            for name, text in snapshots.items():
+                p = rd / name
+                p.parent.mkdir(parents=True, exist_ok=True)
+                p.write_text(text, encoding="utf-8")
+            argv = [a.replace(RUN_DIR_PLACEHOLDER, str(rd)) for a in argv]
             console_log = rd / "console.log"
             exit_file = rd / "exit_code"
-            argv = command or self.build_command(snapshot, sweep, device, seed)
             # bash owns the session; it records the exit code itself so the
             # status survives a server restart (the child is reparented to
             # init, nobody else can wait() on it). The TERM trap keeps bash
@@ -747,17 +943,12 @@ class RunManager:
             )
             self._procs[run_id] = proc
             rec = {
-                "run_id": run_id, "config": config_ref, "label": label,
-                "experiment_name": cfg.name, "output_dir": cfg.output_dir,
-                "sweep": bool(sweep), "cells": cell_names(cfg) if sweep else [],
-                "tasks": [t.type for t in cfg.sweep.tasks] if cfg.sweep else [],
-                "tokenizer": cfg.tokenizer.type, "model": cfg.model.name_or_path,
+                "run_id": run_id, "label": label, **record,
                 "argv": argv, "pid": proc.pid, "pgid": proc.pid,
                 "start_ticks": _proc_start_ticks(proc.pid),
                 "started_at": ts.isoformat(timespec="seconds"), "finished_at": None,
                 "status": "running", "exit_code": None, "cancel_requested_at": None,
-                "console_log": self.paths.rel(console_log), "snapshot": self.paths.rel(snapshot),
-                "experiment_log": f"outputs/logs/{cfg.name}/experiment.log",
+                "console_log": self.paths.rel(console_log), "snapshot": self.paths.rel(rd / snapshot_main),
             }
             self._write(rec)
         return rec
@@ -881,6 +1072,21 @@ class RunManager:
     def results(self, run_id: str) -> Optional[dict]:
         rec = self._read(run_id)
         out_dir = self.paths.repo_root / rec["output_dir"]
+        if rec.get("kind") == "judge":
+            report = out_dir / "freeform_judge_report.json"
+            if not report.exists():
+                return None
+            try:
+                data = json.loads(report.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                return None
+            summary = {j: {cell: {"score_mean": sm.get("score_mean"), "n": sm.get("n"),
+                                  "delta": (sm.get("vs_baseline") or {}).get("delta_mean"),
+                                  "parse_fail_rate": sm.get("parse_fail_rate")}
+                           for cell, sm in cells.items()}
+                       for j, cells in (data.get("judges") or {}).items()}
+            return {"judge": True, "report": self.paths.rel(report), "baseline": data.get("baseline"),
+                    "summary": summary, "comparison_report": data.get("comparison_report")}
         if rec["sweep"]:
             cells = {}
             for c in rec.get("cells") or []:

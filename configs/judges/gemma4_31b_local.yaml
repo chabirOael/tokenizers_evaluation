@@ -1,0 +1,17 @@
+# Local open judge: google/gemma-4-31b-it under vLLM on the H100 (verified 2026-09-18:
+# 59 GiB weights, 8.4 GiB KV cache at 4k context, ~39 verdicts/s). Run it from the judge
+# venv with scripts/judge/run_judge.sh (sets CPATH for Triton's Python.h and disables the
+# FlashInfer sampler JIT). Cannot share the GPU with a training run.
+judge:
+  name: "gemma4_31b"
+  backend: "vllm"
+  model: "google/gemma-4-31b-it"
+  rubric: "default_v1"
+  temperature: 0.0
+  max_tokens: 256
+  seed: 0
+  structured_json: true          # vLLM structured outputs; set false to fall back to the prose parser
+  max_model_len: 4096
+  gpu_memory_utilization: 0.92
+  dtype: "bfloat16"
+  batch_size: 64

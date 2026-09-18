@@ -108,6 +108,72 @@ def build_comparison_table(
     return tabulate(rows, headers=headers, tablefmt="grid", floatfmt=".4f")
 
 
+# Nested blocks of a downstream task record that must not be flattened into
+# the main table: the per-sub-config breakdown (Alghafa) and the free-form
+# judge summaries (one dict per judge, plus the judge agreement), each
+# rendered as its own section below the table.
+_NESTED_DOWNSTREAM_KEYS = frozenset({"per_subconfig_accuracy", "judge", "judge_agreement"})
+
+
+def _build_freeform_judge_section(
+    task_name: str,
+    task_data: Dict[str, Dict[str, Any]],
+) -> List[str]:
+    """Per judge: one row per experiment with the mean score (± 1.96 SE), the
+    paired delta to the baseline cell with its bootstrap CI, the win / tie /
+    loss rates and the flag + parse-failure rates. Empty when no experiment
+    carries a ``judge`` block. Judge–judge agreement follows when present."""
+    judges: List[str] = sorted({j for r in task_data.values() for j in (r.get("judge") or {})})
+    if not judges:
+        return []
+    lines: List[str] = []
+
+    def _f(v: Any, fmt: str = ".3f") -> str:
+        return "—" if v is None else format(v, fmt)
+
+    for judge in judges:
+        rows = []
+        baseline = None
+        for name in sorted(task_data):
+            s = (task_data[name].get("judge") or {}).get(judge)
+            if not s:
+                continue
+            baseline = s.get("baseline") or baseline
+            vs = s.get("vs_baseline") or {}
+            se = s.get("score_se")
+            mean = s.get("score_mean")
+            rows.append([
+                name, s.get("n"),
+                f"{mean:.3f} ± {1.96 * se:.3f}" if mean is not None and se is not None else _f(mean),
+                (f"{vs['delta_mean']:+.3f} [{vs['ci_low']:+.3f}, {vs['ci_high']:+.3f}]" if vs.get("delta_mean") is not None
+                 else ("baseline" if name == s.get("baseline") else "—")),
+                (f"{100 * vs['win_rate']:.0f} / {100 * vs['tie_rate']:.0f} / {100 * vs['loss_rate']:.0f}"
+                 if vs.get("win_rate") is not None else "—"),
+                _f(s.get("correctness_mean")), _f(s.get("fluency_mean")), _f(s.get("instruction_following_mean")),
+                f"{100 * s['any_flag_rate']:.0f}%" if s.get("any_flag_rate") is not None else "—",
+                f"{100 * s['parse_fail_rate']:.1f}%" if s.get("parse_fail_rate") is not None else "—",
+            ])
+        model = next((s.get("model") for r in task_data.values() if (s := (r.get("judge") or {}).get(judge))), "")
+        lines.append(f"### {task_name} — LLM judge: {judge} ({model}; baseline: {baseline or '—'})")
+        lines.append("")
+        lines.append(tabulate(
+            rows,
+            headers=["experiment", "n", "score ±95%", "Δ vs baseline [95% CI]", "win/tie/loss %",
+                     "correct.", "fluency", "instr.", "flagged", "parse fail"],
+            tablefmt="grid",
+        ))
+        lines.append("")
+    agree = [(name, r.get("judge_agreement")) for name, r in sorted(task_data.items()) if r.get("judge_agreement")]
+    if agree:
+        lines.append(f"### {task_name} — judge agreement")
+        lines.append("")
+        rows = [[name, pair, a.get("n"), _f(a.get("spearman")), _f(a.get("exact")), _f(a.get("qwk"))]
+                for name, pairs in agree for pair, a in sorted(pairs.items())]
+        lines.append(tabulate(rows, headers=["experiment", "judges", "n", "spearman", "exact", "QWK"], tablefmt="grid"))
+        lines.append("")
+    return lines
+
+
 def _build_per_subconfig_section(
     task_name: str,
     task_data: Dict[str, Dict[str, Any]],
@@ -394,7 +460,7 @@ def generate_report(
             # sub-config and bloat the table to ~20 columns on Alghafa.
             # Rendered separately below.
             main_table_data = {
-                name: {k: v for k, v in r.items() if k != "per_subconfig_accuracy"}
+                name: {k: v for k, v in r.items() if k not in _NESTED_DOWNSTREAM_KEYS}
                 for name, r in task_data.items()
             }
             lines.append(build_comparison_table(main_table_data))
@@ -405,6 +471,7 @@ def generate_report(
             # Per-sub-config breakdown — emitted only when the task is
             # heterogeneous (more than one ``_source_config``).
             lines.extend(_build_per_subconfig_section(task_name, task_data))
+            lines.extend(_build_freeform_judge_section(task_name, task_data))
 
     # Composite (MEI) section — only experiments where MEI was actually
     # computed (status == "ok") are shown in the main table; everything else

@@ -323,3 +323,139 @@ def test_log_is_incremental(tmp_repo: ConsolePaths):
     assert "Experiment: mini" in first["data"] and first["offset"] == first["size"]
     again = mgr.log(rec["run_id"], first["offset"])
     assert again["data"] == "" and again["status"] == "finished"
+
+
+# ---------------------------------------------------------------------------
+# Judge stage (free-form eval) as a detached run
+# ---------------------------------------------------------------------------
+
+from arabic_eval.tools.experiment_console import (  # noqa: E402
+    judge_cells, judge_config_path, judge_configs, parse_judge_progress,
+)
+
+JUDGE_API_YAML = "judge: {name: api_j, backend: openai, model: m-api, api_key_env: TEST_JUDGE_KEY, temperature: null}\n"
+JUDGE_GPU_YAML = "judge: {name: gpu_j, backend: vllm, model: org/model-31b}\n"
+
+
+def _judge_repo(tmp_repo: ConsolePaths) -> ConsolePaths:
+    root = tmp_repo.repo_root
+    (root / "configs" / "judges").mkdir(parents=True)
+    (root / "configs" / "judges" / "api_j.yaml").write_text(JUDGE_API_YAML, encoding="utf-8")
+    (root / "configs" / "judges" / "gpu_j.yaml").write_text(JUDGE_GPU_YAML, encoding="utf-8")
+    (root / "configs" / "judges" / "broken.yaml").write_text("judge: {name: b, backend: nope, model: m}\n", encoding="utf-8")
+    for cell in ("native_llama", "bpe_32k"):
+        d = root / "outputs" / "experiments" / "sw" / cell
+        (d / "eval_rows").mkdir(parents=True)
+        (d / "eval_rows" / "freeform_cidar.parquet").write_bytes(b"")
+        (d / "all_metrics.json").write_text("{}", encoding="utf-8")
+    (root / "outputs" / "experiments" / "sw" / "charformer").mkdir()
+    (root / "scripts" / "judge").mkdir(parents=True, exist_ok=True)
+    (root / "scripts" / "judge" / "judge_freeform.py").write_text("print('stub')\n")
+    (root / "scripts" / "judge" / "run_judge.sh").write_text("#!/bin/bash\n")
+    return tmp_repo
+
+
+def test_judge_configs_readiness(tmp_repo: ConsolePaths, monkeypatch):
+    paths = _judge_repo(tmp_repo)
+    monkeypatch.delenv("TEST_JUDGE_KEY", raising=False)
+    by = {j["id"]: j for j in judge_configs(paths)}
+    assert set(by) == {"api_j", "gpu_j", "broken"}
+    assert not by["api_j"]["ready"] and "TEST_JUDGE_KEY" in by["api_j"]["why"] and by["api_j"]["gpu"] is False
+    assert not by["gpu_j"]["ready"] and ".venv-judge" in by["gpu_j"]["why"] and by["gpu_j"]["gpu"] is True
+    assert by["broken"]["error"] and not by["broken"]["ready"]
+    monkeypatch.setenv("TEST_JUDGE_KEY", "k")
+    assert {j["id"]: j["ready"] for j in judge_configs(paths)}["api_j"] is True
+    (paths.repo_root / ".venv-judge" / "bin").mkdir(parents=True)
+    (paths.repo_root / ".venv-judge" / "bin" / "python").write_text("")
+    assert "headers" in {j["id"]: j for j in judge_configs(paths)}["gpu_j"]["why"]
+    hdr = paths.repo_root / ".local-pkgs" / "extracted" / "usr" / "include" / "python3.10"
+    hdr.mkdir(parents=True)
+    (hdr / "Python.h").write_text("")
+    assert {j["id"]: j["ready"] for j in judge_configs(paths)}["gpu_j"] is True
+
+
+def test_judge_config_path_is_confined(tmp_repo: ConsolePaths):
+    paths = _judge_repo(tmp_repo)
+    assert judge_config_path(paths, "api_j").name == "api_j.yaml"
+    assert judge_config_path(paths, "configs/judges/gpu_j.yaml").name == "gpu_j.yaml"
+    with pytest.raises(ConsoleError):
+        judge_config_path(paths, "../experiments/mini.yaml")
+    with pytest.raises(ConsoleError, match="no such judge"):
+        judge_config_path(paths, "missing")
+
+
+def test_judge_cells_and_command(tmp_repo: ConsolePaths):
+    paths = _judge_repo(tmp_repo)
+    exp, cells = judge_cells(paths.repo_root, "outputs/experiments/sw")
+    assert cells == ["bpe_32k", "native_llama"]                     # charformer has no generations
+    with pytest.raises(ConsoleError, match="no cell"):
+        judge_cells(paths.repo_root, "outputs/experiments/sw/charformer")
+    with pytest.raises(ConsoleError):
+        judge_cells(paths.repo_root, "configs")
+    rm = RunManager(paths)
+    gpu = rm.build_judge_command("outputs/experiments/sw", ["a.yaml", "b.yaml"], True, "native_llama", 10, True)
+    assert gpu[0].endswith("scripts/judge/run_judge.sh") and gpu[1:] == ["--experiment", "outputs/experiments/sw", "--judge", "a.yaml",
+                                                                    "--judge", "b.yaml", "--baseline", "native_llama", "--limit", "10", "--overwrite"]
+    api = rm.build_judge_command("outputs/experiments/sw", ["a.yaml"], False, None, None, False)
+    assert api[0] == str(paths.python) and api[1].endswith("scripts/judge/judge_freeform.py") and "--overwrite" not in api
+
+
+def test_start_judge_records_snapshots_and_finishes(tmp_repo: ConsolePaths, monkeypatch):
+    paths = _judge_repo(tmp_repo)
+    monkeypatch.setenv("TEST_JUDGE_KEY", "k")
+    rm = RunManager(paths)
+    with pytest.raises(ConsoleError, match="not ready|venv"):
+        rm.start_judge("outputs/experiments/sw", ["gpu_j"], command=[sys.executable, "-c", "pass"])
+    with pytest.raises(ConsoleError, match="baseline"):
+        rm.start_judge("outputs/experiments/sw", ["api_j"], baseline="nope", command=[sys.executable, "-c", "pass"])
+    script = ("import sys; print('[judge:api_j] vLLM org/m, structured_json=True'); "
+              "print('[judge:api_j] bpe_32k: 2 verdicts in 0.1s -> x'); print('[judge:api_j] native_llama: reusing 2 verdicts'); "
+              "print('report → outputs/experiments/sw/freeform_judge_report.json')")
+    rec = rm.start_judge("outputs/experiments/sw", ["api_j"], baseline="native_llama", limit=2,
+                         command=[sys.executable, "-c", script])
+    assert rec["kind"] == "judge" and rec["judges"] == ["api_j"] and rec["cells"] == ["bpe_32k", "native_llama"]
+    assert rec["gpu"] is False and rec["baseline"] == "native_llama" and rec["limit"] == 2 and rec["experiment_log"] is None
+    assert rec["run_id"].split("_", 1)[1].startswith("judge_sw") and rec["model"] == "m-api"
+    rd = paths.repo_root / "outputs" / "runs" / rec["run_id"]
+    assert (rd / "judges" / "api_j.yaml").read_text(encoding="utf-8") == JUDGE_API_YAML
+    assert json.loads((rd / "judge.json").read_text(encoding="utf-8"))["backends"] == {"api_j": "openai"}
+    assert rec["snapshot"].endswith("judge.json")
+    assert _wait(lambda: rm.get(rec["run_id"])["status"] == "finished")
+    d = rm.detail(rec["run_id"])
+    assert d["progress"]["judge"]["judges"]["api_j"]["cells"]["bpe_32k"] == {"n": 2, "reused": False, "seconds": 0.1}
+    assert d["progress"]["judge"]["judges"]["api_j"]["cells"]["native_llama"]["reused"] is True
+    assert d["progress"]["done"] is True and d["results"] is None            # no report file written by the stub
+    (paths.repo_root / "outputs" / "experiments" / "sw" / "freeform_judge_report.json").write_text(json.dumps(
+        {"baseline": "native_llama", "judges": {"api_j": {"bpe_32k": {"score_mean": 3.0, "n": 2, "vs_baseline": {"delta_mean": -1.0}, "parse_fail_rate": 0.0}}}}),
+        encoding="utf-8")
+    r = rm.results(rec["run_id"])
+    assert r["judge"] is True and r["summary"]["api_j"]["bpe_32k"]["delta"] == -1.0 and r["report"].endswith("freeform_judge_report.json")
+    # a fresh manager rediscovers the judge run with its kind
+    assert RunManager(paths).get(rec["run_id"])["kind"] == "judge"
+
+
+def test_api_only_judge_runs_beside_an_active_run(tmp_repo: ConsolePaths, monkeypatch):
+    paths = _judge_repo(tmp_repo)
+    monkeypatch.setenv("TEST_JUDGE_KEY", "k")
+    rm = RunManager(paths)
+    long = rm.start("mini", command=[sys.executable, "-c", "import time; time.sleep(5)"])
+    try:
+        rec = rm.start_judge("outputs/experiments/sw", ["api_j"], command=[sys.executable, "-c", "print('ok')"])
+        assert rec["kind"] == "judge"                                   # no GPU needed → no conflict
+        assert _wait(lambda: rm.get(rec["run_id"])["status"] == "finished")
+    finally:
+        rm.cancel(long["run_id"])
+
+
+def test_parse_judge_progress():
+    assert parse_judge_progress("Loading weights\nnothing here") is None
+    txt = ("INFO arabic_eval.judge.freeform_judge: [judge:gemma4_31b] vLLM google/gemma-4-31b-it, structured_json=True\n"
+           "INFO arabic_eval.judge.freeform_judge: [judge:gemma4_31b] bpe_32k: 250 verdicts in 12s → outputs/x.parquet\n"
+           "INFO arabic_eval.judge.freeform_judge: [judge:gemma4_31b] native_llama: reusing 250 verdicts\n")
+    p = parse_judge_progress(txt)
+    assert p["judges"]["gemma4_31b"]["model"] == "google/gemma-4-31b-it" and p["done"] is False
+    assert p["judges"]["gemma4_31b"]["cells"]["bpe_32k"] == {"n": 250, "reused": False, "seconds": 12.0}
+    p2 = parse_judge_progress(txt + "report → outputs/experiments/sw/freeform_judge_report.json\n")
+    assert p2["done"] and p2["report"].endswith("freeform_judge_report.json")
+    st = parse_progress(txt + "report → r.json\n")
+    assert st["judge"]["done"] and st["done"] is True
