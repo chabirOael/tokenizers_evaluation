@@ -303,6 +303,9 @@ table.res td:first-child,table.res th:first-child{text-align:left;font-family:va
 .ev-sum .chip{background:var(--surface)}
 .ev-sum .chip.act{cursor:pointer}
 .ev-sum .chip.act:hover{border-color:var(--accent);color:var(--accent)}
+.ev-sum .chip.act.on{border-color:var(--accent);background:var(--accent-soft);color:var(--accent)}
+.ev-sum .chip .st{cursor:pointer;border-bottom:1px dotted currentColor}
+.ev-sum .chip .st:hover,.ev-sum .chip .st.on{color:var(--accent);border-bottom-style:solid}
 .ev-hist{display:inline-flex;gap:3px;align-items:flex-end;height:20px}
 .ev-hist i{display:block;width:11px;min-height:2px;background:var(--accent);opacity:.6;border-radius:2px 2px 0 0}
 .ev-hist i.g{background:var(--good)}
@@ -2159,8 +2162,10 @@ function renderFfSummary(d){
   const s = d.summary || {}, box = $('#ff-sum'); box.innerHTML = '';
   const chip = (label, cls, title, onclick) =>
     h('span', {class: 'chip' + (cls?' '+cls:'') + (onclick?' act':''), title: title||'', onclick: onclick||undefined}, label);
-  const n = s.n_rows || 0;
-  box.append(chip(`${n} of ${d.n_rows_file} rows`, n?'':'warn'));
+  const n = s.n_rows || 0, active = ffActiveFilters();
+  box.append(chip(`${n} of ${d.n_rows_file} rows`, n?'':'warn', active.length ? `filtered by ${active.join(' · ')} — click to show every row` : 'every row of the dump',
+    active.length ? ffClearFilters : null));
+  if (active.length) box.append(chip('× all rows', 'accent', `clear ${active.join(' · ')}`, ffClearFilters));
   box.append(chip(`chrF ${ffNum(s.chrf_mean)}`, 'good', 'mean sentence chrF of the selected rows against the reference'));
   if (s.bertscore_mean != null) box.append(chip(`BERTScore F1 ${ffNum(s.bertscore_mean, 3)}`, '', 'in-house BERTScore, xlm-roberta-large layer 17, no rescaling'));
   box.append(chip(`${ffNum(s.gen_chars_mean, 0)} chars avg`, '', 'mean length of the generated text'));
@@ -2172,9 +2177,10 @@ function renderFfSummary(d){
       onclick: () => { S.ff.judge = j; $('#ff-judge').value = j; S.ff.page = 1; loadFfRows(); }},
       `${j} ${ffNum(js.mean, 2)} `, bars, js.flagged ? ` · ${js.flagged} flagged` : '', js.unparsed ? ` · ${js.unparsed} unparsed` : '', js.missing ? ` · ${js.missing} without verdict` : ''));
   }
-  const fl = (key, label, cls, title) => {
-    const v = s[key] || 0; if (!v) return;
-    box.append(chip(`${label} ${v}`, cls, title, () => { S.ff.flag = key; $('#ff-flag').value = key; S.ff.page = 1; loadFfRows(); }));
+  const fl = (key, label, cls, title) => {            // the row-flag chips toggle the "row flag" filter; the active one is highlighted
+    const v = s[key] || 0, on = S.ff.flag === key; if (!v && !on) return;
+    box.append(chip(`${label} ${v}`, (cls||'') + (on ? ' on' : ''), title + (on ? ' — active filter, click to clear' : ' — click to keep only these rows'),
+      () => { S.ff.flag = on ? '' : key; $('#ff-flag').value = S.ff.flag; S.ff.page = 1; loadFfRows(); }));
   };
   fl('degenerate', 'loops', 'bad', 'repetition loops by the detector');
   fl('empty', 'empty', 'bad', 'nothing generated');
@@ -2183,7 +2189,30 @@ function renderFfSummary(d){
   fl('hit_loop', 'loop-stopped', 'warn', 'ended by the text-level repetition-loop stop; the generation keeps the first copy');
   fl('char_truncated', 'char-cut', '', 'cut to the character budget');
   const st = s.stop || {};
-  box.append(chip(`stops: eos ${st.eos||0} · marker ${st.marker||0} · loop ${st.loop||0} · cap ${st.cap||0}`, '', 'why generation ended'));
+  const stopChip = h('span', {class: 'chip', title: 'why generation ended — click a reason to keep only those rows'}, 'stops: ');
+  ['eos', 'marker', 'loop', 'cap'].forEach((k, i) => {
+    const on = S.ff.stop === k;
+    if (i) stopChip.append(' · ');
+    stopChip.append(h('span', {class: 'st' + (on ? ' on' : ''), title: on ? 'active filter — click to clear' : `keep only rows that stopped by ${k}`,
+      onclick: () => { S.ff.stop = on ? '' : k; $('#ff-stop').value = S.ff.stop; S.ff.page = 1; loadFfRows(); }}, `${k} ${st[k]||0}`));
+  });
+  box.append(stopChip);
+}
+/* which of the free-form filters are set, as labels; and one click to drop them all (the judge and sort stay) */
+function ffActiveFilters(){
+  const out = [], sel = id => $(id).selectedOptions[0]?.textContent || $(id).value;
+  if (S.ff.flag) out.push(`row flag: ${sel('#ff-flag')}`);
+  if (S.ff.stop) out.push(`stop: ${S.ff.stop}`);
+  if (S.ff.jflag) out.push(`judge flag: ${sel('#ff-jflag')}`);
+  if (S.ff.smin || S.ff.smax) out.push(`score ${S.ff.smin || 1}–${S.ff.smax || 5}`);
+  if (S.ff.stratum) out.push(`length: ${S.ff.stratum}`);
+  if (S.ff.q) out.push(`search: “${S.ff.q}”`);
+  return out;
+}
+function ffClearFilters(){
+  Object.assign(S.ff, {smin:'', smax:'', jflag:'', stop:'', flag:'', stratum:'', q:''});
+  for (const id of ['#ff-smin','#ff-smax','#ff-jflag','#ff-stop','#ff-flag','#ff-stratum']) $(id).value = '';
+  $('#ff-q').value = ''; S.ff.page = 1; loadFfRows();
 }
 function ffPills(r){
   const out = [];
