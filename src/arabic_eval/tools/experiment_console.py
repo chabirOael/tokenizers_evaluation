@@ -43,6 +43,7 @@ import yaml
 from pydantic import ValidationError
 
 from arabic_eval.config import DatasetName, ExperimentConfig, _deep_merge, load_yaml
+from arabic_eval.tools.config_hints import FIELD_HINTS
 
 # ---------------------------------------------------------------------------
 # Paths
@@ -237,6 +238,7 @@ def schema_bundle(paths: ConsolePaths) -> dict:
         "base": base_resolved(paths),
         "registries": {**keys, "datasets": list(get_args(DatasetName))},
         "presets": presets,
+        "hints": {k: list(v) for k, v in FIELD_HINTS.items()},
         "env": {
             "hf_token_set": bool(os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN")),
             "openai_key_set": bool(os.environ.get("OPENAI_API_KEY")),
@@ -250,21 +252,42 @@ def schema_bundle(paths: ConsolePaths) -> dict:
 # Config files
 # ---------------------------------------------------------------------------
 
+def _cell_name(tok_type: str, vocab_size: Optional[int]) -> str:
+    return f"{tok_type}_{vocab_size // 1000}k" if vocab_size else tok_type
+
+
 def cell_names(cfg: ExperimentConfig) -> List[str]:
-    """The sub-directory names ``run_sweep`` uses, in run order."""
-    if cfg.sweep is None:
-        return []
-    out = []
-    for tok in cfg.sweep.tokenizers:
-        for vs in tok.vocab_sizes:
-            out.append(f"{tok.type}_{vs // 1000}k" if vs else tok.type)
-    return out
+    """The tokenizer cells that will actually run, in run order: the
+    ``sweep.tokenizers`` list (= the sub-directory names ``run_sweep`` uses)
+    when the config is a sweep, else the one cell of the top-level
+    ``tokenizer`` block — a single-cell run never reads ``sweep.tokenizers``."""
+    if not is_sweep(cfg):
+        return [_cell_name(cfg.tokenizer.type, cfg.tokenizer.vocab_size)]
+    return [_cell_name(tok.type, vs) for tok in cfg.sweep.tokenizers for vs in tok.vocab_sizes]
 
 
 def is_sweep(cfg: ExperimentConfig) -> bool:
     """``run_experiment.py --sweep`` only fans out with more than one cell
     declared; a single cell always runs as a plain experiment."""
     return cfg.sweep is not None and len(cfg.sweep.tokenizers) > 1
+
+
+def config_warnings(cfg: ExperimentConfig) -> List[str]:
+    """Things a valid config can still get wrong at launch time. The one that
+    bit a real run: a single ``sweep.tokenizers`` cell that is not the top-level
+    ``tokenizer`` — the run is not a sweep, so ``tokenizer.type`` is what trains
+    and the sweep cell is silently ignored."""
+    out: List[str] = []
+    if cfg.sweep is not None and not is_sweep(cfg) and cfg.sweep.tokenizers:
+        listed = [_cell_name(t.type, vs) for t in cfg.sweep.tokenizers for vs in t.vocab_sizes]
+        actual = _cell_name(cfg.tokenizer.type, cfg.tokenizer.vocab_size)
+        if listed != [actual]:
+            out.append(
+                f"single-cell run: the top-level tokenizer ({actual}) is what runs; sweep.tokenizers "
+                f"({', '.join(listed)}) is only read with --sweep, which needs more than one cell. "
+                f"Set tokenizer.type to {listed[0].split('_')[0] if listed else '…'} to run that cell, "
+                f"or add {actual} to sweep.tokenizers for a 2-cell sweep.")
+    return out
 
 
 def results_summary(paths: ConsolePaths, cfg: ExperimentConfig) -> dict:
@@ -354,6 +377,7 @@ def validate_config(paths: ConsolePaths, cfg_dict: dict) -> dict:
     return {
         "ok": True, "errors": [], "resolved": cfg.model_dump(mode="json"),
         "sweep": is_sweep(cfg), "cells": cell_names(cfg), "results": results_summary(paths, cfg),
+        "warnings": config_warnings(cfg),
     }
 
 
@@ -432,6 +456,10 @@ _RE_TQDM = re.compile(r"LightEval MCQ.*?(\d+)/(\d+)")
 _RE_EXP_DONE = re.compile(r"Experiment '(.+?)' done")
 _RE_CELL_FAILED = re.compile(r"Cell (\S+) failed: (.*)")
 _RE_TS = re.compile(r"^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\] \w+ [\w.]+: ")
+_RE_TS_CAP = re.compile(r"^\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\] \w+ [\w.]+: ")
+_RE_TOK_LOAD = re.compile(r"^\s*loading from (\S+)")
+_RE_TOK_TRAIN = re.compile(r"^\s*training on (\d+) texts")
+_RE_PHASE_ANY = re.compile(r"^\[(embedding_alignment|warmup|sft)\] ")
 
 
 def _strip_ts(line: str) -> str:
@@ -478,14 +506,32 @@ def parse_progress(text: str) -> dict:
         "phase": None, "phases_done": [],
         "eval": None, "tasks_done": [],
         "done": False, "error": None, "last_line": None,
+        # timings for the Runs-tab step panel: every stage / phase / task with the
+        # timestamp of its first and last log line (log timestamps, not wall clock)
+        "stages": [], "phase_times": {}, "task_times": {}, "tokenizer": None,
+        "last_ts": None, "done_at": None,
     }
     tb_lines: List[str] = []
     in_tb = False
+
+    def _reset_experiment() -> None:
+        state.update({"stage": None, "stage_label": None, "phase": None, "phases_done": [], "eval": None,
+                      "tasks_done": [], "done": False, "stages": [], "phase_times": {}, "task_times": {},
+                      "tokenizer": None, "done_at": None})
+
+    def _close_stage(ts: Optional[str]) -> None:
+        if state["stages"] and state["stages"][-1]["end"] is None:
+            state["stages"][-1]["end"] = ts
+
     for raw in re.split(r"\r\n|\n|\r", text):
         line = raw.rstrip()
         if not line:
             continue
         state["last_line"] = line
+        mts = _RE_TS_CAP.match(line)
+        ts = mts.group(1) if mts else None
+        if ts:
+            state["last_ts"] = ts
         if line.startswith("Traceback (most recent call last)"):
             in_tb, tb_lines = True, []
             continue
@@ -498,15 +544,15 @@ def parse_progress(text: str) -> dict:
         msg = _strip_ts(line)
         m = _RE_CELL.search(msg)
         if m:
-            state.update({"cell": m.group(1), "stage": None, "stage_label": None, "phase": None,
-                          "phases_done": [], "eval": None, "tasks_done": [], "done": False})
+            _reset_experiment()
+            state["cell"] = m.group(1)
             continue
         m = _RE_EXP_START.match(msg)
         if m:
             # A new run_experiment() begins (a cell, or a restart appended to
             # the same log): per-experiment counters start over.
-            state.update({"experiment": m.group(1), "stage": None, "stage_label": None, "phase": None,
-                          "phases_done": [], "eval": None, "tasks_done": [], "done": False})
+            _reset_experiment()
+            state["experiment"] = m.group(1)
             continue
         m = _RE_SKIP.search(msg)
         if m:
@@ -518,11 +564,27 @@ def parse_progress(text: str) -> dict:
             continue
         m = _RE_STAGE.search(msg)
         if m:
+            _close_stage(ts)
             state["stage"] = m.group(1)
             state["stage_label"] = _STAGE_LABELS.get(m.group(1), m.group(2))
+            state["stages"].append({"id": m.group(1), "label": state["stage_label"], "start": ts, "end": None})
             continue
+        m = _RE_TOK_LOAD.match(msg)
+        if m and state["stage"] == "2":
+            state["tokenizer"] = {"mode": "load", "detail": m.group(1)}
+            continue
+        m = _RE_TOK_TRAIN.match(msg)
+        if m and state["stage"] == "2":
+            state["tokenizer"] = {"mode": "train", "detail": f"{int(m.group(1)):,} texts"}
+            continue
+        m = _RE_PHASE_ANY.match(msg)
+        if m:
+            pt = state["phase_times"].setdefault(m.group(1), {"start": ts, "end": None, "status": "running", "steps": None})
+            if pt["start"] is None:
+                pt["start"] = ts
         m = _RE_STEP.search(msg)
         if m:
+            state["phase_times"].setdefault(m.group(1), {"start": ts, "end": None, "status": "running", "steps": None})["steps"] = int(m.group(3))
             state["phase"] = {"name": m.group(1), "step": int(m.group(2)), "steps": int(m.group(3)),
                               "loss": float(m.group(4)), "lr": m.group(5),
                               "eval_loss": (state["phase"] or {}).get("eval_loss")
@@ -543,14 +605,18 @@ def parse_progress(text: str) -> dict:
         if m:
             state["phases_done"].append({"name": m.group(1), "steps": int(m.group(2)), "skipped": False})
             state["phase"] = None
+            pt = state["phase_times"].setdefault(m.group(1), {"start": ts, "end": None, "status": "running", "steps": None})
+            pt.update({"end": ts, "status": "done"})
             continue
         m = _RE_PHASE_SKIP.search(msg)
         if m:
             state["phases_done"].append({"name": m.group(1), "steps": 0, "skipped": True})
+            state["phase_times"][m.group(1)] = {"start": ts, "end": ts, "status": "skipped", "steps": 0}
             continue
         m = _RE_TASK_START.search(msg)
         if m:
             state["eval"] = {"task": m.group(1), "done": 0, "total": int(m.group(2))}
+            state["task_times"][m.group(1)] = {"start": ts, "end": None, "seconds": None}
             continue
         m = _RE_TQDM.search(line)
         if m:
@@ -562,10 +628,14 @@ def parse_progress(text: str) -> dict:
         if m:
             state["tasks_done"].append({"task": m.group(1), "seconds": float(m.group(2))})
             state["eval"] = None
+            tt = state["task_times"].setdefault(m.group(1), {"start": None, "end": None, "seconds": None})
+            tt.update({"end": ts, "seconds": float(m.group(2))})
             continue
         m = _RE_EXP_DONE.search(msg)
         if m:
             state["done"] = True
+            state["done_at"] = ts
+            _close_stage(ts)
             if state["cell"]:
                 state["cells_done"].append(state["cell"])
             continue
@@ -575,6 +645,19 @@ def parse_progress(text: str) -> dict:
         if judge["done"]:
             state["done"] = True
     return state
+
+def plan_of(cfg: ExperimentConfig) -> dict:
+    """What a run *will* execute, for the Runs-tab step panel: the phases with
+    their enabled flag and step budget (post-validation, so derived ``steps``
+    are filled in), whether the intrinsic and downstream stages run, the tasks."""
+    return {
+        "phases": {k: {"enabled": ph.enabled, "steps": ph.steps}
+                   for k, ph in ((n, getattr(cfg.training.phases, n)) for n in ("embedding_alignment", "warmup", "sft"))},
+        "intrinsic": bool(cfg.evaluation.intrinsic_metrics),
+        "downstream": bool(cfg.evaluation.downstream_metrics),
+        "tasks": [t.type for t in cfg.sweep.tasks] if cfg.sweep else [],
+    }
+
 
 # ---------------------------------------------------------------------------
 # Runs
@@ -844,6 +927,7 @@ class RunManager:
             "experiment_name": cfg.name, "output_dir": cfg.output_dir,
             "sweep": bool(sweep), "cells": cell_names(cfg) if sweep else [],
             "tasks": [t.type for t in cfg.sweep.tasks] if cfg.sweep else [],
+            "plan": plan_of(cfg),
             "tokenizer": cfg.tokenizer.type, "model": cfg.model.name_or_path,
             "experiment_log": f"outputs/logs/{cfg.name}/experiment.log",
         }
@@ -1015,11 +1099,24 @@ class RunManager:
                 text = fh.read().decode("utf-8", errors="replace")
         progress = parse_progress(_read_all(log)) if log.exists() else parse_progress("")
         rec = dict(rec)
+        if rec.get("kind", "experiment") == "experiment" and not rec.get("plan"):
+            rec["plan"] = self._plan_from_snapshot(rec)      # records written before the plan existed
         rec["progress"] = progress
+        rec["server_time"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")   # same clock and format as the log timestamps
         rec["log_tail"] = text
         rec["log_size"] = size
         rec["results"] = self.results(run_id)
         return rec
+
+    def _plan_from_snapshot(self, rec: dict) -> Optional[dict]:
+        snap = self.paths.repo_root / str(rec.get("snapshot") or "")
+        if not snap.is_file() or snap.suffix != ".yaml":
+            return None
+        try:
+            v = validate_config(self.paths, parse_yaml(snap.read_text(encoding="utf-8")))
+            return plan_of(ExperimentConfig(**v["resolved"])) if v["ok"] else None
+        except Exception:  # noqa: BLE001 — a plan is a convenience, never a failure of the detail view
+            return None
 
     def log(self, run_id: str, offset: int = 0, max_bytes: int = _MAX_LOG_CHUNK) -> dict:
         rec = self.get(run_id)

@@ -187,19 +187,43 @@ is faithfully implemented in `apply_trainable_filter` ([src/arabic_eval/training
 
 Naive `labels[:len(prompt_enc)] = -100` would eat the first answer token. LCP walks the two lists in lockstep and stops at the first divergence. If `lcp >= len(full)` the example is dropped (truncation ate the answer). If you ever add a new training data path that needs answer-only loss, **call this helper, don't reimplement the masking**.
 
-### Phase 3 prompt format: the `### السياق:` block
+### Phase 3 prompt format: sectioned, distinct-label templates (`TEMPLATE_VERSION` 2)
 
-Phase 3 trains on TyDiQA-Arabic + ARCD (extractive QA), formatted as:
+Phase 3 trains on the mixture (TyDiQA-Arabic + ARCD extractive, synthetic MCQ, CIDAR / Bactrian-X / Aya free-form). Since 2026-09-18 the extractive and free-form records are rendered as sectioned Arabic-Alpaca prompts whose header and section labels differ per template:
 
 ```
-### السياق: {context}
-### السؤال: {question}
-### الإجابة: {answer}
+فيما يلي نص وسؤال عنه. أجب عن السؤال اعتمادًا على النص.      ← QA_HEADER (extractive)
+
+### السياق:
+{context}
+
+### السؤال:
+{question}
+
+### الإجابة:
+{answer}
 ```
 
-The prompt span (everything up to but excluding `{answer}`) ends with `### الإجابة:` (no trailing space). The full text adds ` {answer}` after the colon. Format lives in [src/arabic_eval/data/finetune_corpora.py](src/arabic_eval/data/finetune_corpora.py) — `_format_qa_prompt` and `_format_qa_full`. **Don't import from any deleted `tasks/question_answering.py` — that path is gone.**
+```
+فيما يلي تعليمات تصف مهمة. اكتب إجابة تكمل الطلب بشكل مناسب.   ← INSTRUCTION_HEADER (free-form)
 
-The LightEval per-task prompts (ACVA, Alghafa, etc.) are unchanged — they use their own format (e.g. `### السؤال: ... \n### الإجابة: {letter}`) defined in `_format_eval_context` / `_build_continuations`. Phase 3's QA prompt and the LightEval MCQ prompts are deliberately *different* shapes because the data is different (extractive QA vs MCQ).
+### التعليمات:
+{instruction}
+
+[### المدخل:            ← only with an input, and then the header is INSTRUCTION_HEADER_WITH_INPUT
+{input}]
+
+### الإجابة:
+{output}
+```
+
+The prompt span ends with `### الإجابة:\n` and the answer follows directly — `_format_qa_full` adds no separator (the MCQ prompt still gets `" {letter}"`). `mcq_letter` is the LightEval-official letter prompt, byte for byte, and is not versioned. Format lives in [src/arabic_eval/data/finetune_corpora.py](src/arabic_eval/data/finetune_corpora.py) — `_format_qa_prompt` / `_format_qa_full`, constants `QA_HEADER`, `INSTRUCTION_HEADER[_WITH_INPUT]`, `*_LABEL`, `TEMPLATE_VERSION`. Things to keep straight:
+
+- **Why the labels differ.** Under the flat v1 template (`السياق: …\nالسؤال: …\nالإجابة: {answer}` for both), the three templates shared one answer cue and 70 % of the mixture's examples taught "≤ 4 words after it" — an SFT'd Qwen3-4B answered free-form prompts with a 3-word span or looped. The Alpaca header was also the best of six formulations on the untrained base (loops 23 % vs 44 %).
+- **Bump `TEMPLATE_VERSION` when the text changes.** It is in the `qa_blend` cache fingerprint (packed blocks hold rendered text; an old entry must not be reused) and in the mixture manifest / `all_metrics.json["training"][<phase>]["data"]`. The contamination indexes hash raw passages and questions, not templates — no rebuild.
+- **The free-form eval prompt is `_format_qa_prompt` on an `instruction` record** — it follows the training string automatically; `tests/test_freeform_task.py` pins eval prompt == training prompt. `DEFAULT_STOP_MARKERS` includes `"\nفيما يلي"` (a header restart) and `"\n###"` (a new section).
+- **LCP masking holds at the `:\n` boundary**: Qwen's pre-tokenizer makes `:\n` one token and the answer starts on the next; AraRooPat emits `#`, `:` and newlines as their own punctuation tokens. Verified on both (2026-09-18).
+- **Don't import from any deleted `tasks/question_answering.py` — that path is gone.** The LightEval per-task prompts (ACVA, Alghafa, …) are unchanged and deliberately a different shape.
 
 ### LightEval is now eval-only — no SFT methods
 

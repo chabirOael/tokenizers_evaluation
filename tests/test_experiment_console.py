@@ -217,6 +217,54 @@ def test_parse_progress_sweep_cells_eval_and_traceback():
     assert mid["stage_label"] == "downstream eval"
 
 
+def test_parse_progress_timings_tokenizer_substep_and_plan(tmp_repo: ConsolePaths):
+    """The step panel's inputs: every stage / phase / task with log timestamps, the
+    tokenizer sub-step, and the plan derived from a snapshot for a record without one."""
+    L = "[2026-09-18 10:{:02d}:00] INFO arabic_eval.pipeline: "
+    text = (
+        L.format(0) + "Experiment: mini\n" + L.format(0) + "Step 1/7: Loading Arabic corpus...\n"
+        + L.format(1) + "Step 2/7: Preparing tokenizer 'bpe'...\n" + L.format(1) + "  training on 20000 texts\n"
+        + L.format(4) + "Step 3/7: Running intrinsic evaluation...\n"
+        + L.format(5) + "Step 4/7: Loading and adapting model...\n"
+        + L.format(6) + "Step 5/7: Running training phases...\n"
+        + L.format(6) + "[embedding_alignment] skipped (enabled=false)\n"
+        + L.format(7) + "[warmup] trainable params: 10 / 10 (100.00%)\n"
+        + L.format(9) + "[warmup] step 50/100 loss=1.5000 lr=2.00e-04\n"
+        + L.format(12) + "[warmup] complete: steps=100, final_loss=1.2000, wall=300.0s\n"
+        + L.format(12) + "[sft] trainable params: 10 / 10 (100.00%)\n"
+        + L.format(13) + "[sft] step 10/40 loss=1.1000 lr=2.00e-04\n"
+    )
+    st = parse_progress(text)
+    assert [(x["id"], x["start"][-8:], (x["end"] or "")[-8:]) for x in st["stages"]] == [
+        ("1", "10:00:00", "10:01:00"), ("2", "10:01:00", "10:04:00"), ("3", "10:04:00", "10:05:00"),
+        ("4", "10:05:00", "10:06:00"), ("5", "10:06:00", "")]
+    assert st["tokenizer"] == {"mode": "train", "detail": "20,000 texts"}
+    pt = st["phase_times"]
+    assert pt["embedding_alignment"]["status"] == "skipped"
+    assert pt["warmup"]["status"] == "done" and pt["warmup"]["start"][-8:] == "10:07:00" and pt["warmup"]["end"][-8:] == "10:12:00" and pt["warmup"]["steps"] == 100
+    assert pt["sft"]["status"] == "running" and pt["sft"]["end"] is None and pt["sft"]["steps"] == 40
+    assert st["last_ts"][-8:] == "10:13:00" and st["done_at"] is None
+    rest = (L.format(20) + "Step 6-7/7: Evaluating on 1 benchmark task(s)...\n"
+            + L.format(20) + "acva: evaluating 30 examples (full benchmark)\n"
+            + L.format(21) + "  [acva] accuracy=0.61 (eval=60.0s)\n"
+            + L.format(21) + "Experiment 'mini' done -> outputs/x\n")
+    st2 = parse_progress(text + rest)
+    assert st2["task_times"]["acva"] == {"start": "2026-09-18 10:20:00", "end": "2026-09-18 10:21:00", "seconds": 60.0}
+    assert st2["stages"][-1]["id"] == "6-7" and st2["stages"][-1]["end"][-8:] == "10:21:00" and st2["done_at"][-8:] == "10:21:00"
+    load = parse_progress(L.format(1) + "Step 2/7: Preparing tokenizer 'bpe'...\n" + L.format(1) + "  loading from outputs/tokenizers/bpe_32k\n")
+    assert load["tokenizer"] == {"mode": "load", "detail": "outputs/tokenizers/bpe_32k"}
+    # plan: recorded at start, derived from the snapshot when missing
+    rm = RunManager(tmp_repo)
+    rec = rm.start("mini.yaml", command=_stub(0.2))
+    assert rec["plan"] == {"phases": {"embedding_alignment": {"enabled": True, "steps": 1000}, "warmup": {"enabled": True, "steps": 2000},
+                                      "sft": {"enabled": True, "steps": 2000}}, "intrinsic": True, "downstream": True, "tasks": ["acva"]}
+    assert _wait(lambda: rm.get(rec["run_id"])["status"] == "finished")
+    rp = rm._record_path(rec["run_id"])
+    data = json.loads(rp.read_text(encoding="utf-8")); data.pop("plan"); rp.write_text(json.dumps(data), encoding="utf-8")
+    assert "plan" not in rm.get(rec["run_id"])
+    assert rm.detail(rec["run_id"])["plan"]["tasks"] == ["acva"]
+
+
 # ---------------------------------------------------------------------------
 # Runs
 # ---------------------------------------------------------------------------
@@ -459,3 +507,30 @@ def test_parse_judge_progress():
     assert p2["done"] and p2["report"].endswith("freeform_judge_report.json")
     st = parse_progress(txt + "report → r.json\n")
     assert st["judge"]["done"] and st["done"] is True
+
+
+def test_single_cell_reports_the_tokenizer_that_runs_and_warns_on_mismatch(tmp_repo: ConsolePaths):
+    """A one-cell ``sweep.tokenizers`` never runs: without ``--sweep`` (which needs
+    more than one cell) ``run_experiment.py`` trains the top-level ``tokenizer``.
+    The console must name that cell and warn when the two blocks disagree — a
+    real run trained native_qwen3 while the page said ``1 cell (araroopat)``."""
+    from arabic_eval.tools.experiment_console import config_warnings
+    raw = parse_yaml(MINIMAL_YAML)
+    raw["tokenizer"] = {"type": "native_qwen3", "vocab_size": None,
+                        "params": {"model_name_or_path": "Qwen/Qwen3-4B-Base"}}
+    raw["sweep"] = {"tokenizers": [{"type": "araroopat", "vocab_sizes": [None]}], "tasks": [{"type": "acva"}]}
+    v = validate_config(tmp_repo, raw)
+    assert v["ok"] and v["sweep"] is False
+    assert v["cells"] == ["native_qwen3"]
+    assert len(v["warnings"]) == 1 and "araroopat" in v["warnings"][0] and "native_qwen3" in v["warnings"][0]
+    # the two blocks agree → no warning; vocab-sized cells are named like run_sweep names them
+    raw["tokenizer"] = {"type": "bpe", "vocab_size": 32000}
+    raw["sweep"]["tokenizers"] = [{"type": "bpe", "vocab_sizes": [32000]}]
+    v = validate_config(tmp_repo, raw)
+    assert v["cells"] == ["bpe_32k"] and v["warnings"] == []
+    from arabic_eval.config import ExperimentConfig
+    assert config_warnings(ExperimentConfig(**v["resolved"])) == []
+    # two cells → a sweep: the list is what runs, whatever the top-level block says
+    raw["sweep"]["tokenizers"].append({"type": "araroopat", "vocab_sizes": [None]})
+    v = validate_config(tmp_repo, raw)
+    assert v["sweep"] is True and v["cells"] == ["bpe_32k", "araroopat"] and v["warnings"] == []

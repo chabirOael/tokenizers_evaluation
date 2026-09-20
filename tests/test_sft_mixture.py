@@ -139,15 +139,21 @@ def test_dataset_name_category_and_loaders_are_in_sync():
 
 def test_instruction_template_without_context():
     rec = _free("cidar", 1)[0]
-    assert _format_qa_prompt(rec) == f"{fc.INSTRUCTION_LABEL} اكتب 0\nالإجابة:"
-    assert _format_qa_full(rec) == f"{fc.INSTRUCTION_LABEL} اكتب 0\nالإجابة: {rec.answer}"
+    assert _format_qa_prompt(rec) == (
+        f"{fc.INSTRUCTION_HEADER}\n\n{fc.INSTRUCTION_LABEL}\nاكتب 0\n\n{fc.ANSWER_LABEL}\n"
+    )
+    assert _format_qa_full(rec) == _format_qa_prompt(rec) + rec.answer     # no separator: the cue line ends in \n
     assert rec.category == "free_form"
-    assert "السياق" not in _format_qa_prompt(rec)
+    assert "السياق" not in _format_qa_prompt(rec) and fc.INPUT_LABEL not in _format_qa_prompt(rec)
 
 
-def test_instruction_template_with_context_prepends_context_line():
+def test_instruction_template_with_context_adds_the_input_section():
     rec = _free("bactrian_x_ar", 1, ctx=True)[0]
-    assert _format_qa_prompt(rec) == f"السياق: مدخل نص\n{fc.INSTRUCTION_LABEL} اكتب 0\nالإجابة:"
+    assert _format_qa_prompt(rec) == (
+        f"{fc.INSTRUCTION_HEADER_WITH_INPUT}\n\n{fc.INSTRUCTION_LABEL}\nاكتب 0\n\n"
+        f"{fc.INPUT_LABEL}\nمدخل نص\n\n{fc.ANSWER_LABEL}\n"
+    )
+    assert fc.INSTRUCTION_HEADER not in _format_qa_prompt(rec)             # the with-input header replaces it
 
 
 def test_unknown_template_raises():
@@ -159,14 +165,42 @@ def test_unknown_template_raises():
 def test_tokenize_record_reports_loss_tokens_and_truncation():
     tok = _WordTok()
     rec = _free("cidar", 1, answer_words=5)[0]
+    n_prompt = 1 + len(_format_qa_prompt(rec).split())                  # BOS + the prompt words (no EOS)
     entry, loss_tokens, truncated = tokenize_record(rec, tok, max_length=64, loss_target="answer_only")
     assert entry is not None and loss_tokens == 6 and not truncated   # 5 answer words + EOS
-    entry, loss_tokens, truncated = tokenize_record(rec, tok, max_length=6, loss_target="answer_only")
-    assert entry is not None and truncated and loss_tokens == 1        # prompt is 5 tokens; 1 answer token survives
-    entry, _, _ = tokenize_record(rec, tok, max_length=5, loss_target="answer_only")
+    entry, loss_tokens, truncated = tokenize_record(rec, tok, max_length=n_prompt + 1, loss_target="answer_only")
+    assert entry is not None and truncated and loss_tokens == 1        # 1 answer token survives
+    entry, _, _ = tokenize_record(rec, tok, max_length=n_prompt, loss_target="answer_only")
     assert entry is None                                                # truncation ate the answer
     entry, loss_tokens, _ = tokenize_record(rec, tok, max_length=64, loss_target="full_sequence")
     assert "labels" not in entry and loss_tokens == len(entry["input_ids"])
+
+
+class _WordTokNoEos(_WordTok):
+    """The native Llama / Qwen3 wrappers' shape: no EOS (nor BOS) on encode."""
+    def encode(self, text, max_length=None, padding=False, truncation=False):
+        words = text.split()
+        ids = [4 + (hash(w) % (self._v - 4)) for w in words]
+        if truncation and max_length is not None and len(ids) > max_length:
+            ids = ids[:max_length]
+        return TokenizerOutput(input_ids=ids, attention_mask=[1] * len(ids), tokens=words)
+
+
+def test_tokenize_record_appends_eos_when_the_tokenizer_does_not():
+    """A model trained on answers without a trailing EOS never learns to stop:
+    the native_qwen3 run of 2026-09-18 generated to the cap on 249 / 250 prompts."""
+    tok = _WordTokNoEos()
+    rec = _free("cidar", 1, answer_words=5)[0]
+    n_words = len(fc._format_qa_full(rec).split())
+    entry, loss_tokens, truncated = tokenize_record(rec, tok, max_length=64, loss_target="answer_only")
+    assert entry["input_ids"][-1] == 2 and len(entry["input_ids"]) == n_words + 1 and not truncated
+    assert loss_tokens == 6 and entry["labels"][-1] == 2                 # 5 answer words + the EOS, all loss targets
+    entry, _, _ = tokenize_record(rec, tok, max_length=64, loss_target="full_sequence")
+    assert entry["input_ids"][-1] == 2
+    entry, _, truncated = tokenize_record(rec, tok, max_length=n_words - 1, loss_target="answer_only")
+    assert truncated and entry["input_ids"][-1] != 2                     # a cut record gets no EOS: there is no answer end to mark
+    entry, _, _ = tokenize_record(rec, _WordTok(), max_length=64, loss_target="answer_only")
+    assert entry["input_ids"][-2:] != [2, 2]                             # a tokenizer that emits EOS is left alone
 
 
 # --------------------------------------------------------------------------
@@ -501,7 +535,7 @@ def test_bactrian_loader_reads_gzip_json_and_handles_null_input(tmp_path, monkey
     assert seen == {"repo": "MBZUAI/Bactrian-X", "filename": "data/ar.json.gz", "revision": PINNED_REVISIONS["bactrian_x_ar"]}
     assert [r.id for r in recs] == ["bactrian-alpaca-1", "bactrian-dolly-2", "bactrian-alpaca-3"]
     assert recs[1].context == "شركة كوستكو" and recs[2].context == ""
-    assert _format_qa_prompt(recs[1]).startswith("السياق: شركة كوستكو\n")
+    assert f"{fc.INPUT_LABEL}\nشركة كوستكو\n" in _format_qa_prompt(recs[1])
 
 
 def test_aya_loader_splits_context_label_and_checks_allowlist(monkeypatch):

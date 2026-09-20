@@ -47,6 +47,11 @@ Routes
     GET  /api/rating/items?experiment=&set=&rater=   the items (cell hidden) with this rater's ratings
     POST /api/rating/submit         {"experiment", "set", "rater", "item_id", "score", "flags", "note"}
     GET  /api/rating/agreement?experiment=&set=      rater vs judge / rater vs rater / judge vs judge, cells revealed
+    GET  /api/assistant/configs     configs/assistant/*.yaml with model, endpoint and readiness (key set / local server up)
+    POST /api/assistant/chat        {"assistant", "config", "from_base", "file", "history", "message"} → an SSE stream
+                                    of events (token / edits / repair / done / error); the model's edits are applied
+                                    to the config and validated server-side, the page puts the result in the form
+    POST /api/assistant/preview     the same body → the messages a turn would send, with their size
 
 Stdlib only (http.server) — no new dependencies.
 """
@@ -67,6 +72,7 @@ sys.path.insert(0, str(REPO_ROOT / "src"))
 
 from arabic_eval.tools import eval_rows_browser as eval_rows  # noqa: E402
 from arabic_eval.tools import freeform_rating  # noqa: E402
+from arabic_eval.tools import config_assistant as assistant  # noqa: E402
 from arabic_eval.tools import freeform_rows_browser as freeform_rows  # noqa: E402
 from arabic_eval.tools.experiment_console import (  # noqa: E402
     judge_configs,
@@ -88,6 +94,7 @@ from arabic_eval.tools.experiment_console import (  # noqa: E402
 PAGE = REPO_ROOT / "debugger" / "experiment_console.html"
 PATHS = ConsolePaths(REPO_ROOT)
 RUNS = RunManager(PATHS)
+ASSISTANT_CTX = assistant.ContextBuilder(PATHS)
 _MAX_BODY = 4 * 1024 * 1024
 _TEXT_ROOT = REPO_ROOT / "outputs"
 
@@ -129,6 +136,32 @@ class Handler(SimpleHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store")
         self.end_headers()
         self.wfile.write(body)
+
+    def _send_events(self, events) -> None:
+        """Relay an event iterator as a server-sent-event stream (``data: <json>``
+        per event). HTTP/1.0: no Content-Length, the connection closes at the
+        end, which is what the page's stream reader waits for. Failures after
+        the headers are sent become an ``error`` event."""
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Accel-Buffering", "no")
+        self.end_headers()
+
+        def _emit(ev) -> None:
+            self.wfile.write(f"data: {json.dumps(ev, ensure_ascii=False)}\n\n".encode("utf-8"))
+            self.wfile.flush()
+        try:
+            for ev in events:
+                _emit(ev)
+        except (BrokenPipeError, ConnectionResetError):
+            log.info("assistant stream: client went away")
+        except Exception as e:  # noqa: BLE001
+            log.exception("assistant stream failed")
+            try:
+                _emit({"type": "error", "message": f"{type(e).__name__}: {e}" if not isinstance(e, ConsoleError) else str(e)})
+            except OSError:
+                pass
 
     def _read_body(self) -> dict:
         n = int(self.headers.get("Content-Length") or 0)
@@ -222,6 +255,8 @@ class Handler(SimpleHTTPRequestHandler):
             self._send_json(freeform_rating.list_sets(REPO_ROOT, q.get("experiment", "")))
         elif route == "/api/rating/items":
             self._send_json(freeform_rating.get_items(REPO_ROOT, q.get("experiment", ""), q.get("set", ""), q.get("rater", "")))
+        elif route == "/api/assistant/configs":
+            self._send_json({"assistants": assistant.assistant_configs(PATHS)})
         elif route == "/api/rating/agreement":
             self._send_json(freeform_rating.agreement(REPO_ROOT, q.get("experiment", ""), q.get("set", "")))
         else:
@@ -269,6 +304,13 @@ class Handler(SimpleHTTPRequestHandler):
             self._send_json(freeform_rating.submit(
                 REPO_ROOT, str(req.get("experiment") or ""), str(req.get("set") or ""), str(req.get("rater") or ""),
                 str(req.get("item_id") or ""), req.get("score"), req.get("flags") or [], str(req.get("note") or "")))
+        elif route == "/api/assistant/chat":
+            acfg, kw = _assistant_request(req)
+            client = assistant.ChatClient(acfg)        # raises before any header is sent (key missing)
+            self._send_events(assistant.chat_turn(PATHS, ASSISTANT_CTX, acfg, client, **kw))
+        elif route == "/api/assistant/preview":
+            acfg, kw = _assistant_request(req)
+            self._send_json(assistant.preview_messages(PATHS, ASSISTANT_CTX, acfg, **kw))
         elif route.startswith("/api/runs/") and route.endswith("/cancel"):
             run_id = route[len("/api/runs/"):-len("/cancel")]
             rec = RUNS.cancel(run_id)
@@ -276,6 +318,18 @@ class Handler(SimpleHTTPRequestHandler):
             self._send_json(rec)
         else:
             self._send_json({"error": "not found"}, HTTPStatus.NOT_FOUND)
+
+
+def _assistant_request(req: dict):
+    """The assistant config and the keyword arguments of a chat / preview call."""
+    acfg = assistant.AssistantConfig.from_yaml(assistant.assistant_config_path(PATHS, str(req.get("assistant") or "")))
+    cfg = req.get("config")
+    history = req.get("history") or []
+    if not isinstance(history, list):
+        raise ConsoleError("history must be a list of {role, content}")
+    return acfg, dict(cfg=cfg if isinstance(cfg, dict) else None, history=history,
+                      message=str(req.get("message") or ""), from_base=bool(req.get("from_base")),
+                      file=(str(req["file"]) if req.get("file") else None))
 
 
 def _read_text(rel: str, tail: int) -> dict:

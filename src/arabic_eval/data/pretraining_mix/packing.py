@@ -471,10 +471,14 @@ def qa_blend_fingerprint(tok_id: Dict[str, Any], qa_cfg: QABlendConfig, block_si
     """``corpus_params`` (``training.corpus_params`` restricted to the blend's
     datasets) and the contamination ``exclusions_digest`` only enter the
     payload when non-empty, so entries packed before they existed keep
-    their fingerprint."""
+    their fingerprint. The prompt ``TEMPLATE_VERSION`` always enters it: the
+    blocks hold rendered prompt text, so a template change must repack."""
+    from ..finetune_corpora import TEMPLATE_VERSION
+
     payload_dict: Dict[str, Any] = {
         "tokenizer": tok_id, "datasets": list(qa_cfg.datasets), "split": qa_cfg.split,
         "block_size": block_size, "seed": qa_cfg.seed, "clean_latin_rows": clean_latin_rows,
+        "template_version": TEMPLATE_VERSION,
     }
     relevant = {n: p for n, p in (corpus_params or {}).items() if n in qa_cfg.datasets and p}
     if relevant:
@@ -507,7 +511,7 @@ def pack_qa_blend(
     wrap). The blend does not depend on the pool, so it is cached beside
     it rather than under it.
     """
-    from ..finetune_corpora import _format_qa_full, filter_latin_records, load_corpora
+    from ..finetune_corpora import TEMPLATE_VERSION, _format_qa_full, filter_latin_records, load_corpora
 
     tok_id = tokenizer_identity(tokenizer, tokenizer_type)
     exclusions_digest = exclusions.digest() if exclusions is not None else ""
@@ -554,6 +558,7 @@ def pack_qa_blend(
             "split": qa_cfg.split,
             "clean_latin_rows": clean_latin_rows,
             "exclusions_digest": exclusions_digest,
+            "template_version": TEMPLATE_VERSION,
             "records_loaded": n_loaded,
             "n_records": len(records),
             "words": words,

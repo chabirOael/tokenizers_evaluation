@@ -432,12 +432,16 @@ class TestPhaseOrchestration:
         assert manifest_path == tmp_path / "data" / "sft_mixture_manifest.json" and manifest_path.exists()
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         assert manifest["phase"] == "sft" and len(manifest["datasets"]["cidar"]["ids"]) == 5
+        # Provenance of the rendered prompt text: the template version, in the
+        # manifest and in every QA phase's data block.
+        from arabic_eval.data.finetune_corpora import TEMPLATE_VERSION
+        assert manifest["template_version"] == mix["template_version"] == TEMPLATE_VERSION == data["template_version"]
         # The other phases are untouched by the mixture (the contamination
         # block only records which exclusion list applied: none dropped here).
         warmup_data = dict(results["training"]["warmup"]["data"])
         assert warmup_data.pop("contamination") == {"exclusions": "configs/contamination/exclusions.json",
                                                     "records_excluded": {}}
-        assert warmup_data == {"datasets": ["arabic_squad"], "n_records": 32}
+        assert warmup_data == {"datasets": ["arabic_squad"], "n_records": 32, "template_version": TEMPLATE_VERSION}
 
     def test_phase_checkpoints_saved_when_enabled(self, tmp_path):
         cfg = _exp_config(tmp_path)

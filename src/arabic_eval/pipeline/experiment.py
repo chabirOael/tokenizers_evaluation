@@ -190,7 +190,8 @@ def _run_all_phases(
             continue
 
         data_info: Dict[str, Any]
-        if phase_cfg.datasets == ["pretraining_mix"]:
+        uses_mix = phase_cfg.datasets == ["pretraining_mix"]
+        if uses_mix:
             if packed is None:
                 from arabic_eval.data.pretraining_mix.packing import build_packed_corpus
                 packed = build_packed_corpus(
@@ -263,6 +264,11 @@ def _run_all_phases(
             data_info = {"datasets": list(phase_cfg.datasets), "n_records": len(train_records)}
         if exclusions is not None:
             data_info["contamination"] = {"exclusions": str(exclusions.path), "records_excluded": dict(exclusions.dropped)}
+        if not uses_mix or phase_cfg.qa_blend is not None:
+            # Provenance of the rendered prompt text (QA records, or the QA
+            # blend of a mix phase): which template version they were built with.
+            from arabic_eval.data.finetune_corpora import TEMPLATE_VERSION
+            data_info["template_version"] = TEMPLATE_VERSION
 
         eval_loader = _phase_eval_loader(phase_cfg, tokenizer, corpus_params=training_cfg.corpus_params,
                                          exclusions=exclusions)

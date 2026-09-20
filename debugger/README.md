@@ -223,11 +223,58 @@ inherit the server's environment, and the header shows whether the token is set.
 |---|---|
 | **list** (left) | every `configs/experiments/*.yaml`: model, tokenizer cells (named as `run_sweep` names them — `bpe_32k`, `charformer`, …), eval tasks, enabled phases (`P1 P2 P3`, `–` = disabled), and a results chip (`results` / `7/8 cells`) when `all_metrics.json` already exists under its `output_dir`. Invalid files are listed in red with the Pydantic error. |
 | **Form** | the *resolved* config (the file merged over `base.yaml`, exactly what `load_config` produces), rendered from the Pydantic JSON schema. Hand-built widgets for the parts that matter: sweep tokenizer cells (type from the registry, `vocab_sizes`, params prefilled from `configs/tokenizers/<type>.yaml`, reorder / remove), the eval-task checklist with per-task params, the three phase cards (enable toggle in the header, dataset checklist, mix-mode hint showing `steps = mix_tokens / (batch_size × block_size)`, a `mixture` sub-card for the ratio-controlled Phase 3 with its own hint `steps = total_examples / batch_size`, and the mixture summarised in the card badge), `corpus_params` (per-corpus loader parameters such as `aya_ar.include_datasets`), model presets from `configs/models/`. Renaming the experiment renames `output_dir` while it still follows `outputs/experiments/<name>`. Params boxes take flat `key: value` YAML. Every field label carries a `?`: hovering it shows what the field means and a concrete example (the `HINTS` table at the top of the page script, keyed by config path with `*` for phase names and list indexes). |
-| **Validate** | `POST /api/config/validate` — the real merge + Pydantic; errors are painted on the offending fields by their `loc` path, the rest listed in the banner. On success the banner names the cells, whether `--sweep` applies, and which cells `run_sweep` would skip because results exist. |
+| **Validate** | `POST /api/config/validate` — the real merge + Pydantic; errors are painted on the offending fields by their `loc` path, the rest listed in the banner. On success the banner names the cells **that will actually run**, whether `--sweep` applies, and which cells `run_sweep` would skip because results exist. A single `sweep.tokenizers` cell is *not* a sweep: `run_experiment.py` then trains the top-level `tokenizer` block and never reads the sweep cell — the banner and the start dialog warn when the two disagree (a real run trained `native_qwen3` while the page said `1 cell (araroopat)`). |
 | **YAML** | the file's own text when a config is opened (comments intact); *Form → YAML* renders the form in **full** style (every value explicit, like `all_tokenizers_sweep.yaml`) or **delta** style (only differences from `base.yaml`, like the native_llama files) — both reload to the same config, a test pins that for every file in the repo. *YAML → Form* parses the pane back (invalid YAML still lands in the form, with errors). |
 | **Results** | per-cell downstream accuracy (PMI when available), MEI, fertility / compression / RPS read from `all_metrics.json`, plus links to `comparison_report.txt` and `experiment.log`. |
 | **Save…** | writes `configs/experiments/<name>.yaml`; refuses to overwrite unless ticked; refuses an invalid config. Rendering from the form drops the comments of a hand-written file, so save under a new name unless you mean to replace it. |
 | **▶ Start run…** | validates, then shows what will run (source, cells, tasks, phases, cells that will be skipped) and the CLI overrides: `--sweep` (auto = more than one tokenizer cell, as `run_experiment.py` requires), `--device`, `--seed`. One run at a time by default — two full-FT jobs do not fit the H100; *run concurrently* overrides. An unsaved form is started from a snapshot, no file needed. |
+| **✨ assistant** | opens the assistant drawer (third column): an LLM that fills the form from a prompt, edits it, or answers questions about the fields — see *Config assistant* below. |
+
+## Config assistant (added 2026-09-18)
+
+*✨ assistant* in the editor toolbar opens a chat drawer next to the form. Three things
+it does, decided from the message: **create** a config from a description ("BPE 16K and
+32K vs native Llama, three phases, PMI scoring, a smoke-sized run"), **modify** the
+config in the form ("switch Phase 2 to the pretraining mix with a 7 % QA blend"), and
+**answer** questions about the fields ("what must mix_tokens equal?"). It never saves or
+starts anything: the result lands in the form and you review, save and start it as usual.
+
+| Element | What it does |
+|---|---|
+| **picker + status chip** | `configs/assistant/*.yaml`, each an OpenAI-compatible `/chat/completions` endpoint (`model`, `base_url`, `api_key_env`, `temperature`, `max_tokens`, `extra_body`, `history_messages`). The chip is the readiness check: `ready` (the key named by `api_key_env` is exported in the console server's environment), `local · up / down` (a `base_url` on localhost is pinged). `gpt56_terra_api.yaml` (the API model) is the one shipped. A local model works through the same client — start a `vllm serve` by hand and add a YAML with its `base_url` and `api_key_env: null`; measured once on `google/gemma-4-31b-it` from `.venv-judge`, the ~16 K-token prompt needs `--kv-cache-dtype fp8 --max-model-len 24576`, and such a server holds the whole GPU (the *Start run* dialog warns when the GPU is already more than half full with no console run active). |
+| **transcript** | your messages and the model's replies (minimal markdown). A reply that changes the config carries the **change list** (`path: old → new`), the validation outcome and, once applied, an **undo** button (restores the form exactly, one level per reply, newest first). An invalid result shows its errors and *apply anyway*. Each reply also shows prompt / completion tokens and the wall time. The transcript survives a reload (localStorage); undo does not. |
+| **new config from base.yaml** | tick it to ignore the form and build a new config from the defaults; the result opens as an unsaved config named by the model. It unticks itself after a successful create so the next message edits that config. |
+| **quick prompts** | smoke test · no Phase 3 · every tokenizer · why invalid? · explain phases. |
+| **show context** | the exact messages the next turn would send, with their size — the debugging view when the model misreads something. |
+| **clear** | forgets the conversation (and aborts a reply in flight). |
+
+How a turn works (`src/arabic_eval/tools/config_assistant.py`, route `POST /api/assistant/chat`,
+an SSE stream): the page sends the config in the form (or `from_base`), the last
+`history_messages` messages and the new one. The server builds the prompt — a
+hand-written **primer** of the platform (pipeline, cells, tokenizer families, the
+cross-field rules the validator enforces, conventions, the smoke recipe), the **field
+reference** rendered from `src/arabic_eval/tools/config_hints.py` (the same table behind
+the form's `?` tooltips, served by `/api/schema`), `base.yaml` with its comments
+stripped, the registries and tokenizer presets, every `configs/experiments/*.yaml` as a
+delta over `base.yaml`, then the **working config as a delta**, its validation state
+and the history (≈ 12–14 K tokens; the static part comes first so an endpoint's prompt
+cache hits). The model answers in markdown and, when the request changes the config,
+ends with one fenced block tagged `edits`: a YAML mapping of **dotted config paths to
+new values** (`training.phases.sft.enabled: false`; a value replaces the node it names,
+lists and mappings whole, `null` allowed, list indexes allowed) — ~10× cheaper than a
+whole config and exact for a modification. The server applies the edits, runs the real
+validation (`validate_config`: merge over `base.yaml` + Pydantic) and, on failure,
+sends the errors back to the model **once** for a repair (shown in the transcript). The
+final event carries the resolved config, the change list and the validation outcome; a
+valid one is applied to the form immediately. `POST /api/assistant/preview` returns
+the assembled messages; `GET /api/assistant/configs` the picker's list.
+
+Tests: `tests/test_config_assistant.py` — endpoint configs and readiness, the SSE / chat
+client on a fake `urlopen`, the context builder on the real repo (every hint path
+present, cache invalidation), the reply parser, the dotted-path edits, and whole turns
+with a scripted client through the real validation (plain answer, valid edits, the
+repair round, giving up after it, a broken block, a create from base); a test also pins
+that every hint key names a real schema field.
 
 ## Runs tab
 
@@ -235,7 +282,7 @@ Every run is a directory `outputs/runs/<YYYYmmdd-HHMMSS>_<config>/`:
 
 | File | Content |
 |---|---|
-| `run.json` | pid / pgid / process start ticks (defeats PID reuse), argv, timestamps, status, exit code |
+| `run.json` | pid / pgid / process start ticks (defeats PID reuse), argv, timestamps, status, exit code, the `plan` (enabled phases + steps, tasks, eval flags) |
 | `config.yaml` | the config **as launched** — the run reads this snapshot, so editing the file afterwards never changes a running job |
 | `console.log` | stdout + stderr of `run_experiment.py` (the pipeline's own `outputs/logs/<name>/experiment.log` is unchanged and linked too) |
 | `exit_code` | written by the launching shell when the process ends, so the status survives a server restart |
@@ -253,6 +300,44 @@ current eval task with its tqdm count, the last traceback line on failure, the
 results table once `all_metrics.json` exists, and a live tail of the log
 (incremental polling every 3 s, `\r` progress lines collapsed). **Cancel** sends
 SIGTERM to the process group and SIGKILL 15 s later if it is still alive.
+
+**Layout** (2026-09-18): the detail panel takes the whole width; the run list is a
+floating card at the left edge (*☰ runs* in the run header, `×` to hide, remembered
+in localStorage) and the step panel one at the right edge, so with both closed the
+log has the full window. Under 1100 px both dock above / below the detail instead.
+
+**Log colouring.** Each line of `console.log` is tokenised by
+[Prism](https://prismjs.com)'s `log` grammar (MIT; core + `prism-log`, pinned 1.30.0
+from cdnjs with SRI hashes — when the CDN is unreachable the log is plain text, nothing
+else changes): dates and times, log levels, logger names, `key=value` numbers, quoted
+strings, file paths and URLs, `====` separators. The tokens are mapped onto the page's
+colour variables, so the dark theme holds. On top of that the page tints whole lines
+for what Prism cannot know: a `WARNING` / `ERROR` head, a Python traceback (from
+`Traceback (most recent call last):` down to the un-indented exception line), the
+`Step N/7` / `SWEEP cell` / `Experiment … done` headlines, and tqdm bars (dimmed). The
+bar above the log has a text filter (case-insensitive substring, live), *hide progress
+bars*, a taller-log toggle (⤢, most of the window) and *jump to the end* (⤓); a line is
+coloured once when it arrives and cached, so a 3 000-line tail costs nothing per poll.
+
+**Step panel** (added 2026-09-18, *☰ steps* in the run header, open by default,
+remembered in localStorage). A floating card at the right edge that shows the
+selected run's *whole* plan as an outline and follows it live: for a sweep the
+cells (`✓` done, `↷` skipped, `✗` failed, `●` current, `k/n`), then the six pipeline
+stages — `load corpus`, `tokenizer` (with its sub-step: *train on N texts* or *load
+from …*), `intrinsic eval`, `load + adapt model`, `training` with the three phases
+underneath (skipped ones struck through, the running one with step / steps, a bar,
+loss, lr, `eval_loss`; the pending ones with their step budget), `downstream eval`
+with every task (the running one with its row count and bar, finished ones with their
+time) — and a footer (`● running · so far`, `✓ done`, `✗ failed`, `■ cancelled`). The
+current stage and sub-step are highlighted; finished ones carry their duration, taken
+from the log's own timestamps (the running one against the server clock). Stages the
+config turns off (`intrinsic_metrics` / `downstream_metrics: false`) are omitted. A
+judge run shows judges → cells → report instead. The *plan* (which phases are
+enabled and their `steps`, the tasks, the eval flags) is recorded in `run.json` at
+start and derived from the config snapshot for runs that predate it; the *progress*
+comes from `parse_progress`, which now also records the first / last timestamp of
+every stage, phase and task. On screens narrower than the two-column grid the card
+docks under the run detail.
 
 ## Eval rows tab
 
@@ -294,7 +379,7 @@ Routes: `GET /api/schema`, `GET /api/configs`, `GET /api/configs/get?path=`,
 `GET /api/runs/<id>/log?offset=`, `POST /api/runs/start`, `POST /api/runs/<id>/cancel`,
 `GET /api/gpu`, `GET /api/text?path=` (files under `outputs/` only),
 `GET /api/eval/tree`, `GET /api/eval/describe?path=`, `GET /api/eval/rows?path=&…`,
-`GET /api/eval/row?path=&position=`, `GET /api/eval/export?path=&…`.
+`GET /api/eval/row?path=&position=`, `GET /api/eval/export?path=&…`, `GET /api/assistant/configs`, `POST /api/assistant/chat` (SSE), `POST /api/assistant/preview`.
 
 ## Files
 
@@ -303,6 +388,9 @@ Routes: `GET /api/schema`, `GET /api/configs`, `GET /api/configs/get?path=`,
 | `debugger/serve_experiment_console.py` | stdlib `http.server`, thin routing |
 | `debugger/experiment_console.html` | the page (vanilla JS, no build step) |
 | `src/arabic_eval/tools/experiment_console.py` | schema bundle, config list / read / validate / render / save, `parse_progress`, `RunManager` |
+| `src/arabic_eval/tools/config_hints.py` | the field documentation (`path → (meaning, example)`) behind the form tooltips and the assistant's field reference |
+| `src/arabic_eval/tools/config_assistant.py` | the config assistant: endpoint config + readiness, streaming chat client, context builder, `edits` parser, dotted-path apply, the chat turn with its repair round |
+| `configs/assistant/*.yaml` | assistant endpoints (the API model) |
 | `src/arabic_eval/tools/eval_rows_browser.py` | eval-row discovery, filtering, paging, CSV export, path guard |
 | `src/arabic_eval/evaluation/eval_rows.py` | the dump format: record builder, streaming Parquet writer, reader |
 | `scripts/dump_eval_rows.py` | rebuild a finished experiment's dump (eval only, no training) |

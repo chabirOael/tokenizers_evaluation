@@ -17,6 +17,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
+from arabic_eval.data import finetune_corpora as fc
 from arabic_eval.data.answer_only_masking import compute_answer_only_labels
 from arabic_eval.data.finetune_corpora import (
     QARecord,
@@ -77,31 +78,81 @@ def _rec(answer: str = "بيير كوري") -> QARecord:
 
 
 def test_prompt_template_format_with_marker():
-    """Post-2026-05-06: prompts use bare ``السياق:`` / ``السؤال:`` / ``الإجابة:``
-    (no ``###`` markers) so train and eval share the same prefix tokens."""
+    """TEMPLATE_VERSION 2 (2026-09-18): the extractive prompt is the sectioned
+    Alpaca shape — ``QA_HEADER`` then ``### السياق:`` / ``### السؤال:`` /
+    ``### الإجابة:`` sections, the answer cue on its own line at the end."""
     rec = QARecord(
         id="x", question="ما هو ASCII؟", context="نظام ترميز.",
         answer="معيار", source="arabic_squad",  # 'معيار' not in context
     )
     p = _format_qa_prompt(rec)
-    # Bare LightEval-aligned labels.
-    assert "السياق:" in p
-    assert "السؤال:" in p
-    assert "الإجابة:" in p
-    # Legacy ``###`` markers must NOT appear.
-    assert "###" not in p
-    # Answer label must be the last line (no trailing newline, no answer text)
-    assert p.endswith("الإجابة:")
+    assert p == (
+        "فيما يلي نص وسؤال عنه. أجب عن السؤال اعتمادًا على النص.\n\n"
+        "### السياق:\nنظام ترميز.\n\n"
+        "### السؤال:\nما هو ASCII؟\n\n"
+        "### الإجابة:\n"
+    )
+    assert p.startswith(fc.QA_HEADER + "\n\n")
+    # The answer cue is the last line and the answer starts on the next one.
+    assert p.endswith("### الإجابة:\n")
     # No answer leaks into the prompt-only form
     assert rec.answer not in p
 
 
-def test_full_includes_answer_with_single_space():
+def test_full_includes_answer_directly_after_the_cue_line():
     f = _format_qa_full(_rec("بيير كوري"))
-    assert f.endswith("الإجابة: بيير كوري")
-    # Full text starts with the same prefix as the prompt
+    assert f.endswith("### الإجابة:\nبيير كوري")
+    # Full text starts with the same prefix as the prompt (no separator: the
+    # prompt already ends in a newline).
     p = _format_qa_prompt(_rec("بيير كوري"))
-    assert f.startswith(p)
+    assert f.startswith(p) and f == p + "بيير كوري"
+
+
+def test_template_labels_are_distinct_per_template():
+    """The three templates must be told apart *before* the answer cue: every
+    section label of ``qa`` and ``instruction`` is specific to one template
+    except the shared answer label, and ``mcq_letter`` uses neither header."""
+    qa = _format_qa_prompt(QARecord(id="1", question="س", context="ن", answer="ج", source="arcd"))
+    ins = _format_qa_prompt(QARecord(id="2", question="س", context="", answer="ج", source="cidar",
+                                     prompt_template="instruction"))
+    ins_in = _format_qa_prompt(QARecord(id="3", question="س", context="م", answer="ج", source="cidar",
+                                        prompt_template="instruction"))
+    mcq = _format_qa_prompt(QARecord(id="4", question="س", context="", answer="أ", source="arabic_squad_mcq",
+                                     prompt_template="mcq_letter", choices=["a", "b", "c", "d"]))
+    labels = {"qa": {fc.CONTEXT_LABEL, fc.QUESTION_LABEL}, "instruction": {fc.INSTRUCTION_LABEL, fc.INPUT_LABEL}}
+    assert labels["qa"].isdisjoint(labels["instruction"])
+    for lab in labels["qa"]:
+        assert lab in qa and lab not in ins and lab not in ins_in and lab not in mcq
+    for lab in labels["instruction"]:
+        assert lab not in qa and lab not in mcq
+    assert fc.INSTRUCTION_LABEL in ins and fc.INPUT_LABEL not in ins
+    assert fc.INSTRUCTION_LABEL in ins_in and fc.INPUT_LABEL in ins_in
+    headers = {fc.QA_HEADER, fc.INSTRUCTION_HEADER, fc.INSTRUCTION_HEADER_WITH_INPUT}
+    assert len(headers) == 3
+    assert qa.startswith(fc.QA_HEADER) and ins.startswith(fc.INSTRUCTION_HEADER) \
+        and ins_in.startswith(fc.INSTRUCTION_HEADER_WITH_INPUT)
+    assert not any(h in mcq for h in headers) and "###" not in mcq
+    assert fc.TEMPLATE_VERSION == 2
+
+
+def test_mcq_letter_template_is_byte_identical_to_v1():
+    """The MCQ prompt mirrors the LightEval-official eval prompt and is not part
+    of the versioned pair — pinned byte for byte, answer after a single space."""
+    rec = QARecord(id="4", question="ما هي العاصمة؟", context="", answer="ب", source="arabic_squad_mcq",
+                   prompt_template="mcq_letter", choices=["مدينة1", "مدينة2", "مدينة3", "مدينة4"])
+    p = _format_qa_prompt(rec)
+    assert p == (
+        "الأسئلة التالية هي أسئلة متعددة الإختيارات مع الجواب الصحيح\n\n"
+        "ما هي العاصمة؟\n"
+        "أ. مدينة1\nب. مدينة2\nج. مدينة3\nد. مدينة4\n"
+        "الإجابة:"
+    )
+    assert _format_qa_full(rec) == p + " ب"
+    rec_ctx = QARecord(id="5", question="س", context="نص السياق هنا.", answer="أ", source="arabic_squad_mcq",
+                       prompt_template="mcq_letter", choices=["a", "b", "c", "d"])
+    assert _format_qa_prompt(rec_ctx) == "السياق: نص السياق هنا.\n" + _format_qa_prompt(
+        QARecord(id="5", question="س", context="", answer="أ", source="arabic_squad_mcq",
+                 prompt_template="mcq_letter", choices=["a", "b", "c", "d"]))
 
 
 # --------------------------------------------------------------------------

@@ -49,6 +49,7 @@ from ..tokenizers.base import BaseTokenizer
 from .collation import get_collator
 from .finetune_corpora import (
     PINNED_REVISIONS,
+    TEMPLATE_VERSION,
     QARecord,
     _QATokenizedDataset,
     filter_latin_records,
@@ -426,6 +427,7 @@ def compose_mixture(
         "max_length": max_length,
         "loss_target": loss_target,
         "clean_latin_rows": clean_latin_rows,
+        "template_version": TEMPLATE_VERSION,
         "max_total_examples_at_these_shares": plan["max_total_examples_at_these_shares"],
         "loss_tokens": total_loss_tokens,
         "categories": categories,

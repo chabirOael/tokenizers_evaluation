@@ -21,9 +21,9 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 TASK = "freeform_cidar"
 GENERATIONS_REL = Path("eval_rows") / f"{TASK}.parquet"
 JUDGE_DIR = "freeform_judge"
-STOP_REASONS = ("eos", "marker", "cap")
+STOP_REASONS = ("eos", "marker", "loop", "cap")     # mirrors generation.STOP_REASONS (torch-free here)
 SORTS = ("row", "score_asc", "score_desc", "chrf_asc", "chrf_desc", "disagree", "gen_len_desc", "gen_len_asc")
-ROW_FLAGS = ("degenerate", "empty", "latin", "hit_cap", "char_truncated")
+ROW_FLAGS = ("degenerate", "empty", "latin", "hit_cap", "hit_loop", "char_truncated")
 CLIP = 240
 
 _CACHE: Dict[Tuple[str, int], Any] = {}
@@ -117,7 +117,7 @@ def _cell_summary(cell_dir: Path) -> Dict[str, Any]:
     am = _read_json(cell_dir / "all_metrics.json") or {}
     task = ((am.get("downstream") or {}).get(TASK)) or {}
     tok = cfg.get("tokenizer") or {}
-    keep = ("chrf", "bertscore_f1", "degenerate_rate", "empty_rate", "latin_rate", "hit_cap_rate",
+    keep = ("chrf", "bertscore_f1", "degenerate_rate", "empty_rate", "latin_rate", "hit_cap_rate", "loop_stop_rate",
             "reference_roundtrip_chrf", "gen_chars_per_sec", "mean_gen_chars", "token_cap", "num_samples")
     return {
         "tokenizer": tok.get("type"), "vocab_size": tok.get("vocab_size"),

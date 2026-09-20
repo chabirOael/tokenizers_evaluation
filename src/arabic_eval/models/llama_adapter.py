@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -18,6 +19,38 @@ from arabic_eval.registry import model_registry
 from arabic_eval.tokenizers.base import BaseTokenizer, EmbeddingType
 
 logger = logging.getLogger("arabic_eval.models.llama")
+
+# Set to "1" to leave PyTorch's cuDNN SDPA backend enabled (see configure_sdpa_backends).
+CUDNN_SDP_ENV = "ARABIC_EVAL_CUDNN_SDP"
+
+
+def configure_sdpa_backends() -> Optional[bool]:
+    """Disable the cuDNN scaled-dot-product-attention backend (once per process).
+
+    torch 2.11's cuDNN SDPA backend — the default on sm90 — runtime-compiles a
+    kernel on the host for every new (batch, kv_length) shape. Greedy decoding
+    visits a new KV length at every step and log-likelihood scoring a new prompt
+    length at nearly every row, so the first free-form batch of a Qwen3-4B cell
+    spent ~300 s CPU-bound at 0 % GPU (measured 2026-09-18: a fresh batch shape
+    58 s vs 3.4 s for a repeated one at 150 new tokens; 3.8 s vs 3.3 s with the
+    backend off, same steady-state throughput). The flash / memory-efficient /
+    math backends compute the same exact attention. Training runs at one fixed
+    shape and never noticed. Returns the new setting (None when CUDA or the
+    knob is unavailable); ``ARABIC_EVAL_CUDNN_SDP=1`` keeps the backend on.
+    """
+    if os.environ.get(CUDNN_SDP_ENV, "") == "1":
+        return None
+    try:
+        backends = torch.backends.cuda
+        if not torch.cuda.is_available() or not hasattr(backends, "enable_cudnn_sdp"):
+            return None
+        if backends.cudnn_sdp_enabled():
+            backends.enable_cudnn_sdp(False)
+            logger.info("cuDNN SDPA backend disabled (per-shape host compile; %s=1 keeps it)", CUDNN_SDP_ENV)
+        return bool(backends.cudnn_sdp_enabled())
+    except Exception as e:  # noqa: BLE001 — a missing knob must never block a load
+        logger.warning("could not configure the SDPA backends: %s", e)
+        return None
 
 
 @model_registry.register("llama")
@@ -48,6 +81,7 @@ class LlamaAdapter(BaseModelAdapter):
         torch_dtype = dtype_map.get(dtype, torch.bfloat16)
 
         logger.info("Loading model: %s (dtype=%s, device=%s)", model_name_or_path, dtype, device)
+        configure_sdpa_backends()
         self._model = AutoModelForCausalLM.from_pretrained(
             model_name_or_path,
             torch_dtype=torch_dtype,

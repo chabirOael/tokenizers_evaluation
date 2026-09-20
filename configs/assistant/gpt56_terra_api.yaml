@@ -1,0 +1,16 @@
+# Config assistant of the experiment console (Configs tab → ✨ assistant): fills the
+# experiment form from a prompt, edits it, answers questions about the fields.
+# Any OpenAI-compatible /chat/completions endpoint works; this one is gpt-5.6-terra
+# (same account settings the free-form judge verified 2026-09-18: the model rejects an
+# explicit temperature, so it is null = omitted; reasoning_effort is passed through
+# extra_body). Export the key named by api_key_env before starting the console server.
+assistant:
+  name: "gpt56_terra"
+  model: "gpt-5.6-terra"
+  base_url: null                    # null = https://api.openai.com/v1
+  api_key_env: "OPENAI_API_KEY"
+  temperature: null                 # null = omit the field
+  max_tokens: 4096                  # sent as max_completion_tokens; reasoning tokens count against it
+  timeout_sec: 180
+  history_messages: 8               # chat turns re-sent with every request (the server is stateless)
+  extra_body: {reasoning_effort: "medium"}

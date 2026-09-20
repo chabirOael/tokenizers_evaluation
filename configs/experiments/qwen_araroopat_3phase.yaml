@@ -1,0 +1,470 @@
+experiment:
+  name: araroopat
+  description: Qwen3-4B-Base + AraRooPat (Balanced tier), Phase 1 + 2 on the pretraining mix + Phase 3 mixture 40/30/30
+    — arm B of qwen_native_vs_araroopat
+  output_dir: outputs/experiments/qwen_native_vs_araroopat/araroopat
+  seed: 42
+  deterministic: true
+data:
+  dataset_name: Jr23xd23/ArabicText-Large
+  dataset_config: null
+  cache_dir: outputs/data_cache
+  train_split: train
+  eval_split: test
+  max_train_samples: null
+  max_eval_samples: 10000
+  preprocessing:
+    normalize_unicode: true
+    remove_diacritics: false
+    normalize_alef: false
+    remove_tatweel: true
+    min_text_length: 10
+    join_lone_waw: true
+tokenizer:
+  type: araroopat
+  vocab_size: null
+  params:
+    max_roots: 10000
+    max_patterns: 10000
+    min_root_freq: 2
+    min_pattern_freq: 2
+    generator_timeout_ms: 50
+    use_diacritized_surface: false
+    cache_corpus_analysis: true
+    add_bos_eos: true
+    clitic_peeler: true
+    peel_bare_alef: false
+    proper_nouns: unrooted
+    prepositions:
+    - من
+    - إلى
+    - عن
+    - على
+    - في
+    - حتى
+    - منذ
+    - مذ
+    - خلا
+    - عدا
+    - حاشا
+    - متى
+    - لعل
+    - كي
+    - لولا
+    - مع
+    - تجاه
+    - خلال
+    - بلا
+    func_words:
+    - هو
+    - هي
+    - هم
+    - هن
+    - هما
+    - أنا
+    - أنت
+    - أنتم
+    - أنتن
+    - أنتما
+    - نحن
+    - إيا
+    - هذا
+    - هذه
+    - هذان
+    - هاتان
+    - هؤلاء
+    - ذلك
+    - تلك
+    - ذاك
+    - أولئك
+    - الذي
+    - التي
+    - الذين
+    - اللذان
+    - اللتان
+    - اللاتي
+    - اللواتي
+    - اللائي
+    - أن
+    - إن
+    - أو
+    - أم
+    - ثم
+    - بل
+    - لكن
+    - إذا
+    - إذ
+    - حيث
+    - كما
+    - لو
+    - إما
+    - أما
+    - إلا
+    - ألا
+    - بينما
+    - حينما
+    - عندما
+    - كلما
+    - لأن
+    - كأن
+    - ليت
+    - إذن
+    - هكذا
+    - كذا
+    - مثلما
+    - طالما
+    - حسبما
+    - أينما
+    - فيما
+    - ذات
+    - ما
+    - ماذا
+    - لماذا
+    - كيف
+    - أين
+    - هل
+    - أي
+    - كم
+    - أيان
+    - أنى
+    - لا
+    - لم
+    - لن
+    - لما
+    - قد
+    - سوف
+  save_path: outputs/tokenizers/araroopat
+  load_path: null
+model:
+  type: qwen3
+  name_or_path: Qwen/Qwen3-4B-Base
+  dtype: bfloat16
+  device: auto
+  params: {}
+task:
+  type: text_generation
+  params:
+    max_length: 512
+training:
+  phases:
+    embedding_alignment:
+      enabled: true
+      datasets:
+      - pretraining_mix
+      trainable_parameters:
+      - embed_tokens
+      - lm_head
+      steps: 1000
+      mix_tokens: 4096000
+      learning_rate: 0.0005
+      batch_size: 8
+      gradient_accumulation_steps: 1
+      optimizer: adamw
+      weight_decay: 0.0
+      max_length: 512
+      loss_target: full_sequence
+      lr_scheduler: constant
+      warmup_steps: 0
+      max_grad_norm: 1.0
+      save_checkpoint: true
+      clean_latin_rows: false
+      qa_blend: null
+      mixture: null
+      early_stopping: null
+    warmup:
+      enabled: true
+      datasets:
+      - pretraining_mix
+      trainable_parameters:
+      - '*'
+      steps: 2000
+      mix_tokens: 4096000
+      learning_rate: 0.0002
+      batch_size: 4
+      gradient_accumulation_steps: 4
+      optimizer: adamw
+      weight_decay: 0.01
+      max_length: 512
+      loss_target: full_sequence
+      lr_scheduler: cosine
+      warmup_steps: 100
+      max_grad_norm: 1.0
+      save_checkpoint: true
+      clean_latin_rows: false
+      qa_blend:
+        datasets:
+        - tydiqa_arabic
+        - arcd
+        share: 0.07
+        split: train
+        seed: 42
+      mixture: null
+      early_stopping: null
+    sft:
+      enabled: true
+      datasets:
+      - tydiqa_arabic
+      - arcd
+      - arabic_squad_mcq
+      - cidar
+      - bactrian_x_ar
+      - aya_ar
+      trainable_parameters:
+      - '*'
+      steps: 7500
+      mix_tokens: null
+      learning_rate: 0.0002
+      batch_size: 4
+      gradient_accumulation_steps: 4
+      optimizer: adamw
+      weight_decay: 0.01
+      max_length: 512
+      loss_target: answer_only
+      lr_scheduler: cosine
+      warmup_steps: 100
+      max_grad_norm: 1.0
+      save_checkpoint: true
+      clean_latin_rows: false
+      qa_blend: null
+      mixture:
+        total_examples: 30000
+        shares:
+          extractive: 0.4
+          mcq: 0.3
+          free_form: 0.3
+        within_category: equal
+        weights: null
+        upsample: false
+        drop_truncated_answers: false
+        seed: 42
+      early_stopping:
+        enabled: true
+        metric: eval_loss
+        eval_every_n_steps: 200
+        patience: 5
+        min_delta: 0.0005
+        min_steps_before_stop: 500
+        restore_best_at_end: true
+        eval_splits:
+          tydiqa_arabic: dev
+          arcd: dev
+  bf16: true
+  fp16: false
+  logging_steps: 50
+  pretraining_mix:
+    block_size: 512
+    seed: 42
+    cache_dir: outputs/data_cache/pretraining_mix
+    normalization:
+      nfkc: true
+      remove_tatweel: true
+      normalize_alef: false
+      remove_diacritics: false
+    sources:
+    - name: fineweb2_arb
+      share: 0.7
+      params:
+        config: arb_Arab
+        min_language_score: 0.8
+    - name: wikipedia_ar
+      share: 0.2
+      params:
+        dump: 20231101.ar
+        skip_title_prefixes:
+        - قائمة
+    - name: arabicweb24
+      share: 0.1
+      params: {}
+    pool:
+      total_words: 20000000
+      stream_shuffle_buffer: 10000
+      max_stream_docs_per_source: 3000000
+    dedup:
+      paragraph_exact: true
+      minhash:
+        enabled: true
+        num_perm: 128
+        shingle_words: 5
+        threshold: 0.8
+      priority:
+      - wikipedia_ar
+      - fineweb2_arb
+      - arabicweb24
+    msa_filter:
+      heuristic:
+        enabled: true
+        max_markers_per_1k_words: 8.0
+        min_markers: 3
+        min_distinct_markers: 2
+      camel_did:
+        enabled: false
+        sentences_per_doc: 8
+        min_sentence_words: 5
+        min_msa_share: 0.3
+    quality:
+      min_words: 50
+      max_words: 3000
+      strip_latin_parentheticals: true
+      max_latin_letter_ratio: 0.05
+      min_arabic_letter_ratio: 0.7
+      max_short_line_ratio: 0.5
+      short_line_words: 5
+      max_dup_line_ratio: 0.3
+      max_symbol_ratio: 0.1
+      wikipedia_strip_sections:
+      - المراجع
+      - مراجع
+      - وصلات خارجية
+      - انظر أيضا
+      - انظر أيضًا
+      - انظر أيضاً
+      - مصادر
+      - ملاحظات
+      - المصادر
+    heldout_filter:
+      enabled: true
+      sets_file: configs/contamination/heldout_sets.yaml
+  corpus_params:
+    aya_ar:
+      include_datasets:
+      - Aya-Dataset
+      - Dolly-v2 (T)
+  contamination_exclusions: configs/contamination/exclusions.json
+evaluation:
+  intrinsic_metrics: true
+  morphological_metrics: true
+  morph_sample_size: 500
+  downstream_metrics: true
+  num_eval_samples: null
+  generation_max_new_tokens: 128
+  generation_temperature: 1.0
+  generation_do_sample: false
+  failure_reports: false
+  intrinsic_unk_report: false
+  downstream_unk_report: false
+  eval_row_dump: true
+  score_normalization: char+pmi
+  num_fewshot: 3
+tracking:
+  use_wandb: false
+  wandb_project: arabic-tokenizer-eval
+  wandb_entity: null
+  log_to_file: true
+sweep:
+  tokenizers:
+  - type: araroopat
+    vocab_sizes:
+    - null
+    params:
+      max_roots: 10000
+      max_patterns: 4000
+      min_root_freq: 2
+      min_pattern_freq: 2
+      generator_timeout_ms: 50
+      use_diacritized_surface: false
+      cache_corpus_analysis: true
+      add_bos_eos: true
+      clitic_peeler: true
+      peel_bare_alef: false
+      proper_nouns: unrooted
+      prepositions:
+      - من
+      - إلى
+      - عن
+      - على
+      - في
+      - حتى
+      - منذ
+      - مذ
+      - خلا
+      - عدا
+      - حاشا
+      - متى
+      - لعل
+      - كي
+      - لولا
+      - مع
+      - تجاه
+      - خلال
+      - بلا
+      func_words:
+      - هو
+      - هي
+      - هم
+      - هن
+      - هما
+      - أنا
+      - أنت
+      - أنتم
+      - أنتن
+      - أنتما
+      - نحن
+      - إيا
+      - هذا
+      - هذه
+      - هذان
+      - هاتان
+      - هؤلاء
+      - ذلك
+      - تلك
+      - ذاك
+      - أولئك
+      - الذي
+      - التي
+      - الذين
+      - اللذان
+      - اللتان
+      - اللاتي
+      - اللواتي
+      - اللائي
+      - أن
+      - إن
+      - أو
+      - أم
+      - ثم
+      - بل
+      - لكن
+      - إذا
+      - إذ
+      - حيث
+      - كما
+      - لو
+      - إما
+      - أما
+      - إلا
+      - ألا
+      - بينما
+      - حينما
+      - عندما
+      - كلما
+      - لأن
+      - كأن
+      - ليت
+      - إذن
+      - هكذا
+      - كذا
+      - مثلما
+      - طالما
+      - حسبما
+      - أينما
+      - فيما
+      - ذات
+      - ما
+      - ماذا
+      - لماذا
+      - كيف
+      - أين
+      - هل
+      - أي
+      - كم
+      - أيان
+      - أنى
+      - لا
+      - لم
+      - لن
+      - لما
+      - قد
+      - سوف
+  tasks:
+  - type: freeform_cidar
+    params: {}

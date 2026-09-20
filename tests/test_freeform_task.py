@@ -17,14 +17,16 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from transformers import LlamaConfig, LlamaForCausalLM  # noqa: E402
 
-from arabic_eval.data.finetune_corpora import QARecord, _format_qa_prompt  # noqa: E402
+from arabic_eval.data import finetune_corpora as fc  # noqa: E402
+from arabic_eval.data.finetune_corpora import QARecord, _format_qa_full, _format_qa_prompt  # noqa: E402
 from arabic_eval.data.freeform_heldout import HeldoutRow, write_heldout_jsonl  # noqa: E402
 from arabic_eval.models.llama_adapter import LlamaAdapter  # noqa: E402
 from arabic_eval.tasks.freeform import metrics as M  # noqa: E402
 from arabic_eval.tasks.freeform.cidar import METRIC_NAMES, ROW_FIELDS, FreeformCidarTask  # noqa: E402
+from arabic_eval.tasks.freeform import generation as G  # noqa: E402
 from arabic_eval.tasks.freeform.generation import (  # noqa: E402
-    DecodingConfig, derive_token_cap, generate_freeform, generation_supported, measure_chars_per_token,
-    strip_trailing_eos, truncate_at_marker,
+    STOP_REASONS, DecodingConfig, derive_token_cap, generate_freeform, generation_supported,
+    measure_chars_per_token, strip_trailing_eos, text_stop, truncate_at_marker,
 )
 from arabic_eval.tokenizers.base import BaseTokenizer, EmbeddingType, TokenizerOutput  # noqa: E402
 
@@ -106,17 +108,26 @@ def heldout(tmp_path) -> Path:
 
 class TestPromptAndBudget:
     def test_prompt_is_the_training_prompt(self, heldout):
+        """The eval prompt is the Phase 3 training prompt of the same instruction,
+        byte for byte: the prompt span of the full training text (what the LCP
+        masking hides from the loss) equals what the model is asked to continue."""
         task = FreeformCidarTask({"heldout_path": str(heldout), "bertscore_model": None, "num_fewshot": 3})
         row = task.load_examples()[0]
         rec = QARecord(id=row["id"], question=row["prompt"], context="", answer=row["reference"],
                        source="cidar", prompt_template="instruction")
         p = task.build_prompt(row)
-        assert p == _format_qa_prompt(rec) and p.endswith("\nالإجابة:") and p.startswith("السؤال: ")
-        assert "السياق:" not in p
+        assert p == _format_qa_prompt(rec)
+        assert _format_qa_full(rec) == p + row["reference"]                  # training text = prompt + answer
+        assert p.startswith(fc.INSTRUCTION_HEADER + "\n\n" + fc.INSTRUCTION_LABEL + "\n" + row["prompt"])
+        assert p.endswith("\n\n" + fc.ANSWER_LABEL + "\n")
+        assert fc.INPUT_LABEL not in p and "السياق:" not in p and "السؤال:" not in p
 
-    def test_context_row_gets_the_context_line(self):
+    def test_context_row_gets_the_input_section(self):
         p = FreeformCidarTask.build_prompt({"id": "x", "prompt": "لخص", "context": "نص", "reference": ""})
-        assert p == "السياق: نص\nالسؤال: لخص\nالإجابة:"
+        assert p == (f"{fc.INSTRUCTION_HEADER_WITH_INPUT}\n\n{fc.INSTRUCTION_LABEL}\nلخص\n\n"
+                     f"{fc.INPUT_LABEL}\nنص\n\n{fc.ANSWER_LABEL}\n")
+        assert p == _format_qa_prompt(QARecord(id="x", question="لخص", context="نص", answer="",
+                                               source="cidar", prompt_template="instruction"))
 
     def test_token_cap_from_character_budget(self):
         cfg = DecodingConfig(max_output_chars=1200, token_cap_margin=1.15)
@@ -136,6 +147,11 @@ class TestPromptAndBudget:
         assert truncate_at_marker("جواب\nالسؤال: آخر", ("\nالسؤال:",)) == ("جواب", True)
         assert truncate_at_marker("جواب طويل", ("\nالسؤال:",)) == ("جواب طويل", False)
         assert truncate_at_marker("أ\n###ب\nالسؤال:ج", ("\nالسؤال:", "\n###")) == ("أ", True)
+        # v2 header restart is a stop marker by default; a "فيما يلي" mid-line is not.
+        from arabic_eval.tasks.freeform.generation import DEFAULT_STOP_MARKERS
+        assert "\nفيما يلي" in DEFAULT_STOP_MARKERS
+        assert truncate_at_marker("جواب.\nفيما يلي تعليمات تصف مهمة.", DEFAULT_STOP_MARKERS) == ("جواب.", True)
+        assert truncate_at_marker("جواب فيما يلي أمثلة", DEFAULT_STOP_MARKERS) == ("جواب فيما يلي أمثلة", False)
 
     def test_generation_support_by_embedding_family(self):
         for et in (EmbeddingType.STANDARD, EmbeddingType.CHAR_JABER):
@@ -154,6 +170,44 @@ class TestMetrics:
         assert not M.is_degenerate("البومة طائر ليلي بعينين كبيرتين ووجه مستدير أما الصقر فطائر نهاري حاد البصر")
         assert not M.is_degenerate("")
 
+    def test_detect_loop_cuts_before_the_second_copy(self):
+        """The generation-time loop stop and the degeneration metric share one
+        detector: every text ``detect_loop`` flags is degenerate, and the cut
+        keeps exactly the first copy of the repeated unit."""
+        # a word 4-gram three times → the whole 6-word cycle is the unit
+        cycle = "أ ب ج د ه و"
+        t = "مقدمة أولا ثم " + " ".join([cycle] * 3) + " نهاية"
+        loop = M.detect_loop(t)
+        assert loop is not None and loop.kind == "ngram" and loop.unit == cycle
+        assert t[: loop.cut].rstrip() == "مقدمة أولا ثم " + cycle
+        # one word five times in a row → keep one
+        t = "قال الطبيب الطبيب الطبيب الطبيب الطبيب الطبيب"
+        loop = M.detect_loop(t)
+        assert loop is not None and loop.kind == "word" and t[: loop.cut].rstrip() == "قال الطبيب"
+        # one character twenty times in a row → keep one
+        t = "نعم " + "ه" * 30
+        loop = M.detect_loop(t)
+        assert loop is not None and loop.kind == "char" and t[: loop.cut] == "نعم ه"
+        # two copies only, or four distinct words repeated twice: not a loop
+        assert M.detect_loop(" ".join([cycle] * 2)) is None
+        assert M.detect_loop("الطبيب الطبيب الطبيب الطبيب") is None
+        assert M.detect_loop("") is None and M.detect_loop("   ") is None
+        for text in ("هذا نص عادي " * 6, "ن" * 25, "قال الطبيب الطبيب الطبيب الطبيب الطبيب"):
+            assert M.detect_loop(text) is not None and M.is_degenerate(text)
+        assert M.LOOP_NGRAM_ORDER == 4 and M.LOOP_NGRAM_REPEATS == 3 and M.LOOP_WORD_RUN == 5 and M.LOOP_CHAR_RUN == 20
+
+    def test_generation_uses_the_metrics_detector(self):
+        """One function for both: the generator's loop stop is ``metrics.detect_loop``."""
+        assert G.detect_loop is M.detect_loop
+        assert "loop" in STOP_REASONS
+        # text_stop: earliest of marker and loop wins; nothing → ""
+        cycle = "أ ب ج د ه و"
+        looping = " ".join([cycle] * 3) + "\nالسؤال: تالي"
+        assert text_stop(looping, ("\nالسؤال:",), True) == (cycle + " ", "loop")
+        assert text_stop(looping, ("\nالسؤال:",), False) == (" ".join([cycle] * 3), "marker")
+        assert text_stop("جواب\nالسؤال: " + " ".join([cycle] * 3), ("\nالسؤال:",), True) == ("جواب", "marker")
+        assert text_stop("جواب سليم قصير", ("\nالسؤال:",), True) == ("جواب سليم قصير", "")
+
     def test_arabic_ratio_and_chrf(self):
         assert M.arabic_letter_ratio("نص عربي") == 1.0
         assert M.arabic_letter_ratio("نص Latin") == pytest.approx(2 / 7)
@@ -165,10 +219,14 @@ class TestMetrics:
     def test_summary_shape(self):
         rows = [{"gen_chars": 10, "gen_tokens": 4, "ref_chars": 12, "chrf": 50.0, "generation": "أ ب", "reference": "أ ب ج",
                  "bertscore_f1": 0.8, "bertscore_p": 0.8, "bertscore_r": 0.8, "empty": False, "degenerate": False,
-                 "latin": False, "arabic_letter_ratio": 1.0, "hit_cap": False, "stop_reason": "eos", "char_truncated": False,
-                 "reference_roundtrip_chrf": 100.0}]
+                 "latin": False, "arabic_letter_ratio": 1.0, "hit_cap": False, "hit_loop": False, "stop_reason": "eos",
+                 "char_truncated": False, "reference_roundtrip_chrf": 100.0}]
         s = M.summarize(rows, gen_wall_sec=2.0)
         assert s["num_samples"] == 1 and s["chrf"] == 50.0 and s["eos_rate"] == 1.0 and s["gen_chars_per_sec"] == 5.0
+        assert s["loop_stop_rate"] == 0.0
+        rows.append({**rows[0], "hit_loop": True, "stop_reason": "loop", "degenerate": True})
+        s = M.summarize(rows, gen_wall_sec=2.0)
+        assert s["loop_stop_rate"] == 0.5 and s["degenerate_rate"] == 0.5 and s["eos_rate"] == 0.5
 
 
 class TestEvaluate:
@@ -211,6 +269,107 @@ class TestEvaluate:
         out = task.evaluate(adapter, tokenizer)
         assert out["marker_stop_rate"] == 1.0 and out["mean_gen_chars"] == len("نعم")
 
+    def test_loop_stop_cuts_before_the_second_copy(self, adapter, tokenizer, heldout, monkeypatch):
+        """A synthetic looping continuation: the stopping criterion fires on the
+        decoded text (checked every ``marker_check_every`` steps), the row gets
+        ``stop_reason="loop"`` / ``hit_loop``, ``generation`` keeps the first copy,
+        ``generation_raw`` the whole text, and ``degenerate`` is judged on the raw
+        text. A non-looping continuation is untouched."""
+        w = tokenizer._w2i
+        cycle = ["الكتاب", "على", "الطاولة", "ذهب", "الولد"]
+        calls: List[Dict] = []
+
+        def fake_generate(input_ids, **kw):
+            if "stopping_criteria" not in kw:                 # the untimed warm-up call
+                return input_ids
+            calls.append(kw)
+            stopping = kw["stopping_criteria"]
+            cont = torch.tensor([[w[x] for x in cycle * 4]] * input_ids.shape[0])   # 20 tokens: 4 copies
+            # replay the criterion step by step as HF would; it must ask for a stop
+            seq = input_ids
+            fired_at = None
+            for t in range(cont.shape[1]):
+                seq = torch.cat([seq, cont[:, t:t + 1]], dim=1)
+                if stopping(seq, None).all() and fired_at is None:
+                    fired_at = t + 1
+            calls[-1]["fired_at"] = fired_at
+            return seq
+
+        monkeypatch.setattr(adapter, "generate", fake_generate)
+        adapter.adapt_to_tokenizer(tokenizer)
+        task = FreeformCidarTask({"heldout_path": str(heldout), "bertscore_model": None, "batch_size": 8,
+                                  "marker_check_every": 4, "stop_markers": []})
+        out = task.evaluate(adapter, tokenizer, max_samples=3)
+        assert calls and calls[-1]["fired_at"] == 16          # 3 copies = 15 tokens; first check at a multiple of 4 after that
+        assert out["loop_stop_rate"] == 1.0 and out["degenerate_rate"] == 1.0 and out["hit_cap_rate"] == 0.0
+        assert out["eos_rate"] == 0.0 and out["marker_stop_rate"] == 0.0
+        assert out["mean_gen_chars"] == len(" ".join(cycle))   # exactly the first copy
+        # untouched non-looping generation
+        calls.clear()
+
+        def plain_generate(input_ids, **kw):
+            cont = torch.tensor([[w["قرأت"], w["مقالة"], w["عن"], w["التاريخ"]]] * input_ids.shape[0])
+            return torch.cat([input_ids, cont, torch.full((input_ids.shape[0], 1), EOS)], dim=1)
+
+        monkeypatch.setattr(adapter, "generate", plain_generate)
+        out = task.evaluate(adapter, tokenizer, max_samples=3)
+        assert out["loop_stop_rate"] == 0.0 and out["degenerate_rate"] == 0.0 and out["eos_rate"] == 1.0
+        assert out["mean_gen_chars"] == len("قرأت مقالة عن التاريخ")
+
+    def test_untimed_warmup_generate_precedes_the_timed_batches(self, adapter, tokenizer, heldout, monkeypatch):
+        """The first generate call of a run is an 8-token warm-up on the first
+        batch without stopping criteria; its wall time is not in the rows'
+        ``gen_time_sec`` nor in ``generation_wall_sec``."""
+        calls: List[Dict] = []
+
+        def fake_generate(input_ids, **kw):
+            calls.append({"n": input_ids.shape[0], **kw})
+            if "stopping_criteria" not in kw:
+                import time
+                time.sleep(0.2)                                # a slow warm-up must not be billed
+                return input_ids
+            cont = torch.full((input_ids.shape[0], 2), tokenizer._w2i["الكتاب"], dtype=torch.long)
+            return torch.cat([input_ids, cont, torch.full((input_ids.shape[0], 1), EOS)], dim=1)
+
+        monkeypatch.setattr(adapter, "generate", fake_generate)
+        adapter.adapt_to_tokenizer(tokenizer)
+        task = FreeformCidarTask({"heldout_path": str(heldout), "bertscore_model": None, "batch_size": 4})
+        out = task.evaluate(adapter, tokenizer)
+        assert calls[0]["max_new_tokens"] == 8 and calls[0]["n"] == 4 and "stopping_criteria" not in calls[0]
+        assert all("stopping_criteria" in c for c in calls[1:]) and len(calls) == 3      # warm-up + 2 batches of 4 / 2
+        assert out["generation_wall_sec"] < 0.15                                          # the 0.2 s warm-up is excluded
+        rows = generate_freeform(adapter, tokenizer, ["س"], task.decoding, 4, warmup=False)
+        assert len(rows) == 1 and calls[-1]["max_new_tokens"] == 4                       # warmup=False: no extra call
+
+    def test_loop_stop_row_fields(self, adapter, tokenizer, heldout, monkeypatch, tmp_path):
+        w = tokenizer._w2i
+        cycle = ["الكتاب", "على", "الطاولة", "ذهب"]
+
+        def fake_generate(input_ids, **kw):
+            cont = torch.tensor([[w[x] for x in cycle * 3 + ["المدرسة"]]] * input_ids.shape[0])
+            return torch.cat([input_ids, cont], dim=1)
+
+        monkeypatch.setattr(adapter, "generate", fake_generate)
+        adapter.adapt_to_tokenizer(tokenizer)
+        task = FreeformCidarTask({"heldout_path": str(heldout), "bertscore_model": None, "batch_size": 8,
+                                  "token_cap_floor": 13, "token_cap_ceiling": 13})
+        task.evaluate(adapter, tokenizer, max_samples=2, row_dump_dir=tmp_path)
+        import pyarrow.parquet as pq
+        t = pq.read_table(tmp_path / "freeform_cidar.parquet")
+        assert "hit_loop" in t.column_names and list(t.column_names) == ROW_FIELDS
+        rows = t.to_pylist()
+        for r in rows:
+            assert r["stop_reason"] == "loop" and r["hit_loop"] and not r["hit_cap"] and r["degenerate"]
+            assert r["generation"] == " ".join(cycle)
+            assert r["generation_raw"] == " ".join(cycle * 3 + ["المدرسة"])
+        meta = json.loads(t.schema.metadata[b"arabic_eval"].decode("utf-8"))
+        assert meta["decoding"]["loop_stop"] is True and meta["schema_version"] == 2
+        # loop_stop off: the same continuation runs to the cap and is flagged degenerate only
+        task_off = FreeformCidarTask({"heldout_path": str(heldout), "bertscore_model": None, "batch_size": 8,
+                                      "token_cap_floor": 13, "token_cap_ceiling": 13, "loop_stop": False})
+        out = task_off.evaluate(adapter, tokenizer, max_samples=2)
+        assert out["loop_stop_rate"] == 0.0 and out["degenerate_rate"] == 1.0 and out["hit_cap_rate"] == 1.0
+
     def test_end_to_end_real_greedy_generation_with_row_dump(self, adapter, tokenizer, heldout, tmp_path):
         adapter.adapt_to_tokenizer(tokenizer)
         task = FreeformCidarTask({"heldout_path": str(heldout), "bertscore_model": None, "batch_size": 4,
@@ -227,9 +386,9 @@ class TestEvaluate:
         assert meta["kind"] == "freeform_generations" and meta["decoding"]["sampling"] == "greedy"
         assert meta["token_cap"] == 12 and meta["embedding_type"] == "standard" and meta["bertscore"] is None
         rows = t.to_pylist()
-        assert all(r["prompt_text"].endswith("الإجابة:") for r in rows)
+        assert all(r["prompt_text"].endswith(fc.ANSWER_LABEL + "\n") for r in rows)
         assert all(r["gen_tokens"] <= 12 and len(r["generation"]) <= 60 for r in rows)
-        assert all(r["stop_reason"] in ("eos", "marker", "cap") for r in rows)
+        assert all(r["stop_reason"] in STOP_REASONS for r in rows)
 
     def test_determinism(self, adapter, tokenizer, heldout):
         adapter.adapt_to_tokenizer(tokenizer)

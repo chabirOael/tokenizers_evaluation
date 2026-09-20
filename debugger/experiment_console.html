@@ -7,6 +7,9 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap">
+<!-- Prism (MIT): its `log` grammar colours the tokens of console.log in the Runs tab. Without it (CDN unreachable) the log is plain text. -->
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.30.0/components/prism-core.min.js" integrity="sha384-zLRFO4dwowZvh8kzutOb5AWhH7f39HeJp+N7PtHF1SQtTBnifRx0AtmvTYs3F4YV" crossorigin="anonymous" data-manual></script>
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.30.0/components/prism-log.min.js" integrity="sha384-JzXaMmXoVH6MvXBXAok2yQwiR973aUkG3KUviEhYliOdY1Cmru7APkZNClZzorcN" crossorigin="anonymous"></script>
 <style>
 :root{
   --paper:#F2F5F4; --surface:#FFFFFF; --sunken:#E8EDEB; --line:#D2DAD7; --line-2:#BCC7C3;
@@ -66,6 +69,41 @@ main{padding:16px 20px 60px}
 /* ---- configs view ---- */
 .cfg-grid{display:grid;grid-template-columns:320px minmax(0,1fr);gap:16px;align-items:start}
 @media (max-width:1100px){.cfg-grid{grid-template-columns:1fr}}
+.cfg-grid.assist{grid-template-columns:280px minmax(0,1fr) 430px}
+@media (max-width:1500px){.cfg-grid.assist{grid-template-columns:240px minmax(0,1fr) 380px}}
+@media (max-width:1100px){.cfg-grid.assist{grid-template-columns:1fr}}
+/* ---- assistant drawer (Configs tab) ---- */
+.panel.assist{position:sticky;top:62px;display:flex;flex-direction:column;max-height:calc(100vh - 78px);min-height:420px}
+.panel.assist .panel-h select{max-width:170px}
+.as-chat{flex:1;overflow:auto;padding:10px 12px;display:flex;flex-direction:column;gap:10px;min-height:200px}
+.as-msg{border-radius:10px;padding:8px 11px;font-size:13.5px;line-height:1.5;max-width:100%;word-break:break-word}
+.as-msg.user{background:var(--accent-soft);align-self:flex-end;white-space:pre-wrap;max-width:92%}
+.as-msg.assistant{background:var(--sunken);align-self:stretch}
+.as-msg.error{background:var(--bad-soft);color:var(--bad)}
+.as-msg p{margin:0 0 6px}.as-msg p:last-child{margin-bottom:0}
+.as-msg pre{background:var(--surface);border:1px solid var(--line);border-radius:6px;padding:6px 8px;overflow:auto;font-family:var(--mono);font-size:12px;margin:6px 0;white-space:pre}
+.as-msg code{font-family:var(--mono);font-size:12px;background:var(--surface);padding:0 3px;border-radius:3px}
+.as-msg pre code{background:none;padding:0}
+.as-msg ul,.as-msg ol{margin:4px 0 6px 18px;padding:0}
+.as-msg h3,.as-msg h4{font-size:13.5px;margin:6px 0 4px}
+.as-msg .cur::after{content:'▍';color:var(--accent);animation:pulse 1s steps(1) infinite}
+.as-changes{margin-top:8px;border-top:1px dashed var(--line-2);padding-top:6px;display:flex;flex-direction:column;gap:3px}
+.as-changes .ch{font-family:var(--mono);font-size:11.5px;word-break:break-all;color:var(--ink-2)}
+.as-changes .ch b{font-weight:500;color:var(--ink)}
+.as-changes .ch .old{color:var(--ink-3);text-decoration:line-through;margin-right:4px}
+.as-changes .ch .new{color:var(--good)}
+.as-changes .ch .new.bad{color:var(--bad)}
+.as-foot{display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-top:6px}
+.as-repair{font-size:12px;color:var(--warn);border-left:3px solid var(--warn);padding:3px 8px;margin:6px 0}
+.as-repair ul{margin:2px 0 0 16px;padding:0}
+.as-quick{display:flex;gap:6px;flex-wrap:wrap;padding:6px 12px;border-top:1px solid var(--line)}
+.as-quick button{padding:2px 9px;border-radius:999px;border:1px solid var(--line);background:var(--surface);cursor:pointer;font-size:12px;color:var(--ink-2)}
+.as-quick button:hover{border-color:var(--accent);color:var(--accent)}
+.as-input{padding:8px 12px 10px;border-top:1px solid var(--line);display:flex;flex-direction:column;gap:6px}
+.as-input textarea{width:100%;resize:vertical;min-height:58px;padding:6px 8px;border:1px solid var(--line-2);border-radius:6px;background:var(--surface);font:inherit;line-height:1.4}
+.as-row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.as-row .chip input{margin:0}
+#btn-assist.on{background:var(--accent-soft);color:var(--accent);border-color:var(--accent)}
 .panel{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow)}
 .panel-h{display:flex;align-items:center;gap:8px;padding:10px 14px;border-bottom:1px solid var(--line);flex-wrap:wrap}
 .panel-h h2{font-size:13.5px;text-transform:uppercase;letter-spacing:.04em;color:var(--ink-2)}
@@ -144,9 +182,41 @@ details.sec.sub{background:var(--sunken)}
 textarea.yaml{width:100%;min-height:60vh;font-family:var(--mono);font-size:12.5px;padding:10px;border:1px solid var(--line-2);
   border-radius:8px;background:var(--surface);resize:vertical;white-space:pre;tab-size:2}
 
-/* ---- runs view ---- */
-.runs-grid{display:grid;grid-template-columns:360px minmax(0,1fr);gap:16px;align-items:start}
-@media (max-width:1100px){.runs-grid{grid-template-columns:1fr}}
+/* ---- runs view: the detail panel takes the whole width; the run list (left) and the step
+   panel (right) float over it, each with its own toggle, and dock above / below it on narrow screens ---- */
+.runs-grid{display:grid;grid-template-columns:minmax(0,1fr);gap:16px;align-items:start}
+.side-panel{position:fixed;top:62px;width:340px;max-height:calc(100vh - 78px);z-index:4;background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow);display:flex;flex-direction:column}
+.side-panel.left{left:16px}
+.side-panel.right{right:16px}
+.side-panel .cfg-list{flex:1;min-height:0;max-height:none;overflow:auto}
+body.runs-open #view-runs .runs-grid{padding-left:356px}
+body.steps-open #view-runs .runs-grid{padding-right:356px}
+@media (max-width:1500px){.side-panel{width:300px} body.runs-open #view-runs .runs-grid{padding-left:316px} body.steps-open #view-runs .runs-grid{padding-right:316px}}
+@media (max-width:1100px){.side-panel{position:static;width:auto;max-height:none} .side-panel.left{margin-bottom:12px} .side-panel.right{margin-top:12px} .side-panel .cfg-list{max-height:40vh} body.runs-open #view-runs .runs-grid{padding-left:0} body.steps-open #view-runs .runs-grid{padding-right:0}}
+#btn-runs.on,#btn-steps.on{background:var(--accent-soft);color:var(--accent);border-color:var(--accent)}
+/* step panel rows */
+.sp-h{display:flex;align-items:center;gap:8px;padding:8px 12px;border-bottom:1px solid var(--line);font-size:13px}
+.sp-h b{text-transform:uppercase;letter-spacing:.04em;font-size:12px;color:var(--ink-2)}
+.sp-body{overflow:auto;padding:8px 10px 10px;font-size:13px}
+.sp-row{display:flex;align-items:center;gap:7px;padding:4px 6px;border-radius:6px;color:var(--ink-3)}
+.sp-row.done{color:var(--ink-2)}
+.sp-row.cur{background:var(--accent-soft);color:var(--accent);font-weight:500}
+.sp-row.bad{background:var(--bad-soft);color:var(--bad)}
+.sp-row.skip .lbl{text-decoration:line-through}
+.sp-row .mk{width:16px;text-align:center;flex:none;font-size:12px}
+.sp-row.cur .mk{color:var(--accent)}
+.sp-row .n{width:24px;text-align:right;font-family:var(--mono);font-size:11.5px;flex:none;color:var(--ink-3)}
+.sp-row .lbl{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sp-row .t{font-family:var(--mono);font-size:11.5px;flex:none;color:var(--ink-3)}
+.sp-row.cur .t{color:var(--accent)}
+.sp-sub{margin:0 0 2px 30px;border-left:2px solid var(--line);padding-left:4px}
+.sp-sub .sp-row{padding:3px 6px;font-size:12.5px}
+.sp-sub .n{display:none}
+.sp-det{margin:0 0 4px 46px;font-family:var(--mono);font-size:11.5px;color:var(--ink-3);display:flex;gap:8px;flex-wrap:wrap}
+.sp-det .bar{flex:1 1 100%;height:5px;margin-top:2px}
+.sp-cells{display:flex;flex-wrap:wrap;gap:4px;padding:2px 6px 8px;border-bottom:1px solid var(--line);margin-bottom:6px}
+.sp-foot{margin-top:6px;padding:6px;border-top:1px solid var(--line);font-size:12.5px;color:var(--ink-2)}
+.sp-foot.bad{color:var(--bad);white-space:pre-wrap;word-break:break-all}
 .run-item{padding:10px 14px;border-bottom:1px solid var(--line);cursor:pointer}
 .run-item:hover{background:var(--sunken)}
 .run-item.on{background:var(--accent-soft)}
@@ -160,9 +230,37 @@ textarea.yaml{width:100%;min-height:60vh;font-family:var(--mono);font-size:12.5p
 .prog{display:flex;flex-direction:column;gap:10px}
 .prog .line{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:13px}
 .cells{display:flex;flex-wrap:wrap;gap:5px}
+/* console.log: one .ll per line — tokens coloured by Prism's `log` grammar (theme below maps them onto the
+   page's variables, so dark mode holds), the line tinted by what it is (warning / error / traceback / stage / tqdm) */
+.log-sec{display:none;padding-top:0}
+.log-sec.on{display:block}
+.log-bar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:6px;font-size:13px}
+.log-bar input[type=text]{padding:4px 8px;border:1px solid var(--line-2);border-radius:6px;background:var(--surface);font-family:var(--mono);font-size:12px;min-width:220px}
+.log-bar label{display:inline-flex;align-items:center;gap:4px;color:var(--ink-2);font-size:12.5px;cursor:pointer}
+.log-bar .btn.on{background:var(--accent-soft);color:var(--accent);border-color:var(--accent)}
 .log{font-family:var(--mono);font-size:12px;white-space:pre-wrap;word-break:break-all;background:var(--sunken);border:1px solid var(--line);
-  border-radius:8px;padding:10px;max-height:52vh;overflow:auto;line-height:1.4}
-.log .tb{color:var(--bad)}
+  border-radius:8px;padding:8px 10px;max-height:60vh;overflow:auto;line-height:1.45;color:var(--ink-2)}
+.log.big{max-height:calc(100vh - 120px)}
+.log .ll{padding:0 4px;border-radius:3px}
+.log .ll:hover{background:rgba(127,127,127,.1)}
+.log .lh,.log .lh .token{color:var(--ink-3);font-weight:400}
+.log .ll.l-stage{color:var(--accent);font-weight:600;background:var(--accent-soft);margin:4px 0}
+.log .ll.l-warn{background:var(--warn-soft);color:var(--warn)}
+.log .ll.l-bad{background:var(--bad-soft);color:var(--bad)}
+.log .ll.l-stage .token,.log .ll.l-warn .token,.log .ll.l-bad .token{color:inherit}
+.log .ll.l-prog,.log .ll.l-prog .token{color:var(--ink-3)}
+.log .token.date,.log .token.time,.log .token.operator,.log .token.punctuation{color:var(--ink-3)}
+.log .token.level{font-weight:600}
+.log .token.level.warning,.log .lh .token.level.warning{color:var(--warn)}
+.log .token.level.error,.log .lh .token.level.error{color:var(--bad)}
+.log .token.property{color:var(--ink);font-weight:500}
+.log .lh .token.property{color:var(--ink-3);font-weight:400}
+.log .token.number{color:var(--accent)}
+.log .token.string{color:var(--good)}
+.log .token.url,.log .token.file-path,.log .token.email{color:var(--run)}
+.log .token.boolean,.log .token.constant{color:var(--warn)}
+.log .token.separator{color:var(--line-2)}
+.log .token.exception{color:var(--bad)}
 table.res{border-collapse:collapse;font-size:12.5px;width:100%}
 table.res th,table.res td{border:1px solid var(--line);padding:4px 8px;text-align:right;font-family:var(--mono)}
 table.res th{background:var(--sunken);font-family:var(--sans);font-weight:600}
@@ -263,6 +361,7 @@ table.ev-ch tr.pred td{outline:1px solid var(--accent);outline-offset:-1px}
       <h2 id="editor-title" style="text-transform:none">editor</h2>
       <span id="dirty-chip" class="chip warn" style="display:none">unsaved changes</span>
       <div class="toolbar" style="margin-left:auto">
+        <button class="btn sm" id="btn-assist" title="fill or edit the form with an LLM, or ask it about the fields">✨ assistant</button>
         <button class="btn sm" id="btn-validate">Validate</button>
         <button class="btn sm" id="btn-save">Save…</button>
         <button class="btn sm primary" id="btn-start">▶ Start run…</button>
@@ -290,25 +389,66 @@ table.ev-ch tr.pred td{outline:1px solid var(--accent);outline-offset:-1px}
       <div id="etab-results"><div class="empty">no results yet</div></div>
     </div>
   </div>
+
+  <div class="panel assist" id="assist" style="display:none">
+    <div class="panel-h">
+      <h2>assistant</h2>
+      <select id="as-cfg" title="configs/assistant/*.yaml — any OpenAI-compatible chat endpoint"></select>
+      <span id="as-status" class="chip" style="text-transform:none">…</span>
+      <span class="spacer"></span>
+      <button class="btn sm" id="as-refresh" title="re-read configs/assistant and the readiness checks">↻</button>
+      <button class="btn sm" id="as-clear" title="forget this conversation">clear</button>
+      <button class="btn sm" id="as-close" title="close the drawer">×</button>
+    </div>
+    <div class="as-chat" id="as-chat"></div>
+    <div class="as-quick" id="as-quick"></div>
+    <div class="as-input">
+      <textarea id="as-text" rows="3" placeholder="describe an experiment, ask for a change to the form, or ask about a field… (Enter sends, Shift+Enter = newline)"></textarea>
+      <div class="as-row">
+        <label class="chip" title="ignore the form and build a new config from base.yaml"><input type="checkbox" id="as-base"> new config from base.yaml</label>
+        <span class="spacer"></span>
+        <a href="#" id="as-ctx" class="hint" title="the exact messages the next turn would send">show context</a>
+        <button class="btn sm primary" id="as-send">send</button>
+      </div>
+      <div class="hint" id="as-usage">the model edits the form; nothing is saved or started without you.</div>
+    </div>
+  </div>
 </div>
 </section>
 
 <!-- ================= RUNS ================= -->
 <section class="view" id="view-runs">
+<div class="side-panel left" id="runs-panel" style="display:none">
+  <div class="sp-h"><b>runs</b><span class="hint mono">outputs/runs/&lt;id&gt;/</span><span class="spacer"></span><button class="btn sm" id="rp-close" title="hide">×</button></div>
+  <div id="run-list" class="cfg-list"><div class="empty">no runs yet</div></div>
+</div>
 <div class="runs-grid">
   <div class="panel">
-    <div class="panel-h"><h2>runs</h2><span class="spacer"></span><span class="hint">outputs/runs/&lt;id&gt;/</span></div>
-    <div id="run-list" class="cfg-list"><div class="empty">no runs yet</div></div>
-  </div>
-  <div class="panel">
     <div class="panel-h">
+      <button class="btn sm" id="btn-runs" title="the list of runs">☰ runs</button>
       <h2 id="run-title" style="text-transform:none">run</h2>
       <span id="run-status" class="chip"></span>
       <span class="spacer"></span>
+      <button class="btn sm" id="btn-steps" title="the run's execution plan, step by step, with the current step highlighted">☰ steps</button>
       <button class="btn sm danger" id="btn-cancel" style="display:none">■ Cancel</button>
     </div>
     <div class="panel-b" id="run-detail"><div class="empty">select a run</div></div>
+    <div class="panel-b log-sec" id="log-sec">
+      <div class="log-bar">
+        <b>console.log</b><span class="hint" id="log-count"></span>
+        <span class="spacer"></span>
+        <input type="text" id="log-filter" placeholder="filter lines…" title="show only the lines containing this text (case-insensitive)">
+        <label title="hide the tqdm progress-bar lines"><input type="checkbox" id="log-hide-prog"> hide progress bars</label>
+        <button class="btn sm" id="log-big" title="taller log (most of the window)">⤢</button>
+        <button class="btn sm" id="log-end" title="jump to the end">⤓</button>
+      </div>
+      <div class="log" id="log"></div>
+    </div>
   </div>
+</div>
+<div class="side-panel right" id="steps-panel" style="display:none">
+  <div class="sp-h"><b>steps</b><span id="sp-title" class="hint mono" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap"></span><span class="spacer"></span><button class="btn sm" id="sp-close" title="hide">×</button></div>
+  <div class="sp-body" id="sp-body"><div class="empty">select a run</div></div>
 </div>
 </section>
 <!-- ================= EVAL ROWS ================= -->
@@ -406,9 +546,9 @@ table.ev-ch tr.pred td{outline:1px solid var(--accent);outline-offset:-1px}
     </div>
     <div class="ev-bar">
       <label class="k" for="ff-stop" title="why generation ended: the tokenizer's EOS, a stop marker (a new السؤال:/السياق: block), or the token cap">stop</label>
-      <select id="ff-stop"><option value="">all</option><option value="eos">eos</option><option value="marker">marker</option><option value="cap">cap</option></select>
+      <select id="ff-stop"><option value="">all</option><option value="eos">eos</option><option value="marker">marker</option><option value="loop">loop</option><option value="cap">cap</option></select>
       <label class="k" for="ff-flag">row flag</label>
-      <select id="ff-flag"><option value="">all</option><option value="degenerate">repetition loop</option><option value="empty">empty</option><option value="latin">latin letters</option><option value="hit_cap">hit the cap</option><option value="char_truncated">cut to the char budget</option></select>
+      <select id="ff-flag"><option value="">all</option><option value="degenerate">repetition loop</option><option value="empty">empty</option><option value="latin">latin letters</option><option value="hit_cap">hit the cap</option><option value="hit_loop">stopped by the loop stop</option><option value="char_truncated">cut to the char budget</option></select>
       <label class="k" for="ff-stratum" title="reference-length stratum of the held-out set">length</label>
       <select id="ff-stratum"><option value="">all</option><option value="short">short</option><option value="medium">medium</option><option value="long">long</option></select>
       <label class="k" for="ff-sort">sort</label>
@@ -517,7 +657,7 @@ const S = {
   schema:null, base:null, reg:null, presets:null, env:null,
   configs:[], file:null, cfg:null, dirty:false, errors:[], yamlDirty:false,
   open:new Set(['', 'sweep', 'training', 'tokenizer', 'model']),
-  runs:[], run:null, runDetail:null, logOffset:0, logLines:[], logCur:'', pollT:null, view:'configs', etab:'form',
+  runs:[], run:null, runDetail:null, logOffset:0, logRows:[], logCur:'', logTb:false, logFilter:'', logHideProg:false, logBig:false, runsOpen:true, pollT:null, view:'configs', etab:'form',
 };
 const $ = (s, r=document) => r.querySelector(s);
 const $$ = (s, r=document) => Array.from(r.querySelectorAll(s));
@@ -555,7 +695,7 @@ function fmtDur(sec){ if (sec==null||isNaN(sec)) return '—'; sec = Math.max(0,
 const fmtNum = (v, d=4) => (v==null||v==='') ? '—' : (typeof v==='number' ? (Number.isInteger(v)?String(v):v.toFixed(d)) : String(v));
 function status(kind, msg, list){
   const el = $('#editor-status'); el.className = 'status on ' + kind;
-  el.innerHTML = esc(msg) + (list && list.length ? '<ul>' + list.map(e=>`<li><code>${esc(e.loc)}</code> — ${esc(e.msg)}</li>`).join('') + '</ul>' : '');
+  el.innerHTML = esc(msg) + (list && list.length ? '<ul>' + list.map(e => typeof e === 'string' ? `<li>${esc(e)}</li>` : `<li><code>${esc(e.loc)}</code> — ${esc(e.msg)}</li>`).join('') + '</ul>' : '');
   if (kind==='good') setTimeout(()=>{ if (el.classList.contains('good')) el.className='status'; }, 4000);
 }
 const clearStatus = () => { $('#editor-status').className = 'status'; };
@@ -638,142 +778,11 @@ const firstSentence = t => (t||'').replace(/\s+/g,' ').split(/(?<=\.)\s/)[0];
    ========================================================================= */
 const SECTION_ORDER = ['experiment','sweep','tokenizer','model','training','evaluation','data','tracking','task'];
 
-/* ---- field hints: what it means + an easy example. Keys are config paths with
-   list indexes and phase names replaced by "*". A bare key (no dots) is the
-   fallback for any path ending in it. ---- */
-const HINTS = {
-  'name': ['Experiment name. Also names the log folder outputs/logs/<name>/ and the sweep cells inherit it.', 'bpe_32k_with_sft'],
-  'description': ['Free text stored in config.json for your future self.', '"BPE 32K vs native Llama, 3 phases, PMI scoring"'],
-  'output_dir': ['Where all_metrics.json, checkpoints and reports land. In a sweep each cell gets a sub-folder here.', 'outputs/experiments/bpe_32k_with_sft → outputs/experiments/bpe_32k_with_sft/bpe_32k/'],
-  'seed': ['Master random seed for data shuffles, sampling and init. Same seed + same config = same run.', '42'],
-  'deterministic': ['Forces deterministic cuDNN kernels. Slightly slower, but two runs with the same seed match exactly.', 'on for comparisons, off for a quick throwaway run'],
-  'data.dataset_name': ['HuggingFace dataset used ONLY to train the tokenizer and for intrinsic metrics (Phases 1–3 and the benchmarks have their own corpora).', 'Jr23xd23/ArabicText-Large'],
-  'data.dataset_config': ['Sub-config of that dataset, or null for the default one.', 'null'],
-  'data.cache_dir': ['Where HuggingFace datasets are cached on disk.', 'outputs/data_cache'],
-  'data.train_split': ['Split used to train the tokenizer.', 'train'],
-  'data.eval_split': ['Split used for the intrinsic metrics (fertility, compression, UNK rate…).', 'test'],
-  'data.max_train_samples': ['Cap on tokenizer-training texts; null = all (≈ 669 K rows).', '20000 for a quick smoke, null for a real run'],
-  'data.max_eval_samples': ['Cap on intrinsic-eval texts.', '10000'],
-  'data.preprocessing': ['Cleaning applied to the tokenizer-training corpus only (benchmarks and QA corpora stay raw). One key per line.', 'normalize_unicode: true\nremove_diacritics: false\nnormalize_alef: false   ← keep off: eval text keeps أ/إ/آ\nremove_tatweel: true\nmin_text_length: 10\njoin_lone_waw: true     ← "و القمر" → "والقمر"'],
-  'tokenizer.type': ['Registry key of the tokenizer. Overridden per cell when a sweep block exists.', 'bpe · wordpiece · morpho_bpe · character_bert · char_jaber · farasa_character_bert · charformer · araroopat · native_llama · native_qwen3'],
-  'tokenizer.vocab_size': ['Target vocabulary size for subword tokenizers. null for tokenizers whose vocab is fixed or derived (char-level, charformer, araroopat, native_*).', '32000 for bpe / wordpiece / morpho_bpe, null for character_bert'],
-  'tokenizer.params': ['Tokenizer-specific knobs, one key per line. "fill from configs/tokenizers/…" shows the documented defaults.', 'min_frequency: 2   (bpe)\nmax_block_size: 4  (charformer)\nmax_roots: 10000   (araroopat)'],
-  'tokenizer.save_path': ['Where the trained tokenizer is saved (sweep cells use outputs/tokenizers/<cell>).', 'outputs/tokenizers/bpe_32k'],
-  'tokenizer.load_path': ['Load a previously trained tokenizer instead of training one. null = train from scratch.', 'outputs/tokenizers/bpe_32k  (skips the ~minutes of training)'],
-  'model.type': ['Model adapter registry key.', 'llama  (Llama-3.2-1B/3B) · qwen3  (Qwen3-4B-Base)'],
-  'model.name_or_path': ['HuggingFace checkpoint. Gated meta-llama repos need HF_TOKEN in the server environment.', 'meta-llama/Llama-3.2-1B · meta-llama/Llama-3.2-3B · Qwen/Qwen3-4B-Base'],
-  'model.dtype': ['Weight dtype at load time.', 'bfloat16'],
-  'model.device': ['Where the model lives. "auto" picks the GPU when one exists; a --device override at start beats this.', 'auto · cuda:0 · cpu'],
-  'model.params': ['Extra kwargs for the adapter; usually empty.', '{}'],
-  'task.type': ['Legacy top-level task field. The 3-phase pipeline evaluates sweep.tasks instead — leave it.', 'text_generation'],
-  'task.params': ['Legacy; unused by the 3-phase pipeline.', 'max_length: 512'],
-  'training.bf16': ['Mixed precision in bfloat16 for every phase (recommended on H100).', 'on'],
-  'training.fp16': ['Mixed precision in float16 instead of bf16. Do not enable both.', 'off'],
-  'training.logging_steps': ['Log the training loss every N steps (this is what the Runs tab plots).', '50'],
-  'training.phases.*.enabled': ['Turn this phase on or off; the other phases still run in fixed order.', 'sft off = the "no-SFT" baseline (Phase 1 + 2 only)'],
-  'training.phases.*.datasets': ['Corpora this phase trains on (concatenated + shuffled). pretraining_mix must be alone and needs mix_tokens.', 'Phase 1/2: arabic_squad · Phase 3: tydiqa_arabic + arcd (+ arabic_squad_mcq for the MCQ format)'],
-  'training.phases.*.trainable_parameters': ['Substrings matched against parameter names; only matches get gradients. * alone = everything.', 'embed_tokens, lm_head  (Phase 1: body frozen) · *  (Phases 2/3)'],
-  'training.phases.*.steps': ['Number of optimizer micro-steps (NOT epochs). Wall time scales with it.', '1000 (Phase 1) · 2000 (Phases 2/3) · 30 for a smoke'],
-  'training.phases.*.mix_tokens': ['Only for datasets = pretraining_mix: tokens the phase consumes. Must equal steps × batch_size × block_size; steps can then be left null.', '4096000 = 2000 steps × 4 × 512'],
-  'training.phases.*.learning_rate': ['Peak learning rate of AdamW.', '5e-4 embeddings only (Phase 1) · 2e-5 full model (Phases 2/3)'],
-  'training.phases.*.batch_size': ['Sequences per micro-step. Effective batch = batch_size × gradient_accumulation_steps.', '8 (Phase 1) · 4 (Phases 2/3)'],
-  'training.phases.*.gradient_accumulation_steps': ['Micro-steps accumulated before one optimizer update. Raises the effective batch without more memory.', '4 → effective batch 4 × 4 = 16'],
-  'training.phases.*.optimizer': ['Only adamw is implemented.', 'adamw'],
-  'training.phases.*.weight_decay': ['L2-style decay in AdamW.', '0.0 for embeddings (Phase 1) · 0.01 for full fine-tuning'],
-  'training.phases.*.max_length': ['Token truncation length per sequence. Must equal block_size on a pretraining_mix phase. Character tokenizers need more (their sequences are 4–6× longer).', '512 subword · 2048 char_jaber / charformer'],
-  'training.phases.*.loss_target': ['full_sequence = loss on every token; answer_only = only the answer span after "### الإجابة:" counts.', 'full_sequence for Phase 1 and the pretraining mix · answer_only for Phases 2/3'],
-  'training.phases.*.lr_scheduler': ['LR shape after warmup: cosine decays to 0, linear decays straight, constant stays flat.', 'constant (Phase 1) · cosine (Phases 2/3)'],
-  'training.phases.*.warmup_steps': ['Linear LR ramp from 0 over the first N steps.', '0 (Phase 1) · 100 (Phases 2/3)'],
-  'training.phases.*.max_grad_norm': ['Gradient clipping threshold.', '1.0'],
-  'training.phases.*.save_checkpoint': ['Write model.pt to <output_dir>/training/<phase>/ at the end of the phase (~2.5 GB for the 1B model).', 'on'],
-  'training.phases.*.clean_latin_rows': ['Drop training records whose question / context / answer contains any Latin letter.', 'on for a clean-Arabic study'],
-  'training.phases.*.qa_blend': ['Only on a pretraining_mix phase: replace a share of the raw-text blocks with SFT-format QA text. null = pure raw text.', 'share 0.07 of Phase 2 = 560 QA blocks out of 8000 (same compute either way)'],
-  'training.phases.*.qa_blend.datasets': ['QA corpora rendered in the Phase 3 prompt form and packed like raw text.', 'tydiqa_arabic, arcd'],
-  'training.phases.*.qa_blend.share': ['Fraction of the phase blocks that are QA text, in (0, 1). Comes OUT of mix_tokens, not on top.', '0.07'],
-  'training.phases.*.qa_blend.split': ['Only train is allowed (validation feeds Phase 3 early-stop).', 'train'],
-  'training.phases.*.qa_blend.seed': ['Seed for shuffling and interleaving the QA blocks.', '42'],
-  'training.phases.*.mixture': ['Only on a QA phase: draw exactly total_examples records at the given per-category shares (extractive / mcq / free_form — the category of a corpus is fixed by its loader). Quotas count records that survive tokenization. null = concatenate the corpora as-is.', 'total_examples 30000 · shares extractive 0.4 / mcq 0.3 / free_form 0.3'],
-  'training.phases.*.mixture.total_examples': ['Examples the phase trains on, one exact pass: steps = total_examples / batch_size (leave steps null). Must be a multiple of batch_size.', '30000 → 7500 steps at batch 4'],
-  'training.phases.*.mixture.shares': ['Fraction of total_examples per category; must sum to 1 and name exactly the categories of the listed datasets.', 'extractive: 0.4\nmcq: 0.3\nfree_form: 0.3'],
-  'training.phases.*.mixture.within_category': ['How a category quota splits across its corpora: equal = same count each, capacity-aware (a small corpus like ARCD gives all it has, the rest goes to the others); proportional = by pool size.', 'equal'],
-  'training.phases.*.mixture.weights': ['Optional per-corpus weights inside a category; overrides within_category for the corpora named.', 'cidar: 2\nbactrian_x_ar: 1'],
-  'training.phases.*.mixture.upsample': ['Off: a category that cannot fill its quota is an error naming the numbers. On: its corpora repeat a further seeded permutation.', 'off'],
-  'training.phases.*.mixture.drop_truncated_answers': ['On: skip records whose full text hits max_length (the answer is cut) and top up, so the model only sees complete answers.', 'off'],
-  'training.phases.*.mixture.seed': ['Seed of the per-corpus permutations and the final shuffle.', '42'],
-  'training.corpus_params': ['Per-corpus loader parameters, one corpus per key. Only aya_ar takes any today: include_datasets = sub-datasets of the Aya standard_arabic split (dataset_name column).', 'aya_ar: {include_datasets: [Aya-Dataset, "Dolly-v2 (T)"]}'],
-  'training.phases.*.early_stopping': ['Phase 3 only: evaluate the answer-only loss on TyDiQA-val + ARCD-val periodically and stop when it stagnates.', 'patience 5 × eval every 200 steps = stop after 1000 flat steps'],
-  'training.phases.*.early_stopping.enabled': ['Turn the periodic eval + stop rule on or off.', 'on'],
-  'training.phases.*.early_stopping.metric': ['Only eval_loss is supported.', 'eval_loss'],
-  'training.phases.*.early_stopping.eval_every_n_steps': ['How often the eval pass runs (each pass costs ~1 min).', '200'],
-  'training.phases.*.early_stopping.patience': ['Stop after this many consecutive evals without improvement.', '5'],
-  'training.phases.*.early_stopping.min_delta': ['Improvements smaller than this count as noise.', '0.0005'],
-  'training.phases.*.early_stopping.min_steps_before_stop': ['Never stop before this step (the LR is still warming up).', '500'],
-  'training.phases.*.early_stopping.restore_best_at_end': ['Keep a copy of the best-eval weights and restore them when the phase ends.', 'on'],
-  'training.phases.*.early_stopping.eval_splits': ['Which split of each corpus is the eval set, one key per line.', 'tydiqa_arabic: validation\narcd: validation'],
-  'training.pretraining_mix': ['Packed raw-text corpus (70 % FineWeb-2 / 20 % Wikipedia / 10 % ArabicWeb24) that a phase can train on instead of QA records. Inert until a phase sets datasets = pretraining_mix.', 'null when Phases 1/2 use arabic_squad'],
-  'training.pretraining_mix.block_size': ['Tokens per packed block = the max_length of every mix phase.', '512'],
-  'training.pretraining_mix.seed': ['Seed for the source shuffle and the packing order.', '42'],
-  'training.pretraining_mix.cache_dir': ['Where the pool and the per-tokenizer packs are cached (shared by every experiment).', 'outputs/data_cache/pretraining_mix'],
-  'training.pretraining_mix.normalization': ['Document normalization before filtering — keep parity with the raw QA phases (NFKC + tatweel only).', 'nfkc on, remove_tatweel on, normalize_alef off, remove_diacritics off'],
-  'training.pretraining_mix.normalization.nfkc': ['Unicode NFKC normalization of each document (compatibility forms → canonical).', 'on'],
-  'training.pretraining_mix.normalization.remove_tatweel': ['Strip the kashida / tatweel stretch character (ـ).', 'on'],
-  'training.pretraining_mix.normalization.normalize_alef': ['Fold آ/أ/إ/ٱ → ا. Keep OFF: the benchmarks keep the hamza forms, folding creates a train/eval skew.', 'off'],
-  'training.pretraining_mix.normalization.remove_diacritics': ['Strip tashkeel from the raw text.', 'off'],
-  'model.preset': ['Copies type / name_or_path / dtype / device from a file under configs/models/. The fields below stay editable.', 'Qwen/Qwen3-4B-Base (qwen3_4b.yaml)'],
-  'training.pretraining_mix.sources': ['Raw-text sources with their target shares (must sum to 1).', 'fineweb2_arb 0.70 · wikipedia_ar 0.20 · arabicweb24 0.10 (gated → HF_TOKEN; arabic_101b is the ungated alternative)'],
-  'training.pretraining_mix.sources.*.name': ['Key in SOURCE_REGISTRY.', 'fineweb2_arb · wikipedia_ar · arabicweb24 · arabic_101b'],
-  'training.pretraining_mix.sources.*.share': ['Target fraction of the mix in tokens (and in words for the cached pool).', '0.7'],
-  'training.pretraining_mix.sources.*.params': ['Loader options for that source, one key per line.', 'config: arb_Arab\nmin_language_score: 0.8   (fineweb2)\ndump: 20231101.ar   (wikipedia)'],
-  'training.pretraining_mix.pool.total_words': ['Post-filter words in the tokenizer-independent pool. Must cover Σ mix_tokens for the lowest-fertility tokenizer (≈ 1 token/word).', '20000000 for two 4.1 M-token phases'],
-  'training.pretraining_mix.pool.stream_shuffle_buffer': ['Buffer of the seeded streaming shuffle (0 = no shuffle → FineWeb-2 yields a 2013 snapshot).', '10000'],
-  'training.pretraining_mix.pool.max_stream_docs_per_source': ['Safety valve: stop streaming a source after this many raw docs even if its word target is not met.', '3000000'],
-  'training.pretraining_mix.dedup.paragraph_exact': ['Remove repeated normalized paragraphs from documents (boilerplate).', 'on'],
-  'training.pretraining_mix.dedup.minhash.enabled': ['MinHash-LSH near-duplicate document removal across sources.', 'on'],
-  'training.pretraining_mix.dedup.minhash.num_perm': ['MinHash permutations (accuracy vs speed).', '128'],
-  'training.pretraining_mix.dedup.minhash.shingle_words': ['Words per shingle.', '5'],
-  'training.pretraining_mix.dedup.minhash.threshold': ['Jaccard similarity above which two docs are duplicates.', '0.8'],
-  'training.pretraining_mix.dedup.priority': ['Source order for dedup: the higher-priority copy of a duplicate survives.', 'wikipedia_ar, fineweb2_arb, arabicweb24'],
-  'training.pretraining_mix.msa_filter.heuristic.enabled': ['Closed-list dialect-marker gate (drops documents written in dialect).', 'on'],
-  'training.pretraining_mix.msa_filter.heuristic.max_markers_per_1k_words': ['Drop only above this marker density.', '8'],
-  'training.pretraining_mix.msa_filter.heuristic.min_markers': ['…and with at least this many markers in total.', '3'],
-  'training.pretraining_mix.msa_filter.heuristic.min_distinct_markers': ['…of at least this many different types (one repeated word like شو as a name never sinks a doc).', '2'],
-  'training.pretraining_mix.msa_filter.camel_did.enabled': ['Opt-in CAMeL dialect-ID second signal. Measured to flag 16 % of plain-MSA Wikipedia — keep off.', 'off'],
-  'training.pretraining_mix.msa_filter.camel_did.sentences_per_doc': ['Sentences sampled per document for the DID model.', '8'],
-  'training.pretraining_mix.msa_filter.camel_did.min_sentence_words': ['Shorter sentences are skipped.', '5'],
-  'training.pretraining_mix.msa_filter.camel_did.min_msa_share': ['Drop when fewer than this share of sentences are labelled MSA.', '0.3'],
-  'training.pretraining_mix.quality.min_words': ['Drop documents shorter than this.', '50'],
-  'training.pretraining_mix.quality.max_words': ['Truncate longer documents at a paragraph boundary (not a drop).', '3000'],
-  'training.pretraining_mix.quality.strip_latin_parentheticals': ['Remove "(بالإنجليزية: Name)" glosses before the Latin-ratio rule.', 'on'],
-  'training.pretraining_mix.quality.max_latin_letter_ratio': ['Drop when Latin letters exceed this share of all letters.', '0.05'],
-  'training.pretraining_mix.quality.min_arabic_letter_ratio': ['Drop when Arabic-script letters are below this share.', '0.7'],
-  'training.pretraining_mix.quality.max_short_line_ratio': ['Drop when more than this share of lines are shorter than short_line_words.', '0.5'],
-  'training.pretraining_mix.quality.short_line_words': ['A line with fewer words than this is "short".', '5'],
-  'training.pretraining_mix.quality.max_dup_line_ratio': ['Drop when more than this share of lines repeat inside the document.', '0.3'],
-  'training.pretraining_mix.quality.max_symbol_ratio': ['Drop when symbol characters per word exceed this (Gopher-style).', '0.1'],
-  'training.pretraining_mix.quality.wikipedia_strip_sections': ['Tail sections cut from Wikipedia articles.', 'المراجع, وصلات خارجية, انظر أيضا'],
-  'evaluation.intrinsic_metrics': ['Compute fertility, compression ratio, UNK rate and vocab coverage on the eval split (fast).', 'on'],
-  'evaluation.morphological_metrics': ['Arabic root / pattern / morpheme / clitic metrics via qalsadi + Farasa (Java). Adds ~30 s per experiment.', 'on; off for a smoke without Java'],
-  'evaluation.morph_sample_size': ['Distinct words sampled for the morphological metrics.', '500'],
-  'evaluation.downstream_metrics': ['Run the LightEval MCQ benchmarks listed in sweep.tasks after training.', 'on'],
-  'evaluation.num_eval_samples': ['Cap on rows per benchmark; null = the full benchmark (the real number).', 'null for a real run · 500 for fast iteration'],
-  'evaluation.generation_max_new_tokens': ['Only for generation-based tasks (unused by the MCQ benchmarks).', '128'],
-  'evaluation.generation_temperature': ['Only for generation-based tasks.', '1.0'],
-  'evaluation.generation_do_sample': ['Only for generation-based tasks.', 'off'],
-  'evaluation.failure_reports': ['Write one CSV per task with every wrong answer and its per-choice log-likelihoods.', 'on'],
-  'evaluation.intrinsic_unk_report': ['Dump every word that produced an UNK token to intrinsic_unks.csv.', 'off'],
-  'evaluation.downstream_unk_report': ['Dump UNK occurrences in benchmark prompts to unk_reports/<task>_unks.csv.', 'off'],
-  'evaluation.score_normalization': ['How MCQ choices are scored: char = per-character length norm; pmi = subtract the answer prior (fixes the letter-prior bias); char+pmi = report both, accuracy = pmi.', 'char+pmi'],
-  'evaluation.num_fewshot': ['In-context demonstrations prepended to each MCQ prompt (a task param can override per task).', '3, with acva forced to 0 in its task params'],
-  'tracking.use_wandb': ['Log to Weights & Biases.', 'off'],
-  'tracking.wandb_project': ['W&B project name.', 'arabic-tokenizer-eval'],
-  'tracking.wandb_entity': ['W&B team / user, or null for the default.', 'null'],
-  'tracking.log_to_file': ['Also write outputs/logs/<name>/experiment.log.', 'on'],
-  'sweep.tokenizers.*.type': ['Tokenizer of this cell. Changing it applies the preset from configs/tokenizers/<type>.yaml.', 'bpe'],
-  'sweep.tokenizers.*.vocab_sizes': ['One cell per value. Cells are named <type>_<size>k; null makes a single cell named <type>.', '16000, 32000, 50000 → bpe_16k, bpe_32k, bpe_50k · null → charformer'],
-  'sweep.tokenizers.*.params': ['Tokenizer knobs for this cell, one key per line (overrides tokenizer.params).', 'min_frequency: 2'],
-  'sweep.tasks.*.params': ['Per-task overrides, one key per line. Empty = the defaults.', 'num_fewshot: 0\nclean_latin_rows: true\nmax_length: 512\ndataset_name: OALL/ACVA'],
-  'params': ['Free key: value lines (numbers, true/false, null, quoted strings, [lists]).', 'min_frequency: 2'],
-};
+/* ---- field hints: what a field means + an easy example, served by /api/schema from
+   src/arabic_eval/tools/config_hints.py (one table for the form tooltips and the assistant's
+   field reference). Keys are config paths with list indexes and phase names replaced by "*";
+   a bare key (no dots) is the fallback for any path ending in it. ---- */
+let HINTS = {};
 const normPath = p => p.replace(/\.\d+(?=\.|$)/g, '.*').replace(/^training\.phases\.(embedding_alignment|warmup|sft)/, 'training.phases.*');
 function hintFor(path){
   const n = normPath(path);
@@ -1145,7 +1154,7 @@ async function validate(quiet){
   if (!S.cfg) return null;
   const v = await api('POST', '/api/config/validate', {config: S.cfg});
   S.errors = v.errors || [];
-  if (v.ok){ S.cfg = v.resolved; renderForm(); if (!quiet) status('good', `valid — ${v.cells.length} cell${v.cells.length===1?'':'s'} (${v.cells.join(', ')})${v.sweep?' · will run with --sweep':''}` + (v.results.cells_done.length?` · results exist for ${v.results.cells_done.join(', ')} (skipped by run_sweep)`:v.results.exists?' · results exist in output_dir':'')); }
+  if (v.ok){ S.cfg = v.resolved; renderForm(); if (!quiet){ const warn = (v.warnings||[]); status(warn.length ? 'warn' : 'good', `valid — ${v.cells.length} cell${v.cells.length===1?'':'s'} (${v.cells.join(', ')})${v.sweep?' · will run with --sweep':' · single run, no --sweep'}` + (v.results.cells_done.length?` · results exist for ${v.results.cells_done.join(', ')} (skipped by run_sweep)`:v.results.exists?' · results exist in output_dir':''), warn.length ? warn.map(w => '⚠ ' + w) : undefined); } }
   else { renderForm(); status('bad', `${S.errors.length} validation error${S.errors.length===1?'':'s'}`, S.errors); }
   return v;
 }
@@ -1198,12 +1207,14 @@ async function startFlow(){
   const add = (k, val) => kv.append(h('span', {class:'k'}, k), h('span', {}, val));
   add('source', S.file && !S.dirty ? `configs/experiments/${S.file}` : 'current form (unsaved snapshot — saved into the run directory)');
   add('experiment', v.resolved.name); add('output_dir', v.resolved.output_dir);
-  add('cells', `${v.cells.length}: ${v.cells.join(', ')}`); add('tasks', (v.resolved.sweep?.tasks||[]).map(t=>t.type).join(', ') || 'none');
+  add('cells', `${v.cells.length}: ${v.cells.join(', ')}${v.sweep ? ' (--sweep)' : ' (single run — tokenizer.type)'}`); add('tasks', (v.resolved.sweep?.tasks||[]).map(t=>t.type).join(', ') || 'none');
+  for (const w of (v.warnings||[])) add('⚠ warning', h('span', {style:'color:var(--warn)'}, w));
   add('phases', ['embedding_alignment','warmup','sft'].filter(p=>v.resolved.training.phases[p].enabled).join(' → ') || 'none (eval only)');
   if (v.results.cells_done.length) add('will skip', `${v.results.cells_done.join(', ')} (all_metrics.json exists)`);
   else if (v.results.exists) add('note', 'output_dir already has all_metrics.json — it will be overwritten');
   $('#start-sweep').value = 'auto'; $('#start-device').value=''; $('#start-seed').value=''; $('#start-force').checked=false;
-  $('#start-hint').style.color=''; $('#start-hint').textContent = (active.length ? `⚠ ${active[0].run_id} is ${active[0].status} — a second full-FT run will not fit the GPU; tick "run concurrently" only if you know it fits. ` : '') + (S.env.hf_token_set ? '' : '⚠ HF_TOKEN is not set in the server environment (needed for gated meta-llama checkpoints).');
+  const g = (S.gpu || [])[0]; const gpuBusy = g && !active.length && g.memory_used_mib > 0.5 * g.memory_total_mib;
+  $('#start-hint').style.color=''; $('#start-hint').textContent = (active.length ? `⚠ ${active[0].run_id} is ${active[0].status} — a second full-FT run will not fit the GPU; tick "run concurrently" only if you know it fits. ` : '') + (gpuBusy ? `⚠ the GPU already holds ${(g.memory_used_mib/1024).toFixed(0)} GB with no console run active (a hand-started assistant / vLLM server?) — a training run will not fit beside it. ` : '') + (S.env.hf_token_set ? '' : '⚠ HF_TOKEN is not set in the server environment (needed for gated meta-llama checkpoints).');
   openModal('#start-modal');
 }
 async function doStart(){
@@ -1253,7 +1264,7 @@ function statusChip(st){ return h('span', {class:'chip ' + (STATUS_CLASS[st]||''
 async function pollRuns(){
   try {
     const d = await api('GET', '/api/runs');
-    S.runs = d.runs; renderGpu(d.gpu); renderRunList();
+    S.runs = d.runs; S.gpu = d.gpu; renderGpu(d.gpu); renderRunList();
     const active = S.runs.filter(r=>['running','cancelling'].includes(r.status)).length;
     $('#runs-badge').innerHTML = active ? `<span class="chip run" style="padding:0 6px">${active}</span>` : '';
     if (S.run) await pollRunDetail();
@@ -1278,16 +1289,73 @@ function renderRunList(){
   }
 }
 function selectRun(id){
-  if (S.run!==id){ S.run = id; S.logOffset = 0; S.logLines = []; S.logCur = ''; S.runDetail = null; }
+  if (S.run!==id){ S.run = id; resetLog(); S.runDetail = null; renderStepsPanel(); }
   renderRunList(); pollRunDetail();
 }
+function resetLog(){ S.logOffset = 0; S.logRows = []; S.logCur = ''; S.logTb = false; }
 function appendLog(text){
   for (const ch of text){
-    if (ch==='\n'){ S.logLines.push(S.logCur); S.logCur=''; }
+    if (ch==='\n'){ S.logRows.push(logRow(S.logCur, true)); S.logCur=''; }
     else if (ch==='\r'){ S.logCur=''; }
     else S.logCur += ch;
   }
-  if (S.logLines.length > 3000) S.logLines.splice(0, S.logLines.length-3000);
+  if (S.logRows.length > 3000) S.logRows.splice(0, S.logRows.length-3000);
+}
+/* ---- console.log rendering. Prism's `log` grammar does the token colouring (dates, levels, logger
+   names, key=value numbers, strings, paths, URLs); the few pipeline semantics it cannot know give the
+   line its tint (`l-*` classes, prefixed so they never meet the page's own `.prog` / `.warn` rules): a
+   WARNING / ERROR head, a Python traceback (from "Traceback" down to the un-indented exception line),
+   a `Step N/7` / `SWEEP cell` headline, a tqdm bar. Each pushed line is coloured once and cached; only
+   the unfinished last line is re-coloured per poll. ---- */
+const RE_LOG_HEAD = /^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:,\d+)?(?:\] \w+ [\w.]+: | - [\w.]+ - \w+\]: )/;   // the pipeline's logging format, and farasapy's
+const RE_LOG_PROG = /\d+%\|.*\| ?\d+\/\d+ \[/;                                                                        // a tqdm bar
+function logHl(text){ return (window.Prism && Prism.languages && Prism.languages.log) ? Prism.highlight(text, Prism.languages.log, 'log') : esc(text); }
+function logRow(raw, commit){
+  const m = RE_LOG_HEAD.exec(raw); const head = m ? m[0] : '', body = m ? raw.slice(head.length) : raw;
+  let cls = '', tb = S.logTb;
+  if (head){
+    tb = false;
+    if (/\b(?:ERROR|CRITICAL|FATAL)\b/.test(head)) cls = 'l-bad';
+    else if (/\bWARN(?:ING)?\b/.test(head)) cls = 'l-warn';
+    else if (/^(?:Step \d+(?:-\d+)?\/7: |SWEEP cell: |Experiment '.+' done)/.test(body)) cls = 'l-stage';
+  }
+  else if (/^Traceback \(most recent call last\):/.test(raw)){ tb = true; cls = 'l-bad'; }
+  else if (tb){ cls = 'l-bad'; if (!/^\s/.test(raw)) tb = false; }                       // frames, then the exception line closes it
+  else if (RE_LOG_PROG.test(raw)) cls = 'l-prog';
+  else if (/\b(?:Warning|warning|deprecated|Retrying|Error|error)\b|timed out/.test(raw)) cls = 'l-warn';
+  if (commit) S.logTb = tb;
+  const html = raw ? (head ? `<span class="lh">${logHl(head)}</span>${logHl(body)}` : logHl(raw)) : '<br>';
+  return {raw, cls, html};
+}
+function renderLog(scrollToEnd){
+  const el = $('#log'); const d = S.runDetail; if (!el || !d) return;
+  const wasAtEnd = el.scrollTop + el.clientHeight >= el.scrollHeight - 30;
+  const q = S.logFilter.toLowerCase(), rows = S.logCur ? S.logRows.concat([logRow(S.logCur, false)]) : S.logRows;
+  const out = [];
+  for (const r of rows){
+    if (S.logHideProg && r.cls === 'l-prog') continue;
+    if (q && !r.raw.toLowerCase().includes(q)) continue;
+    out.push(`<div class="ll ${r.cls}">${r.html}</div>`);
+  }
+  el.innerHTML = out.join('');
+  $('#log-count').textContent = `${out.length === rows.length ? rows.length : `${out.length} of ${rows.length}`} lines · ${(d.log_size/1024).toFixed(0)} KB`;
+  if (scrollToEnd || wasAtEnd) el.scrollTop = el.scrollHeight;
+}
+function wireLog(){
+  try { S.logHideProg = localStorage.getItem('xc-log-prog') === '1'; S.logBig = localStorage.getItem('xc-log-big') === '1'; } catch(e){}
+  const hp = $('#log-hide-prog'); hp.checked = S.logHideProg;
+  hp.onchange = () => { S.logHideProg = hp.checked; try { localStorage.setItem('xc-log-prog', hp.checked ? '1' : '0'); } catch(e){} renderLog(); };
+  const big = $('#log-big'); const setBig = () => { big.classList.toggle('on', S.logBig); $('#log').classList.toggle('big', S.logBig); }; setBig();
+  big.onclick = () => { S.logBig = !S.logBig; try { localStorage.setItem('xc-log-big', S.logBig ? '1' : '0'); } catch(e){} setBig(); };
+  $('#log-end').onclick = () => { const el = $('#log'); el.scrollTop = el.scrollHeight; };
+  $('#log-filter').oninput = e => { S.logFilter = e.target.value; renderLog(); };
+}
+function toggleRunsPanel(open){
+  S.runsOpen = open === undefined ? !S.runsOpen : !!open;
+  $('#runs-panel').style.display = (S.runsOpen && S.view === 'runs') ? '' : 'none';
+  $('#btn-runs').classList.toggle('on', S.runsOpen);
+  document.body.classList.toggle('runs-open', S.runsOpen && S.view === 'runs');
+  try { localStorage.setItem('xc-runs', S.runsOpen ? '1' : '0'); } catch(e){}
 }
 async function pollRunDetail(){
   if (!S.run) return;
@@ -1296,7 +1364,7 @@ async function pollRunDetail(){
     const first = !S.runDetail;
     S.runDetail = d;
     const lg = await api('GET', `/api/runs/${encodeURIComponent(S.run)}/log?offset=${S.logOffset}`);
-    if (lg.offset < S.logOffset){ S.logOffset = 0; S.logLines = []; S.logCur=''; }
+    if (lg.offset < S.logOffset) resetLog();                                          // the log was truncated / replaced
     if (lg.data){ appendLog(lg.data); }
     S.logOffset = lg.offset;
     renderRunDetail(first);
@@ -1309,8 +1377,6 @@ function renderRunDetail(scrollToEnd){
   $('#btn-cancel').style.display = ['running','cancelling'].includes(d.status) ? '' : 'none';
   $('#btn-cancel').disabled = d.status==='cancelling';
   const box = $('#run-detail');
-  const logEl = $('#log');
-  const wasAtEnd = !logEl || (logEl.scrollTop + logEl.clientHeight >= logEl.scrollHeight - 30);
   box.innerHTML = '';
   const started = new Date(d.started_at), end = d.finished_at ? new Date(d.finished_at) : new Date();
   const kv = h('div', {class:'kv'});
@@ -1387,11 +1453,158 @@ function renderRunDetail(scrollToEnd){
   }
   if (d.results && d.results.cells){ box.append(h('h3', {style:'margin:10px 0 6px;font-size:13px'}, 'results'), resultsTable(d.results.cells)); if (d.results.report) box.append(h('div', {style:'margin-top:6px'}, textLink(d.results.report, 'comparison_report.txt'))); }
 
-  const log = h('div', {class:'log', id:'log'});
-  log.textContent = S.logLines.join('\n') + (S.logCur ? '\n' + S.logCur : '');
-  box.append(h('div', {class:'line', style:'margin:12px 0 6px'}, h('b', {}, 'console.log'), h('span', {class:'hint'}, `${S.logLines.length} lines shown · ${(d.log_size/1024).toFixed(0)} KB`)), log);
-  if (scrollToEnd || wasAtEnd) log.scrollTop = log.scrollHeight;
+  $('#log-sec').classList.add('on');
+  renderLog(scrollToEnd);
+  renderStepsPanel();
 }
+/* =========================================================================
+   Runs tab: floating step panel — the run's whole plan (stages → phases /
+   tasks, cells for a sweep, judges for a judge run) with what is done, what
+   is running (highlighted) and what is still to come, timed from the log's
+   own timestamps against the server clock.
+   ========================================================================= */
+const SP_STAGES = [['1','load corpus'], ['2','tokenizer'], ['3','intrinsic eval'], ['4','load + adapt model'], ['5','training'], ['6-7','downstream eval']];
+const SP_PHASES = ['embedding_alignment', 'warmup', 'sft'];
+const spT = ts => ts ? Date.parse(ts.replace(' ', 'T')) : NaN;            // log timestamp (server clock) → ms
+function spDur(start, end){ const a = spT(start), b = spT(end); return (isNaN(a) || isNaN(b)) ? null : Math.max(0, (b - a) / 1000); }
+function toggleSteps(open){
+  S.stepsOpen = open === undefined ? !S.stepsOpen : !!open;
+  $('#steps-panel').style.display = (S.stepsOpen && S.view === 'runs') ? '' : 'none';
+  $('#btn-steps').classList.toggle('on', S.stepsOpen);
+  document.body.classList.toggle('steps-open', S.stepsOpen && S.view === 'runs');
+  try { localStorage.setItem('xc-steps', S.stepsOpen ? '1' : '0'); } catch(e){}
+  if (S.stepsOpen) renderStepsPanel();
+}
+function spRow(cls, mark, n, label, time, title){
+  return h('div', {class:'sp-row ' + cls, title: title || null}, h('span', {class:'mk'}, mark), n !== null ? h('span', {class:'n'}, n) : null, h('span', {class:'lbl'}, label), time ? h('span', {class:'t'}, time) : null);
+}
+function renderStepsPanel(){
+  if (!S.stepsOpen) return;
+  const body = $('#sp-body'); const d = S.runDetail;
+  if (!d){ body.innerHTML = '<div class="empty">select a run</div>'; $('#sp-title').textContent = ''; return; }
+  $('#sp-title').textContent = d.run_id;
+  body.innerHTML = '';
+  const p = d.progress || {}, plan = d.plan || {};
+  const active = ['running','cancelling'].includes(d.status);
+  const now = d.finished_at ? null : d.server_time;                         // elapsed of the running step: server clock; a finished run: the log's last line
+  const endRef = active ? now : (p.done_at || p.last_ts);
+  const MARK = {done:'✓', cur:'●', bad: d.status === 'cancelled' ? '■' : '✗', skip:'↷', pend:'○'};
+
+  if (d.kind === 'judge'){
+    const j = p.judge || {judges:{}};
+    const names = d.judges || Object.keys(j.judges || {});
+    if (!names.length) body.append(h('div', {class:'empty'}, active ? 'starting up…' : 'no judge lines in the log'));
+    for (const name of names){
+      const info = (j.judges || {})[name];
+      const cells = d.cells || []; const done = cells.filter(c => info && info.cells && info.cells[c]);
+      const st = !info ? 'pend' : (done.length === cells.length && cells.length ? 'done' : 'cur');
+      body.append(spRow(st, MARK[st], null, `judge ${name}`, info && info.model ? info.model : ((d.judge_models||{})[name] || ''), (d.judge_models||{})[name]));
+      const sub = h('div', {class:'sp-sub'});
+      if (info && !info.model && !done.length) sub.append(spRow('cur', '●', null, 'loading the model…', null));
+      for (const c of cells){
+        const cell = info && info.cells && info.cells[c];
+        const cst = cell ? 'done' : (info && done.length < cells.length && cells.indexOf(c) === done.length && active ? 'cur' : 'pend');
+        sub.append(spRow(cst, MARK[cst], null, c, cell ? `${cell.n} verdicts${cell.reused ? ' · reused' : ''}${cell.seconds ? ' · ' + fmtDur(cell.seconds) : ''}` : null));
+      }
+      body.append(sub);
+    }
+    const rst = j.done ? 'done' : (active ? 'pend' : (d.status === 'failed' ? 'bad' : 'pend'));
+    body.append(spRow(rst, MARK[rst], null, 'report + comparison', null));
+    spFooter(body, d, p, active);
+    return;
+  }
+
+  // sweep cells
+  if (d.sweep && (d.cells || []).length){
+    const cells = h('div', {class:'sp-cells'});
+    let idx = 0;
+    d.cells.forEach((c, i) => {
+      let cls = '', mark = '○ ';
+      if (p.cells_done.includes(c) || (d.results && d.results.cells && d.results.cells[c] && !d.results.cells[c].error)) { cls = 'good'; mark = '✓ '; }
+      else if (p.cells_skipped.includes(c)) { cls = 'accent'; mark = '↷ '; }
+      else if (p.cells_failed[c]) { cls = 'bad'; mark = '✗ '; }
+      else if (p.cell === c && active) { cls = 'run'; mark = '● '; idx = i + 1; }
+      cells.append(h('span', {class:'chip ' + cls, title: p.cells_failed[c] || ''}, mark + c));
+    });
+    body.append(h('div', {class:'sp-row done', style:'padding-bottom:0'}, h('span', {class:'mk'}, ''), h('span', {class:'lbl'}, h('b', {}, `cells ${idx ? idx + '/' : ''}${d.cells.length}`), p.cell ? ` · ${p.cell}` : '')), cells);
+  }
+
+  // stages
+  const stages = SP_STAGES.filter(([id]) => !(id === '3' && plan.intrinsic === false) && !(id === '6-7' && plan.downstream === false));
+  const seen = Object.fromEntries((p.stages || []).map(s => [s.id, s]));
+  const lastSeen = (p.stages || []).slice(-1)[0];
+  const failed = d.status === 'failed' || d.status === 'lost' || (d.status === 'cancelled');
+  for (const [id, label] of stages){
+    const st = seen[id];
+    let cls = 'pend';
+    if (st && (st.end || p.done)) cls = 'done';
+    else if (st && lastSeen && lastSeen.id === id) cls = active ? 'cur' : (failed ? 'bad' : 'done');
+    else if (!st && lastSeen && SP_STAGES.findIndex(x => x[0] === id) < SP_STAGES.findIndex(x => x[0] === lastSeen.id)) cls = 'done';   // passed without a line (should not happen)
+    const dur = st ? spDur(st.start, st.end || (cls === 'cur' ? now : endRef)) : null;
+    body.append(spRow(cls, MARK[cls], id, label, dur != null ? fmtDur(dur) : null, st ? `${st.start}${st.end ? ' → ' + st.end : ''}` : 'not started'));
+    if (id === '2' && p.tokenizer && cls !== 'pend'){
+      body.append(h('div', {class:'sp-sub'}, spRow(cls === 'cur' ? 'cur' : 'done', cls === 'cur' ? '●' : '✓', null, p.tokenizer.mode === 'load' ? `load from ${p.tokenizer.detail}` : `train on ${p.tokenizer.detail}`, null, p.tokenizer.detail)));
+    }
+    if (id === '5'){
+      const sub = h('div', {class:'sp-sub'});
+      const phases = plan.phases || Object.fromEntries(SP_PHASES.map(n => [n, {enabled: true, steps: null}]));
+      for (const name of SP_PHASES){
+        const pl = phases[name] || {enabled: true, steps: null};
+        const pt = (p.phase_times || {})[name];
+        const running = p.phase && p.phase.name === name;
+        let pcls = 'pend', time = null, extra = null;
+        if (pt && pt.status === 'skipped' || (!pt && pl.enabled === false)) { pcls = 'skip'; time = 'enabled=false'; }
+        else if (pt && pt.status === 'done'){ pcls = 'done'; const dd = spDur(pt.start, pt.end); time = `${pt.steps ?? pl.steps ?? '?'} steps${dd != null ? ' · ' + fmtDur(dd) : ''}`; }
+        else if (pt && pt.status === 'running'){
+          pcls = active ? 'cur' : (failed ? 'bad' : 'done');
+          const dd = spDur(pt.start, pcls === 'cur' ? now : endRef); time = dd != null ? fmtDur(dd) : null;
+          if (running){
+            const ph = p.phase; const pct = ph.steps ? Math.min(100, 100 * ph.step / ph.steps) : 0;
+            extra = h('div', {class:'sp-det'}, h('span', {}, `step ${ph.step}${ph.steps ? '/' + ph.steps : ''}`), ph.loss != null ? h('span', {}, `loss ${fmtNum(ph.loss)}`) : null, ph.lr ? h('span', {}, `lr ${ph.lr}`) : null, ph.eval_loss != null ? h('span', {}, `eval_loss ${fmtNum(ph.eval_loss)}${ph.eval_step ? ' @' + ph.eval_step : ''}`) : null, ph.early_stopped ? h('span', {}, 'early-stop') : null,
+              h('div', {class:'bar'}, h('i', {style:`width:${pct}%`})));
+          } else if (pcls === 'cur') extra = h('div', {class:'sp-det'}, h('span', {}, 'preparing data…'));
+        }
+        else if (cls === 'pend' || cls === 'done') { pcls = cls === 'done' ? 'done' : 'pend'; time = pl.steps != null ? `${pl.steps} steps` : null; }
+        else time = pl.steps != null ? `${pl.steps} steps` : null;
+        sub.append(spRow(pcls, MARK[pcls] || '○', null, name, time));
+        if (extra) sub.append(extra);
+      }
+      body.append(sub);
+    }
+    if (id === '6-7'){
+      const sub = h('div', {class:'sp-sub'});
+      const tasks = plan.tasks && plan.tasks.length ? plan.tasks : (d.tasks || []);
+      const doneT = Object.fromEntries((p.tasks_done || []).map(t => [t.task, t]));
+      for (const t of tasks){
+        const tt = (p.task_times || {})[t];
+        let tcls = 'pend', time = null, extra = null;
+        if (doneT[t]) { tcls = 'done'; time = fmtDur(doneT[t].seconds); }
+        else if (p.eval && p.eval.task === t){
+          tcls = active ? 'cur' : (failed ? 'bad' : 'done');
+          const dd = tt ? spDur(tt.start, tcls === 'cur' ? now : endRef) : null; time = dd != null ? fmtDur(dd) : null;
+          const pct = p.eval.total ? Math.min(100, 100 * p.eval.done / p.eval.total) : 0;
+          extra = h('div', {class:'sp-det'}, h('span', {}, `${p.eval.done}/${p.eval.total} rows`), h('div', {class:'bar eval'}, h('i', {style:`width:${pct}%`})));
+        }
+        else if (cls === 'done') tcls = 'done';
+        sub.append(spRow(tcls, MARK[tcls], null, t, time));
+        if (extra) sub.append(extra);
+      }
+      if (!tasks.length) sub.append(spRow('pend', '○', null, 'no tasks', null));
+      body.append(sub);
+    }
+  }
+  spFooter(body, d, p, active);
+}
+function spFooter(body, d, p, active){
+  if (p.error) body.append(h('div', {class:'sp-foot bad'}, `✗ ${p.error}`));
+  else if (d.status === 'finished' || p.done) body.append(h('div', {class:'sp-foot'}, `✓ done${p.done_at ? ' at ' + p.done_at.slice(11) : ''}${d.finished_at ? ' · ' + fmtDur((new Date(d.finished_at) - new Date(d.started_at)) / 1000) + ' total' : ''}`));
+  else if (d.status === 'cancelled') body.append(h('div', {class:'sp-foot bad'}, '■ cancelled'));
+  else if (d.status === 'failed') body.append(h('div', {class:'sp-foot bad'}, `✗ failed (exit code ${d.exit_code ?? '?'})`));
+  else if (d.status === 'lost') body.append(h('div', {class:'sp-foot bad'}, '? lost — process gone without an exit code'));
+  else if (active && !(p.stages || []).length && !p.judge) body.append(h('div', {class:'sp-foot'}, '● starting up…'));
+  else if (active) body.append(h('div', {class:'sp-foot'}, `● ${d.status} · ${fmtDur((new Date(d.server_time.replace(' ', 'T')) - new Date(d.started_at)) / 1000)} so far`));
+}
+
 async function cancelRun(){
   if (!S.run || !confirm(`Cancel ${S.run}? SIGTERM to the process group, SIGKILL after 15 s.`)) return;
   try { await api('POST', `/api/runs/${encodeURIComponent(S.run)}/cancel`); await pollRuns(); } catch(e){ alert(e.message); }
@@ -1810,10 +2023,11 @@ function renderFfSummary(d){
   fl('degenerate', 'loops', 'bad', 'repetition loops by the detector');
   fl('empty', 'empty', 'bad', 'nothing generated');
   fl('latin', 'latin', 'warn', 'Latin letters in the generation');
-  fl('hit_cap', 'hit the cap', 'warn', 'ran to the token cap without EOS or a stop marker');
+  fl('hit_cap', 'hit the cap', 'warn', 'ran to the token cap without EOS, a stop marker or a loop stop');
+  fl('hit_loop', 'loop-stopped', 'warn', 'ended by the text-level repetition-loop stop; the generation keeps the first copy');
   fl('char_truncated', 'char-cut', '', 'cut to the character budget');
   const st = s.stop || {};
-  box.append(chip(`stops: eos ${st.eos||0} · marker ${st.marker||0} · cap ${st.cap||0}`, '', 'why generation ended'));
+  box.append(chip(`stops: eos ${st.eos||0} · marker ${st.marker||0} · loop ${st.loop||0} · cap ${st.cap||0}`, '', 'why generation ended'));
 }
 function ffPills(r){
   const out = [];
@@ -1821,7 +2035,8 @@ function ffPills(r){
   if (r.degenerate) out.push(h('span', {class: 'chip bad', title: 'repetition loop'}, 'loop'));
   if (r.latin) out.push(h('span', {class: 'chip warn'}, 'latin'));
   if (r.hit_cap) out.push(h('span', {class: 'chip warn', title: 'ran to the token cap'}, 'cap'));
-  if (r.stop_reason==='marker') out.push(h('span', {class: 'chip', title: 'stopped at a new السؤال:/السياق: block'}, 'marker'));
+  if (r.hit_loop) out.push(h('span', {class: 'chip warn', title: 'stopped by the repetition-loop stop (first copy kept)'}, 'loop-stop'));
+  if (r.stop_reason==='marker') out.push(h('span', {class: 'chip', title: 'stopped at a new section / header line'}, 'marker'));
   return out;
 }
 function renderFfTable(d){
@@ -2131,9 +2346,210 @@ function wireRtTab(){
 /* =========================================================================
    wiring
    ========================================================================= */
+/* =========================================================================
+   assistant (Configs tab drawer): an LLM fills or edits the form
+   ---------------------------------------------------------------------------
+   Each turn posts the config in the form (or asks for base.yaml), the last
+   messages and the new one to /api/assistant/chat; the server streams the
+   reply, applies the model's `edits` block, validates it (one repair round)
+   and ends with the resulting config. A valid result goes straight into the
+   form, with Undo; an invalid one is shown with its errors and "apply anyway".
+   ========================================================================= */
+const A = {open:false, cfgs:[], name:null, history:[], busy:false, undo:[], abort:null};
+const AS_QUICK = [
+  ['smoke test', 'Turn this into a smoke test: tiny corpus caps, 30 steps per phase, 30 eval rows, morphological metrics off, name prefixed _smoke_.'],
+  ['no Phase 3', 'Disable Phase 3 (the no-SFT baseline) and rename the experiment and output_dir accordingly.'],
+  ['every tokenizer', 'Add every tokenizer type as a sweep cell with its usual vocab sizes (16K/32K/50K for the subword ones), keeping the tasks.'],
+  ['why invalid?', 'Why does this config fail validation, and what is the minimal fix? Apply the fix.'],
+  ['explain phases', 'Explain what the three training phases do and which of their defaults matter most.'],
+];
+function asStore(){ try { localStorage.setItem('xc-assistant', JSON.stringify({name: A.name, open: A.open, history: A.history.slice(-30).map(m => ({role: m.role, content: m.content, reply: m.reply, changes: m.changes, ok: m.ok, errors: m.errors, applied: m.applied ? 'applied' : (m.applied===false ? 'skipped' : null), error: m.error, usage: m.usage, fromBase: m.fromBase}))})); } catch(e){} }
+function asLoad(){ try { const d = JSON.parse(localStorage.getItem('xc-assistant') || 'null'); if (d){ A.name = d.name || null; A.open = !!d.open; A.history = (d.history || []).map(m => Object.assign({}, m, {applied: m.applied==='applied' ? {} : (m.applied==='skipped' ? false : null), done: true, undoIdx: null})); } } catch(e){} }
+function asCfg(){ return A.cfgs.find(c => c.id===A.name) || A.cfgs.find(c => c.ready) || A.cfgs[0] || null; }
+async function loadAssistantConfigs(){
+  try { const d = await api('GET', '/api/assistant/configs'); A.cfgs = d.assistants || []; }
+  catch(e){ A.cfgs = []; }
+  const c = asCfg(); A.name = c ? c.id : null;
+  renderAssistantHead();
+}
+function renderAssistantHead(){
+  const sel = $('#as-cfg'); sel.innerHTML = '';
+  for (const c of A.cfgs) sel.append(h('option', {value: c.id, selected: c.id===A.name}, `${c.name || c.id} · ${c.model || '?'}`));
+  if (!A.cfgs.length) sel.append(h('option', {value: ''}, 'no configs/assistant/*.yaml'));
+  const c = asCfg(); const st = $('#as-status');
+  if (!c){ st.className = 'chip bad'; st.textContent = 'no assistant'; st.title = ''; }
+  else if (c.error){ st.className = 'chip bad'; st.textContent = 'invalid config'; st.title = c.error; }
+  else if (c.ready){ st.className = 'chip good'; st.textContent = c.local ? 'local · up' : 'ready'; st.title = c.base_url; }
+  else { st.className = 'chip warn'; st.textContent = c.local ? 'local · down' : 'not ready'; st.title = c.why; }
+  $('#as-send').disabled = !(c && c.ready) || A.busy;
+}
+/* minimal markdown → html: fenced code, inline code, bold, headings, bullet / numbered lists, paragraphs */
+function mdToHtml(md){
+  const parts = String(md ?? '').split(/```/);
+  let out = '';
+  for (let i = 0; i < parts.length; i++){
+    if (i % 2 === 1){ const body = parts[i].replace(/^[^\n]*\n/, ''); out += `<pre><code>${esc(body.replace(/\n$/, ''))}</code></pre>`; continue; }
+    const inline = t => esc(t).replace(/`([^`]+)`/g, '<code>$1</code>').replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+    let list = null;
+    const close = () => { if (list){ out += `</${list}>`; list = null; } };
+    for (const para of parts[i].split(/\n{2,}/)){
+      for (const line of para.split('\n')){
+        const m = line.match(/^\s*([-*•]|\d+[.)])\s+(.*)$/);
+        if (m){ const kind = /^\d/.test(m[1]) ? 'ol' : 'ul'; if (list!==kind){ close(); out += `<${kind}>`; list = kind; } out += `<li>${inline(m[2])}</li>`; continue; }
+        close();
+        const hm = line.match(/^\s*#{1,4}\s+(.*)$/);
+        if (hm){ out += `<h4>${inline(hm[1])}</h4>`; continue; }
+        if (line.trim()) out += `<p>${inline(line)}</p>`;
+      }
+      close();
+    }
+  }
+  return out;
+}
+const asStripEdits = t => String(t ?? '').replace(/```[ \t]*edits[^\n]*\n[\s\S]*?\n?[ \t]*```/g, '').trim();
+function asFmtVal(v){ const t = typeof v === 'string' ? v : JSON.stringify(v); return t.length > 90 ? t.slice(0, 87) + '…' : t; }
+function asMsgEl(m, idx){
+  if (m.role === 'user') return h('div', {class:'as-msg user'}, m.content);
+  const el = h('div', {class:'as-msg assistant' + (m.error ? ' error' : '')});
+  const text = m.done ? (m.reply ?? m.content ?? '') : (m.content || '');
+  const body = h('div', {class: !m.done && !(m.repairs || []).length ? 'cur' : '', html: mdToHtml(text) || (m.done ? '' : '&nbsp;')});
+  el.append(body);
+  for (const r of (m.repairs || [])){
+    el.append(h('div', {class:'as-repair'}, r.parse_error ? `edits block unusable (${r.parse_error}) — asking for a correction…` : 'the edited config fails validation — asking for a correction…',
+      r.errors && r.errors.length ? h('ul', {}, r.errors.slice(0, 6).map(e => h('li', {}, h('code', {}, e.loc), ' — ' + e.msg))) : null));
+    if (r.text !== undefined) el.append(h('div', {class: !m.done && r === m.repairs[m.repairs.length-1] ? 'cur' : '', html: mdToHtml(r.text) || '&nbsp;'}));
+  }
+  if (m.error) el.append(h('p', {}, m.error));
+  if (m.changes && m.changes.length){
+    const box = h('div', {class:'as-changes'});
+    for (const c of m.changes) box.append(h('div', {class:'ch'}, h('b', {}, c.path), ': ', c.old === '<unset>' ? null : h('span', {class:'old'}, asFmtVal(c.old)), h('span', {class:'new' + (m.ok===false ? ' bad' : '')}, asFmtVal(c.new))));
+    if (m.ok === false && m.errors) box.append(h('div', {class:'as-repair'}, `still invalid (${m.errors.length} error${m.errors.length===1?'':'s'})`, h('ul', {}, m.errors.slice(0, 6).map(e => h('li', {}, h('code', {}, e.loc), ' — ' + e.msg)))));
+    el.append(box);
+  }
+  if (m.parse_error && m.done) el.append(h('div', {class:'as-repair'}, `edits block unusable: ${m.parse_error}`));
+  const foot = h('div', {class:'as-foot'});
+  if (m.done && m.changes && m.changes.length){
+    if (m.applied && m.undoIdx !== null && m.undoIdx === A.undo.length - 1 && !m.undone) foot.append(h('span', {class:'chip good'}, m.fromBase ? 'new config in the form' : 'applied to the form'), h('button', {class:'btn sm', onclick: () => asUndo(m)}, 'undo'));
+    else if (m.undone) foot.append(h('span', {class:'chip'}, 'undone'));
+    else if (m.applied) foot.append(h('span', {class:'chip good'}, 'applied'));
+    else if (m.result) foot.append(h('span', {class:'chip warn'}, 'not applied'), h('button', {class:'btn sm', onclick: () => asApply(m, true)}, 'apply anyway'));
+    else foot.append(h('span', {class:'chip'}, 'not applied'));
+  }
+  if (m.usage) foot.append(h('span', {class:'hint'}, `${m.usage.prompt_tokens ?? '?'} in · ${m.usage.completion_tokens ?? '?'} out${m.usage.rounds > 1 ? ` · ${m.usage.rounds} rounds` : ''}${m.elapsed ? ` · ${m.elapsed}s` : ''}`));
+  if (foot.childNodes.length) el.append(foot);
+  return el;
+}
+function renderChat(scroll=true){
+  const box = $('#as-chat'); box.innerHTML = '';
+  if (!A.history.length) box.append(h('div', {class:'empty'}, 'Describe an experiment ("BPE 16K and 32K vs native Llama, three phases, PMI scoring"), ask for a change to the form ("make Phase 2 train on the pretraining mix with a 7 % QA blend"), or ask about a field ("what must mix_tokens equal?").'));
+  A.history.forEach((m, i) => box.append(asMsgEl(m, i)));
+  if (scroll) box.scrollTop = box.scrollHeight;
+}
+function asSnapshot(){ return {cfg: deep(S.cfg), errors: S.errors.slice(), file: S.file, dirty: S.dirty, title: $('#editor-title').textContent, yaml: $('#yaml').value, results: $('#etab-results').innerHTML}; }
+function asApply(m, force){
+  const res = m.result; if (!res) return;
+  if (!res.ok && !force) return;
+  A.undo.push(asSnapshot()); m.undoIdx = A.undo.length - 1; m.applied = res; m.undone = false;
+  if (m.fromBase){ S.file = null; $('#editor-title').textContent = `new config from the assistant (unsaved) — ${res.config.name}`; $('#yaml').value = ''; $('#etab-results').innerHTML = '<div class="empty">no results yet</div>'; renderConfigList(); }
+  S.cfg = res.config; S.errors = res.errors || []; S.yamlDirty = false; markDirty(); renderForm(); setEtab('form');
+  if (res.ok) status('good', `assistant: ${res.changes.length} change${res.changes.length===1?'':'s'} applied — ${res.cells.length} cell${res.cells.length===1?'':'s'} (${res.cells.join(', ')})${res.sweep?' · sweep':''}`);
+  else status('bad', `assistant edits applied but the config does not validate (${res.errors.length})`, res.errors);
+  $('#as-base').checked = false;
+  asStore(); renderChat(false);
+}
+function asUndo(m){
+  if (m.undoIdx === null || m.undoIdx !== A.undo.length - 1) return;
+  const snap = A.undo.pop();
+  S.cfg = snap.cfg; S.errors = snap.errors; S.file = snap.file; S.dirty = snap.dirty; $('#dirty-chip').style.display = snap.dirty ? '' : 'none';
+  $('#editor-title').textContent = snap.title; $('#yaml').value = snap.yaml; $('#etab-results').innerHTML = snap.results;
+  m.undone = true; m.undoIdx = null;
+  renderConfigList(); renderForm(); status('good', 'assistant change undone'); asStore(); renderChat(false);
+}
+function asBody(message){
+  const c = asCfg();
+  return {assistant: c ? c.id : '', config: S.cfg, from_base: $('#as-base').checked || !S.cfg, file: S.file || null,
+    history: A.history.filter(m => m.done !== false && !m.error).map(m => ({role: m.role, content: m.role==='assistant' ? (m.content || m.reply || '') : m.content})), message};
+}
+async function sendAssistant(text){
+  text = (text ?? $('#as-text').value).trim();
+  const c = asCfg();
+  if (!text || A.busy || !c || !c.ready) return;
+  const body = asBody(text);
+  $('#as-text').value = '';
+  A.history.push({role:'user', content: text, done: true});
+  const m = {role:'assistant', content:'', done:false, repairs:[], fromBase: body.from_base, undoIdx: null};
+  A.history.push(m); A.busy = true; renderAssistantHead(); renderChat();
+  const ctrl = new AbortController(); A.abort = ctrl;
+  let cur = m;                      // where streamed tokens go: the message, or the current repair round
+  const handle = ev => {
+    if (ev.type === 'token'){ if (cur === m) m.content += ev.text; else cur.text = (cur.text || '') + ev.text; }
+    else if (ev.type === 'edits'){ m.changes = ev.changes; m.ok = ev.ok; m.errors = ev.errors; }
+    else if (ev.type === 'repair'){ const r = {errors: ev.errors, parse_error: ev.parse_error, text: ''}; m.repairs.push(r); cur = r; }
+    else if (ev.type === 'done'){
+      // body = the first round's prose; each repair round its own prose; history gets the last round's raw text (with its edits block)
+      m.done = true; m.reply = asStripEdits(m.content); for (const r of m.repairs) r.text = asStripEdits(r.text || '');
+      m.content = ev.raw; m.parse_error = ev.parse_error; m.usage = ev.usage; m.elapsed = ev.elapsed_sec;
+      if (ev.applied){ m.result = ev.applied; m.changes = ev.applied.changes; m.ok = ev.applied.ok; m.errors = ev.applied.errors; m.fromBase = ev.from_base; if (ev.applied.ok) asApply(m); }
+    }
+    else if (ev.type === 'error'){ m.done = true; m.error = ev.message; }
+  };
+  try {
+    const r = await fetch('/api/assistant/chat', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body), signal: ctrl.signal});
+    if (!r.ok){ const d = await r.json().catch(() => ({error: r.statusText})); throw new Error(d.error || r.statusText); }
+    const reader = r.body.getReader(); const dec = new TextDecoder(); let buf = '';
+    let last = 0;
+    while (true){
+      const {value, done} = await reader.read(); if (done) break;
+      buf += dec.decode(value, {stream:true});
+      let i;
+      while ((i = buf.indexOf('\n\n')) >= 0){
+        const chunk = buf.slice(0, i); buf = buf.slice(i + 2);
+        for (const line of chunk.split('\n')) if (line.startsWith('data:')){ try { handle(JSON.parse(line.slice(5))); } catch(e){ console.warn('bad event', line, e); } }
+      }
+      const now = performance.now(); if (now - last > 80){ last = now; renderChat(); }
+    }
+    if (!m.done){ m.done = true; m.error = m.error || 'the stream ended before the reply was complete'; }
+  } catch(e){ m.done = true; m.error = e.name === 'AbortError' ? 'cancelled' : e.message; }
+  A.busy = false; A.abort = null; renderAssistantHead(); renderChat(); asStore();
+}
+async function showAssistantContext(){
+  const c = asCfg(); if (!c) return;
+  try {
+    const d = await api('POST', '/api/assistant/preview', asBody($('#as-text').value || ''));
+    $('#text-title').textContent = `assistant context — ${d.model} · ${d.messages.length} messages · ${d.chars.toLocaleString()} chars ≈ ${d.approx_tokens.toLocaleString()} tokens`;
+    $('#text-body').textContent = d.messages.map(m => `═══ ${m.role} ═══\n${m.content}`).join('\n\n');
+    openModal('#text-modal');
+  } catch(e){ status('bad', e.message); }
+}
+function toggleAssistant(open){
+  A.open = open === undefined ? !A.open : !!open;
+  $('#assist').style.display = A.open ? '' : 'none';
+  $('.cfg-grid').classList.toggle('assist', A.open);
+  $('#btn-assist').classList.toggle('on', A.open);
+  if (A.open){ loadAssistantConfigs(); renderChat(); setTimeout(() => $('#as-text').focus(), 50); }
+  asStore();
+}
+function wireAssistant(){
+  asLoad();
+  $('#btn-assist').onclick = () => toggleAssistant();
+  $('#as-close').onclick = () => toggleAssistant(false);
+  $('#as-refresh').onclick = loadAssistantConfigs;
+  $('#as-cfg').onchange = e => { A.name = e.target.value; renderAssistantHead(); asStore(); };
+  $('#as-clear').onclick = () => { if (A.busy && A.abort) A.abort.abort(); A.history = []; A.undo = []; renderChat(); asStore(); };
+  $('#as-send').onclick = () => sendAssistant();
+  $('#as-text').addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey){ e.preventDefault(); sendAssistant(); } });
+  $('#as-ctx').onclick = e => { e.preventDefault(); showAssistantContext(); };
+  const q = $('#as-quick'); for (const [label, prompt] of AS_QUICK) q.append(h('button', {title: prompt, onclick: () => sendAssistant(prompt)}, label));
+  if (A.open) toggleAssistant(true);
+}
+
 function setView(v){
   S.view = v; $$('.tabs .tab').forEach(t => t.classList.toggle('on', t.dataset.view===v));
   $$('.view').forEach(x => x.classList.toggle('on', x.id==='view-'+v));
+  document.body.classList.toggle('steps-open', !!S.stepsOpen && v === 'runs');
+  $('#steps-panel').style.display = (S.stepsOpen && v === 'runs') ? '' : 'none';
+  document.body.classList.toggle('runs-open', !!S.runsOpen && v === 'runs');
+  $('#runs-panel').style.display = (S.runsOpen && v === 'runs') ? '' : 'none';
   if (v==='runs') pollRuns();
   if (v==='eval') loadEvalTree();
   if (v==='freeform') loadFfTree();
@@ -2159,10 +2575,20 @@ document.addEventListener('DOMContentLoaded', async () => {
   $('#btn-save').onclick = saveFlow; $('#save-go').onclick = doSave;
   $('#btn-start').onclick = startFlow; $('#start-go').onclick = doStart;
   $('#btn-cancel').onclick = cancelRun;
+  $('#btn-steps').onclick = () => toggleSteps();
+  $('#sp-close').onclick = () => toggleSteps(false);
+  try { S.stepsOpen = localStorage.getItem('xc-steps') !== '0'; } catch(e){ S.stepsOpen = true; }
+  toggleSteps(S.stepsOpen);
+  $('#btn-runs').onclick = () => toggleRunsPanel();
+  $('#rp-close').onclick = () => toggleRunsPanel(false);
+  try { S.runsOpen = localStorage.getItem('xc-runs') !== '0'; } catch(e){ S.runsOpen = true; }
+  toggleRunsPanel(S.runsOpen);
+  wireLog();
   wireEvalTab();
   wireFfTab();
   wireJudgeBar();
   wireRtTab();
+  wireAssistant();
   $$('[data-close]').forEach(b => b.onclick = closeModals);
   $$('.modal-bg').forEach(m => m.addEventListener('click', e => { if (e.target===m) closeModals(); }));
   $('#theme-btn').onclick = () => { const r = document.documentElement; const cur = r.dataset.theme || (matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light'); r.dataset.theme = cur==='dark'?'light':'dark'; try { localStorage.setItem('xc-theme', r.dataset.theme); } catch(e){} };
@@ -2171,7 +2597,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   try {
     const b = await api('GET', '/api/schema');
-    S.schema = b.schema; S.base = b.base; S.reg = b.registries; S.presets = b.presets; S.env = b.env;
+    S.schema = b.schema; S.base = b.base; S.reg = b.registries; S.presets = b.presets; S.env = b.env; HINTS = b.hints || {};
     const env = $('#env-chip'); env.textContent = `${b.env.python.replace(/^.*\//,'')} · ${b.env.hf_token_set?'HF_TOKEN set':'no HF_TOKEN'}`; env.className = 'chip ' + (b.env.hf_token_set?'good':'warn');
     env.title = `${b.env.python} ${b.env.script}`;
     await loadConfigs();

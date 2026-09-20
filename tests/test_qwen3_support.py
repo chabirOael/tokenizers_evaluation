@@ -264,6 +264,59 @@ def test_generate_works_on_standard_branch(tiny_qwen3_path):
 # 3 + 4. resize semantics on Qwen3
 # --------------------------------------------------------------------------
 
+class TestSdpaBackends:
+    """``configure_sdpa_backends`` (called at adapter load) turns the cuDNN SDPA
+    backend off: it host-compiles a kernel per (batch, kv_length) shape, which
+    billed ~300 s to the first free-form batch of every Qwen3-4B cell. The flag
+    is process-global, so each test restores it."""
+
+    @pytest.fixture(autouse=True)
+    def _restore(self, monkeypatch):
+        import torch
+        if not hasattr(torch.backends.cuda, "enable_cudnn_sdp"):
+            pytest.skip("torch without the cuDNN SDPA knob")
+        before = torch.backends.cuda.cudnn_sdp_enabled()
+        yield
+        torch.backends.cuda.enable_cudnn_sdp(before)
+
+    def test_disabled_when_cuda_is_available(self, monkeypatch):
+        import torch
+        from arabic_eval.models import llama_adapter as la
+        monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+        monkeypatch.delenv(la.CUDNN_SDP_ENV, raising=False)
+        torch.backends.cuda.enable_cudnn_sdp(True)
+        assert la.configure_sdpa_backends() is False
+        assert torch.backends.cuda.cudnn_sdp_enabled() is False
+        assert la.configure_sdpa_backends() is False           # idempotent
+        # the other exact-attention backends are untouched
+        assert torch.backends.cuda.flash_sdp_enabled() and torch.backends.cuda.math_sdp_enabled()
+
+    def test_env_opt_out_keeps_it(self, monkeypatch):
+        import torch
+        from arabic_eval.models import llama_adapter as la
+        monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+        monkeypatch.setenv(la.CUDNN_SDP_ENV, "1")
+        torch.backends.cuda.enable_cudnn_sdp(True)
+        assert la.configure_sdpa_backends() is None
+        assert torch.backends.cuda.cudnn_sdp_enabled() is True
+
+    def test_noop_without_cuda(self, monkeypatch):
+        import torch
+        from arabic_eval.models import llama_adapter as la
+        monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+        monkeypatch.delenv(la.CUDNN_SDP_ENV, raising=False)
+        torch.backends.cuda.enable_cudnn_sdp(True)
+        assert la.configure_sdpa_backends() is None
+        assert torch.backends.cuda.cudnn_sdp_enabled() is True
+
+    def test_adapter_load_calls_it(self, tiny_qwen3_path, monkeypatch):
+        from arabic_eval.models import llama_adapter as la
+        calls = []
+        monkeypatch.setattr(la, "configure_sdpa_backends", lambda: calls.append(1))
+        LlamaAdapter(str(tiny_qwen3_path), device="cpu", dtype="float32")
+        assert calls == [1]
+
+
 def test_native_vocab_is_noop_resize(tiny_qwen3_path):
     adapter = _load(tiny_qwen3_path)
     before = adapter.model.model.embed_tokens.weight.detach().clone()

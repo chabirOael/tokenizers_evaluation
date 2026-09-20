@@ -287,6 +287,131 @@ def test_loss_decreases_on_simple_task(tmp_path):
     assert last_5 < first_5, f"loss did not decrease: first_5={first_5:.4f}, last_5={last_5:.4f}"
 
 
+class TestSchedulerHorizonInUpdates:
+    """``steps`` / ``warmup_steps`` are micro-steps; the scheduler steps once per
+    optimizer update (every ``gradient_accumulation_steps`` micro-steps), so its
+    horizon must be ``ceil(steps / accum)`` updates. Before the fix the cosine
+    got the micro-step count and at accumulation 4 decayed a quarter of the way
+    by the end of the phase (``lr ≈ 0.85 × peak`` instead of ≈ 0)."""
+
+    @staticmethod
+    def _lr_trace(**cfg_kwargs):
+        """Run a phase with an optimizer-hooked LR log: one entry per update."""
+        from torch.optim import AdamW as _AdamW
+        seen: List[float] = []
+        orig_step = _AdamW.step
+
+        def spy(self, *a, **k):
+            seen.append(self.param_groups[0]["lr"])
+            return orig_step(self, *a, **k)
+
+        _AdamW.step = spy
+        try:
+            adapter = _TinyAdapter(device="cpu")
+            cfg = _phase_cfg(**cfg_kwargs)
+            loader = _make_loader(n=32, batch=4)
+            import tempfile
+            with tempfile.TemporaryDirectory() as td:
+                res = run_phase(
+                    phase_name="warmup", adapter=adapter, phase_cfg=cfg,
+                    train_loader=loader, output_dir=Path(td),
+                    bf16=False, fp16=False, logging_steps=1000,
+                )
+        finally:
+            _AdamW.step = orig_step
+        return seen, res
+
+    def test_cosine_reaches_zero_with_accumulation(self):
+        """(a) steps=8, accum=4, cosine, no warmup → 2 updates over a 2-update
+        horizon: the LR used by the last update is at progress 1/2 (cos → 0.5×peak)
+        and the LR *after* the phase is ≈ 0. Under the old horizon (8) the last
+        update ran at progress 1/8 and the post-phase LR was ≈ 0.85 × peak."""
+        peak = 1e-3
+        seen, _ = self._lr_trace(steps=8, gradient_accumulation_steps=4,
+                                 lr_scheduler="cosine", warmup_steps=0,
+                                 learning_rate=peak)
+        assert len(seen) == 2, seen
+        assert seen[0] == pytest.approx(peak)                       # progress 0
+        assert seen[1] == pytest.approx(0.5 * peak, rel=1e-6)       # progress 1/2
+        # The scheduler has now stepped twice: the LR that a *next* update would
+        # see is the end of the cosine, i.e. 0.
+        assert self._final_lr(steps=8, gradient_accumulation_steps=4,
+                              lr_scheduler="cosine", warmup_steps=0,
+                              learning_rate=peak) == pytest.approx(0.0, abs=1e-12)
+
+    def _final_lr(self, **cfg_kwargs) -> float:
+        """LR left in the optimizer after the phase (= what the next update would use)."""
+        from torch.optim import AdamW as _AdamW
+        holder: Dict[str, Any] = {}
+        orig_init = _AdamW.__init__
+
+        def spy_init(self, *a, **k):
+            orig_init(self, *a, **k)
+            holder["opt"] = self
+
+        _AdamW.__init__ = spy_init
+        try:
+            adapter = _TinyAdapter(device="cpu")
+            cfg = _phase_cfg(**cfg_kwargs)
+            loader = _make_loader(n=32, batch=4)
+            import tempfile
+            with tempfile.TemporaryDirectory() as td:
+                run_phase(
+                    phase_name="warmup", adapter=adapter, phase_cfg=cfg,
+                    train_loader=loader, output_dir=Path(td),
+                    bf16=False, fp16=False, logging_steps=1000,
+                )
+        finally:
+            _AdamW.__init__ = orig_init
+        return holder["opt"].param_groups[0]["lr"]
+
+    def test_warmup_counts_micro_steps(self):
+        """(b) warmup_steps=4 at accum=4 = one warm-up *update*: the first update
+        runs at ramp position 0/1 (LR 0) and the second at full peak. Under the
+        old semantics warmup covered 4 updates and the second ran at 1/4 × peak."""
+        peak = 1e-3
+        seen, _ = self._lr_trace(steps=12, gradient_accumulation_steps=4,
+                                 lr_scheduler="constant", warmup_steps=4,
+                                 learning_rate=peak)
+        assert len(seen) == 3, seen
+        assert seen[0] == pytest.approx(0.0)
+        assert seen[1] == pytest.approx(peak)
+        assert seen[2] == pytest.approx(peak)
+
+    def test_accumulation_one_unchanged(self):
+        """(c) accum=1: micro-steps == updates, horizon and warmup are untouched."""
+        peak = 1e-3
+        seen, res = self._lr_trace(steps=8, gradient_accumulation_steps=1,
+                                   lr_scheduler="cosine", warmup_steps=2,
+                                   learning_rate=peak)
+        assert len(seen) == 8
+        assert seen[0] == pytest.approx(0.0)              # warmup 0/2
+        assert seen[1] == pytest.approx(0.5 * peak)       # warmup 1/2
+        assert seen[2] == pytest.approx(peak)             # progress 0/6
+        # progress 5/6 at the 8th update
+        import math
+        assert seen[7] == pytest.approx(peak * 0.5 * (1 + math.cos(math.pi * 5 / 6)), rel=1e-6)
+        assert res.steps_completed == 8
+
+    def test_mixture_reference_shape(self):
+        """The reference SFT arm: 7 500 micro-steps, accumulation 4, warmup 400
+        → 1 875 updates with a 100-update warm-up; LR at the last update is the
+        cosine tail, not 0.85 × peak."""
+        from arabic_eval.training.phases import _build_lr_scheduler
+        import math as _m
+        m = nn.Linear(2, 2)
+        opt = torch.optim.AdamW(m.parameters(), lr=1.0)
+        accum, steps, warm = 4, 7500, 400
+        sched = _build_lr_scheduler(opt, "cosine", _m.ceil(warm / accum), _m.ceil(steps / accum))
+        lrs = []
+        for _ in range(steps // accum):
+            lrs.append(opt.param_groups[0]["lr"])
+            opt.step(); sched.step()
+        assert lrs[100] == pytest.approx(1.0)              # end of the 100-update warm-up
+        assert lrs[-1] < 1e-5                               # last update ≈ 0
+        assert opt.param_groups[0]["lr"] == pytest.approx(0.0, abs=1e-12)
+
+
 class TestPhaseConfigCleanLatinRows:
     """The clean_latin_rows flag is a per-phase opt-in; the field must
     round-trip through pydantic with a False default and accept True."""

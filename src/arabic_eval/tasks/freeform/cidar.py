@@ -4,7 +4,8 @@ Eval-only task (``BaseTask``): for every row of the held-out JSONL the model
 greedy-decodes an answer to the *exact* Phase 3 instruction prompt
 (``_format_qa_prompt`` on an ``instruction`` record — the string the
 mixture trained on, so generation continues where training left off), under
-the shared decoding rules of ``generation.py``. Reference-based (chrF,
+the shared decoding rules of ``generation.py`` (EOS / stop marker / text-level
+repetition-loop stop / character-budget cap; ``stop_reason`` per row). Reference-based (chrF,
 BERTScore) and reference-free metrics are computed inline and every row goes
 to ``eval_rows/freeform_cidar.parquet`` (prompt, reference, generation, per-
 row metrics). LLM-judge scoring is a separate stage
@@ -47,14 +48,14 @@ DEFAULT_HELDOUT_PATH = "configs/contamination/freeform_cidar_heldout_v1.jsonl"
 TASK_NAME = "freeform_cidar"
 ROW_FIELDS = [
     "id", "stratum", "instruction", "context", "prompt_text", "reference", "generation", "generation_raw",
-    "prompt_tokens", "gen_tokens", "gen_chars", "ref_chars", "stop_reason", "hit_cap", "char_truncated",
+    "prompt_tokens", "gen_tokens", "gen_chars", "ref_chars", "stop_reason", "hit_cap", "hit_loop", "char_truncated",
     "empty", "degenerate", "latin", "arabic_letter_ratio", "chrf",
     "bertscore_p", "bertscore_r", "bertscore_f1", "reference_roundtrip_chrf", "gen_time_sec",
 ]
 METRIC_NAMES = [
     "chrf", "chrf_corpus", "bertscore_f1", "bertscore_p", "bertscore_r",
     "empty_rate", "degenerate_rate", "latin_rate", "arabic_letter_ratio",
-    "hit_cap_rate", "marker_stop_rate", "eos_rate", "char_truncated_rate",
+    "hit_cap_rate", "loop_stop_rate", "marker_stop_rate", "eos_rate", "char_truncated_rate",
     "mean_gen_chars", "mean_gen_tokens", "mean_ref_chars", "gen_chars_per_sec", "gen_tokens_per_sec",
     "generation_wall_sec", "reference_roundtrip_chrf", "chars_per_token", "token_cap", "num_samples",
 ]
@@ -105,6 +106,7 @@ class FreeformCidarTask(BaseTask):
             token_cap_ceiling=int(cfg.get("token_cap_ceiling", 4096)),
             stop_markers=tuple(cfg.get("stop_markers") or DEFAULT_STOP_MARKERS),
             marker_check_every=int(cfg.get("marker_check_every", 16)),
+            loop_stop=bool(cfg.get("loop_stop", True)),
             seed=int(cfg.get("seed", 42)),
         )
         self.bertscore_model: Optional[str] = cfg.get("bertscore_model", "xlm-roberta-large")
@@ -167,7 +169,12 @@ class FreeformCidarTask(BaseTask):
 
         t0 = time.perf_counter()
         gens = generate_freeform(model, tokenizer, prompts, self.decoding, token_cap)
-        gen_wall = time.perf_counter() - t0
+        total_wall = time.perf_counter() - t0
+        # The timed wall is the sum of the per-batch generate calls (each row carries its
+        # batch's share); the untimed warm-up and the encode / decode bookkeeping between
+        # batches stay out of gen_chars_per_sec, mirroring the tokenizer warm-up of the pipeline.
+        gen_wall = sum(g.gen_time_sec for g in gens)
+        logger.info("%s: generation wall %.1fs timed (%.1fs incl. warm-up and bookkeeping)", TASK_NAME, gen_wall, total_wall)
 
         records: List[Dict[str, Any]] = []
         for row, prompt, g in zip(rows, prompts, gens):
@@ -178,9 +185,12 @@ class FreeformCidarTask(BaseTask):
                 "context": row.get("context") or "", "prompt_text": prompt, "reference": ref,
                 "generation": g.generation, "generation_raw": g.generation_raw,
                 "prompt_tokens": g.prompt_tokens, "gen_tokens": g.gen_tokens, "gen_chars": len(g.generation),
-                "ref_chars": len(ref), "stop_reason": g.stop_reason, "hit_cap": g.hit_cap,
+                "ref_chars": len(ref), "stop_reason": g.stop_reason, "hit_cap": g.hit_cap, "hit_loop": g.hit_loop,
                 "char_truncated": g.char_truncated, "empty": not g.generation.strip(),
-                "degenerate": M.is_degenerate(g.generation), "latin": contains_latin_letters(g.generation),
+                # On the raw text: a loop-stopped generation keeps only the first copy of the
+                # repeated unit, so the flag has to look at what the model actually produced
+                # for degenerate_rate to stay comparable with runs that had no loop stop.
+                "degenerate": M.is_degenerate(g.generation_raw), "latin": contains_latin_letters(g.generation),
                 "arabic_letter_ratio": M.arabic_letter_ratio(g.generation),
                 "chrf": round(M.chrf_sentence(g.generation, ref), 4),
                 "bertscore_p": None, "bertscore_r": None, "bertscore_f1": None,
@@ -208,7 +218,7 @@ class FreeformCidarTask(BaseTask):
         if row_dump_dir is not None:
             path = Path(row_dump_dir) / f"{TASK_NAME}.parquet"
             write_report_table(path, records, ROW_FIELDS, metadata={
-                "task": TASK_NAME, "kind": "freeform_generations", "schema_version": 1,
+                "task": TASK_NAME, "kind": "freeform_generations", "schema_version": 2,
                 "heldout_path": str(self.heldout_path), "heldout_sha256": _sha256(self.heldout_path),
                 "tokenizer_class": type(tokenizer).__name__, "embedding_type": tokenizer.embedding_type,
                 "decoding": self.decoding.to_json(), "token_cap": token_cap, "chars_per_token": round(cpt, 4),

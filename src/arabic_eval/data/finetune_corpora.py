@@ -17,18 +17,55 @@ Phase 1 + Phase 2 use ``arabic_squad`` (translated, Phase 2 spec calls for
 (native Arabic QA) + ``arabic_squad_mcq``, optionally ratio-controlled with
 the free-form corpora through ``PhaseConfig.mixture`` (``sft_mixture.py``).
 
-Prompt formats (all end in the LightEval-official ``الإجابة:`` prefix so
-train/eval share the same anchor tokens). Extractive (``qa``):
+Prompt formats (``TEMPLATE_VERSION`` 2, 2026-09-18). The extractive and the
+free-form template are *sectioned* Alpaca-style prompts with a one-line
+header and ``### `` section labels that are distinct per template, so the
+model can tell a 3-word span task from a 40-word free-form answer before it
+reaches the answer cue. Extractive (``qa``):
 
-    السياق: {context}
-    السؤال: {question}
-    الإجابة: {answer}
+    فيما يلي نص وسؤال عنه. أجب عن السؤال اعتمادًا على النص.
 
-Free-form (``instruction``) is the same shape with the ``السياق:`` line only
-when the record has an input/context; MCQ (``mcq_letter``) is the
-LightEval letter prompt. For ``loss_target='answer_only'`` the prompt span
-ends just before ``{answer}`` and is masked to -100 via
-``answer_only_masking``.
+    ### السياق:
+    {context}
+
+    ### السؤال:
+    {question}
+
+    ### الإجابة:
+    {answer}
+
+Free-form (``instruction``), without / with an input:
+
+    فيما يلي تعليمات تصف مهمة. اكتب إجابة تكمل الطلب بشكل مناسب.
+
+    ### التعليمات:
+    {instruction}
+
+    ### الإجابة:
+    {output}
+
+    فيما يلي تعليمات تصف مهمة، مرفقة بمدخل يوفر سياقًا إضافيًا. اكتب إجابة تكمل الطلب بشكل مناسب.
+
+    ### التعليمات:
+    {instruction}
+
+    ### المدخل:
+    {input}
+
+    ### الإجابة:
+    {output}
+
+MCQ (``mcq_letter``) is the LightEval-official letter prompt, byte for byte
+(``… الإجابة:`` + ``" {letter}"``) — it mirrors the eval-time MCQ prompt and
+is not part of the versioned pair. Version 1 was the flat
+``السياق: …\nالسؤال: …\nالإجابة: {answer}`` for both ``qa`` and
+``instruction``: the three templates shared one answer cue and 70 % of the
+mixture's examples taught "≤ 4 words after it", while the free-form
+instruction header measured best on the untrained base (loops 44 % → 23 %).
+For ``loss_target='answer_only'`` the prompt span ends just before
+``{answer}`` and is masked to -100 via ``answer_only_masking``. The
+free-form eval builds its prompt with ``_format_qa_prompt`` too, so it
+follows the training string by construction.
 
 The three Hub-hosted free-form corpora are read at a **pinned revision**
 (``PINNED_REVISIONS``) so a corpus silently edited upstream never changes
@@ -93,10 +130,26 @@ def _train_dev_split(split: str, corpus: str) -> str:
 # Where filtered Hub subsets are cached as Parquet (``aya_ar``).
 SFT_CORPORA_CACHE_DIR = Path(os.environ.get("ARABIC_EVAL_SFT_CORPORA_CACHE", "outputs/data_cache/sft_corpora"))
 
-# Label of the instruction line of the free-form template. ``السؤال:`` keeps
-# the exact anchors the LightEval prompts use; ``التعليمات:`` is the
-# one-line alternative for imperative instructions.
-INSTRUCTION_LABEL = "السؤال:"
+# Version of the ``qa`` / ``instruction`` prompt templates below. Bump it when
+# their text changes: it enters the qa_blend cache fingerprint (a packed blend
+# rendered with an older template must not be reused) and is recorded in the
+# mixture manifest and ``all_metrics.json["training"][<phase>]["data"]``.
+TEMPLATE_VERSION = 2
+
+# One-line headers (Arabic Alpaca) — the free-form one is the formulation that
+# measured best on the untrained base (loops 23 % vs 44 % for the flat
+# ``السؤال: … الإجابة:`` shape on the same 250 prompts).
+INSTRUCTION_HEADER = "فيما يلي تعليمات تصف مهمة. اكتب إجابة تكمل الطلب بشكل مناسب."
+INSTRUCTION_HEADER_WITH_INPUT = "فيما يلي تعليمات تصف مهمة، مرفقة بمدخل يوفر سياقًا إضافيًا. اكتب إجابة تكمل الطلب بشكل مناسب."
+QA_HEADER = "فيما يلي نص وسؤال عنه. أجب عن السؤال اعتمادًا على النص."
+
+# Section labels. The two versioned templates share only the answer label;
+# every other label is specific to one of them (a test pins the distinctness).
+INSTRUCTION_LABEL = "### التعليمات:"
+INPUT_LABEL = "### المدخل:"
+CONTEXT_LABEL = "### السياق:"
+QUESTION_LABEL = "### السؤال:"
+ANSWER_LABEL = "### الإجابة:"
 
 
 # --------------------------------------------------------------------------
@@ -107,19 +160,21 @@ INSTRUCTION_LABEL = "السؤال:"
 class QARecord:
     """A single question-answering example after normalization across corpora.
 
-    ``prompt_template`` selects the surface form:
-      * ``"qa"`` (default): extractive QA — ``السياق: …\\nالسؤال: …\\nالإجابة:``
-        followed by the answer text. Used by Arabic-SQuAD, TyDiQA-Arabic, ARCD.
+    ``prompt_template`` selects the surface form (see the module docstring):
+      * ``"qa"`` (default): extractive QA — ``QA_HEADER`` + ``### السياق:`` /
+        ``### السؤال:`` / ``### الإجابة:`` sections, the answer text after the
+        last one. Used by Arabic-SQuAD, TyDiQA-Arabic, ARCD.
       * ``"mcq_letter"``: 4-way MCQ — LightEval-official letter prompt
         (instruction + question + ``أ.`` / ``ب.`` / ``ج.`` / ``د.`` listing +
         ``الإجابة:``) followed by a single Arabic letter. Used by the
         synthetic ``arabic_squad_mcq`` corpus to teach the eval-time MCQ
         format. ``choices`` must be set when ``prompt_template == "mcq_letter"``.
-      * ``"instruction"``: free-form instruction following — the ``qa``
-        shape with ``question`` = the instruction, ``answer`` = the model
-        output and the ``السياق:`` line only when ``context`` (the
-        instruction's input) is non-empty. Used by CIDAR, Bactrian-X and
-        the Aya collection.
+      * ``"instruction"``: free-form instruction following —
+        ``INSTRUCTION_HEADER`` + ``### التعليمات:`` / ``### الإجابة:`` with
+        ``question`` = the instruction and ``answer`` = the model output; when
+        ``context`` (the instruction's input) is non-empty the header is
+        ``INSTRUCTION_HEADER_WITH_INPUT`` and a ``### المدخل:`` section holds
+        it. Used by CIDAR, Bactrian-X and the Aya collection.
 
     ``category`` (extractive / mcq / free_form) is derived from the template
     and is what ``PhaseConfig.mixture`` shares refer to.
@@ -153,16 +208,17 @@ def _format_qa_prompt(record: QARecord) -> str:
 
     Dispatches on ``record.prompt_template``:
 
-      * ``"qa"`` (default): ``السياق: …\\nالسؤال: …\\nالإجابة:`` — matches the
-        LightEval-official eval prefix (no ``### `` markers) so train/eval
-        share the same prefix tokens.
+      * ``"qa"`` (default): ``QA_HEADER`` + ``### السياق:`` / ``### السؤال:`` /
+        ``### الإجابة:`` sections; ends in ``"### الإجابة:\\n"`` so the answer
+        starts on its own line (``_format_qa_full`` adds no separator).
       * ``"mcq_letter"``: LightEval-official MCQ letter prompt — instruction
         line + question + ``أ.`` / ``ب.`` / ``ج.`` / ``د.`` listing +
         ``الإجابة:``. ``record.choices`` must be set; when ``record.context``
         is non-empty it's prepended as ``السياق: …\\n`` (mirrors
-        ``ArabicExamTask._format_eval_context``).
-      * ``"instruction"``: the ``qa`` shape with the ``السياق:`` line only
-        when the record carries an input (``_format_instruction_prompt``).
+        ``ArabicExamTask._format_eval_context``). Not versioned — it is the
+        eval-time MCQ prompt, byte for byte.
+      * ``"instruction"``: ``INSTRUCTION_HEADER`` + ``### التعليمات:`` /
+        [``### المدخل:``] / ``### الإجابة:`` (``_format_instruction_prompt``).
     """
     if record.prompt_template == "mcq_letter":
         return _format_mcq_letter_prompt(record)
@@ -174,20 +230,29 @@ def _format_qa_prompt(record: QARecord) -> str:
             f"known: {sorted(TEMPLATE_CATEGORY)}"
         )
     return (
-        f"السياق: {record.context}\n"
-        f"السؤال: {record.question}\n"
-        f"الإجابة:"
+        f"{QA_HEADER}\n\n"
+        f"{CONTEXT_LABEL}\n{record.context}\n\n"
+        f"{QUESTION_LABEL}\n{record.question}\n\n"
+        f"{ANSWER_LABEL}\n"
     )
 
 
 def _format_instruction_prompt(record: QARecord) -> str:
-    """Free-form instruction prompt: the extractive shape, context optional.
-
-    ``[السياق: {input}\n]{INSTRUCTION_LABEL} {instruction}\nالإجابة:`` — the
-    ``السياق:`` line only when the record carries an input.
-    """
-    head = f"السياق: {record.context}\n" if record.context else ""
-    return f"{head}{INSTRUCTION_LABEL} {record.question}\nالإجابة:"
+    """Free-form instruction prompt (Arabic Alpaca): header, ``### التعليمات:``,
+    a ``### المدخل:`` section only when the record carries an input (with the
+    with-input header), then ``### الإجابة:`` on its own line."""
+    if record.context:
+        return (
+            f"{INSTRUCTION_HEADER_WITH_INPUT}\n\n"
+            f"{INSTRUCTION_LABEL}\n{record.question}\n\n"
+            f"{INPUT_LABEL}\n{record.context}\n\n"
+            f"{ANSWER_LABEL}\n"
+        )
+    return (
+        f"{INSTRUCTION_HEADER}\n\n"
+        f"{INSTRUCTION_LABEL}\n{record.question}\n\n"
+        f"{ANSWER_LABEL}\n"
+    )
 
 
 def _format_mcq_letter_prompt(record: QARecord) -> str:
@@ -208,8 +273,14 @@ def _format_mcq_letter_prompt(record: QARecord) -> str:
 
 
 def _format_qa_full(record: QARecord) -> str:
-    """Full text including the answer. Used for tokenizing training examples."""
-    return f"{_format_qa_prompt(record)} {record.answer}"
+    """Full text including the answer. Used for tokenizing training examples.
+
+    The sectioned templates end in a newline and the answer follows directly;
+    the MCQ prompt ends in ``الإجابة:`` and the letter follows after a space
+    (the LightEval continuation is ``" أ"``)."""
+    prompt = _format_qa_prompt(record)
+    sep = "" if prompt.endswith("\n") else " "
+    return f"{prompt}{sep}{record.answer}"
 
 
 # --------------------------------------------------------------------------
@@ -611,19 +682,29 @@ def tokenize_record(
     """
     full_text = _format_qa_full(rec)
     full_enc = tokenizer.encode(full_text, max_length=max_length, truncation=True)
-    entry: Dict[str, Any] = {"input_ids": full_enc.input_ids}
+    input_ids = list(full_enc.input_ids)
+    truncated = len(input_ids) >= max_length
+    # The answer has to end in EOS or the model never learns to stop. The from-scratch
+    # tokenizers append </s> themselves; the native Llama / Qwen3 wrappers add no EOS on
+    # encode (measured 2026-09-18: a native_qwen3 SFT model ran 249 of 250 free-form
+    # answers to the character cap, 99 % of them repetition loops). Appended only when
+    # the text was not cut — a truncated record has no answer end to mark — and never to
+    # a char_ids encoding, whose rows must stay aligned (those tokenizers emit their own).
+    eos_id = (tokenizer.special_tokens or {}).get("eos_token")
+    if eos_id is not None and full_enc.char_ids is None and not truncated and (not input_ids or input_ids[-1] != eos_id):
+        input_ids.append(int(eos_id))
+    entry: Dict[str, Any] = {"input_ids": input_ids}
     if full_enc.char_ids is not None:
         entry["char_ids"] = full_enc.char_ids
-    truncated = len(full_enc.input_ids) >= max_length
     if loss_target == "answer_only":
         prompt_text = _format_qa_prompt(rec)
         prompt_enc = tokenizer.encode(prompt_text, max_length=max_length, truncation=True)
-        labels = compute_answer_only_labels(prompt_enc.input_ids, full_enc.input_ids)
+        labels = compute_answer_only_labels(prompt_enc.input_ids, input_ids)
         if labels is None:
             return None, 0, truncated
         entry["labels"] = labels
         return entry, sum(1 for l in labels if l != -100), truncated
-    return entry, len(full_enc.input_ids), truncated
+    return entry, len(input_ids), truncated
 
 
 def tokenize_records(

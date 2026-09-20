@@ -151,18 +151,18 @@ def test_max_records_caps_corpus_size(mock_load):
 # ---------------------------------------------------------------------------
 
 def test_qa_template_uses_extractive_format():
-    """Default prompt_template='qa' produces the existing
-    `السياق:`/`السؤال:`/`الإجابة:` extractive prompt."""
+    """Default prompt_template='qa' produces the sectioned extractive prompt
+    (`### السياق:` / `### السؤال:` / `### الإجابة:`), never the letter listing."""
     rec = QARecord(
         id="x", question="ما هي العاصمة؟", context="عاصمة المغرب الرباط.",
         answer="الرباط", source="arabic_squad",
     )
     assert rec.prompt_template == "qa"
     p = _format_qa_prompt(rec)
-    assert "السياق:" in p
-    assert "السؤال:" in p
-    assert p.endswith("الإجابة:")
-    assert "أ." not in p
+    assert "### السياق:\n" in p
+    assert "### السؤال:\n" in p
+    assert p.endswith("### الإجابة:\n")
+    assert "أ." not in p and "الأسئلة التالية" not in p
 
 
 def test_mcq_letter_template_produces_lighteval_format():

@@ -1,0 +1,94 @@
+# Arm A of the native-vs-AraRooPat comparison on Qwen3-4B-Base: the native
+# tokenizer with Phase 3 only. Its embeddings are already aligned (Phase 1 would
+# only damage them) and it is not given the Phase 2 pretraining-mix exposure —
+# that is the protocol chosen for this comparison, not the platform default
+# (qwen3_4b_3phase_with_sft.yaml keeps Phase 2). Arm B is
+# qwen_araroopat_3phase.yaml; both write a cell folder under the same parent so
+# the console's Free-form tab, the judge stage (baseline = this cell) and
+# `scripts/compare_results.py outputs/experiments/qwen_native_vs_araroopat/*/`
+# read them as two cells of one experiment. Phase 3 and the evaluation are
+# identical in both arms — the only differences are the tokenizer and Phase 1/2.
+experiment:
+  name: native_qwen3_sft
+  description: "Qwen3-4B-Base + native tokenizer, Phase 3 only (mixture 40/30/30, LR 2e-5) — arm A of qwen_native_vs_araroopat"
+  output_dir: outputs/experiments/qwen_native_vs_araroopat/native_qwen3_sft
+  seed: 42
+
+tokenizer:                       # a single-cell run trains THIS block (sweep.tokenizers below mirrors it)
+  type: native_qwen3
+  vocab_size: null               # the wrapper reports the model's padded 151936 rows; train() is a no-op
+  load_path: null
+  save_path: outputs/tokenizers/native_qwen3_4b
+  params: &native_params
+    model_name_or_path: Qwen/Qwen3-4B-Base
+
+model:
+  type: qwen3
+  name_or_path: Qwen/Qwen3-4B-Base
+  dtype: bfloat16
+  device: auto
+
+training:
+  corpus_params:
+    aya_ar:
+      include_datasets: ["Aya-Dataset", "Dolly-v2 (T)"]   # the two free-form sub-datasets of the standard_arabic split
+  phases:
+    embedding_alignment:
+      enabled: false             # pretrained, vocab unchanged: nothing to align
+    warmup:
+      enabled: false             # no pretraining-mix exposure in this arm (see the header)
+    sft:
+      enabled: true
+      datasets: ["tydiqa_arabic", "arcd", "arabic_squad_mcq", "cidar", "bactrian_x_ar", "aya_ar"]
+      mixture:                   # exact ratio instead of whatever the pool sizes dictate
+        total_examples: 30000
+        shares: {extractive: 0.40, mcq: 0.30, free_form: 0.30}
+        within_category: equal   # capacity-aware water-fill inside a category
+        weights: null
+        upsample: false          # a corpus short of its quota is an error, not a repeat
+        drop_truncated_answers: true   # a record whose answer max_length cut is skipped and topped up
+        seed: 42
+      steps: null                # derived: total_examples / batch_size = 7500 micro-steps (early-stop may end it sooner)
+      learning_rate: 2.0e-5      # full fine-tuning of a 4B model; 2e-4 (base.yaml) is a LoRA-scale rate that
+                                 # pushed the raw-text loss from 2.27 to 3.4 nats on the earlier 3-phase run
+      batch_size: 4
+      gradient_accumulation_steps: 4   # effective batch 16 → 1 875 optimizer updates
+      max_length: 512
+      loss_target: answer_only
+      lr_scheduler: cosine       # horizon = steps / accumulation = 1 875 updates (fixed 2026-09-18)
+      warmup_steps: 400          # micro-steps = 100 updates
+      early_stopping:
+        enabled: true
+        eval_every_n_steps: 200
+        patience: 5
+        min_delta: 0.0005
+        min_steps_before_stop: 500
+        restore_best_at_end: true
+        eval_splits: {tydiqa_arabic: dev, arcd: dev}   # the official validation splits stay held out
+
+sweep:
+  tokenizers:
+    - type: native_qwen3         # == tokenizer.type above; one cell → no --sweep, this list is informational
+      vocab_sizes: [null]
+      params: *native_params
+  tasks:                         # the free-form generation task first (the numbers this arm is judged on land
+    - type: freeform_cidar       # ~10 min after training), then the four MCQ benchmarks; max_length 1024 so
+      params: {}                 # 3-shot prompts survive under AraRooPat's ~1.5x longer sequences (same in arm B)
+    - type: acva
+      params: {num_fewshot: 0, max_length: 1024}    # ACVA is word-scored true/false — no demonstrations
+    - type: alghafa
+      params: {max_length: 1024}
+    - type: arabic_exam
+      params: {max_length: 1024}
+    - type: culture_arabic_mmlu
+      params: {max_length: 1024}
+
+evaluation:
+  intrinsic_metrics: true
+  morphological_metrics: true
+  morph_sample_size: 500
+  downstream_metrics: true
+  eval_row_dump: true            # every scored row → eval_rows/<task>.parquet (Eval-rows / Free-form tabs)
+  score_normalization: char+pmi
+  num_fewshot: 3                 # LightEval-official K=3 demonstrations for the letter-MCQ benchmarks
+  num_eval_samples: null

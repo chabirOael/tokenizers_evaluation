@@ -187,12 +187,25 @@ def run_phase(
         eps=1e-8,
     )
 
-    # 3) Scheduler
+    # 3) Scheduler. ``phase_cfg.steps`` / ``warmup_steps`` count micro-steps
+    # (one batch per loop iteration) but ``scheduler.step()`` runs once per
+    # optimizer update, i.e. every ``gradient_accumulation_steps`` micro-steps
+    # — so the horizon handed to the scheduler is in updates. (Before this the
+    # cosine got the micro-step count and, at accumulation 4, decayed only a
+    # quarter of the way by the end of the phase.)
+    accum = phase_cfg.gradient_accumulation_steps
+    scheduler_warmup_updates = math.ceil(phase_cfg.warmup_steps / accum)
+    scheduler_total_updates = math.ceil(phase_cfg.steps / accum)
     scheduler = _build_lr_scheduler(
         optimizer,
         phase_cfg.lr_scheduler,
-        phase_cfg.warmup_steps,
-        phase_cfg.steps,
+        scheduler_warmup_updates,
+        scheduler_total_updates,
+    )
+    logger.info(
+        "[%s] scheduler=%s horizon=%d updates (%d micro-steps / accum %d), warmup=%d updates",
+        phase_name, phase_cfg.lr_scheduler, scheduler_total_updates,
+        phase_cfg.steps, accum, scheduler_warmup_updates,
     )
 
     autocast_dtype = torch.bfloat16 if bf16 else (torch.float16 if fp16 else None)

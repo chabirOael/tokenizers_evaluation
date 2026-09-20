@@ -251,8 +251,16 @@ class PhaseConfig(BaseModel):
     enabled: bool = True
     datasets: List[DatasetName]
     trainable_parameters: List[str]
-    # Micro-steps (one batch per step). Required unless the phase draws from
-    # the pretraining mix, where it is derived from ``mix_tokens``.
+    # Micro-steps (one batch of ``batch_size`` sequences per step; the
+    # optimizer updates every ``gradient_accumulation_steps`` of them, so the
+    # effective batch is ``batch_size × gradient_accumulation_steps`` and the
+    # phase performs ``steps / gradient_accumulation_steps`` updates — the LR
+    # scheduler's horizon). Every other step-valued knob of a phase counts the
+    # same unit: ``warmup_steps``, ``early_stopping.eval_every_n_steps`` /
+    # ``min_steps_before_stop``, ``mix_tokens = steps × batch_size × block_size``
+    # and the mixture's ``steps = total_examples / batch_size``. Required unless
+    # the phase draws from the pretraining mix, where it is derived from
+    # ``mix_tokens``, or carries a ``mixture``.
     steps: Optional[int] = None
     # Tokens drawn from the packed pretraining mix (phases with
     # ``datasets: ["pretraining_mix"]`` only). Consecutive mix phases take
@@ -266,6 +274,8 @@ class PhaseConfig(BaseModel):
     max_length: int = 512
     loss_target: Literal["full_sequence", "answer_only"] = "answer_only"
     lr_scheduler: Literal["cosine", "constant", "linear"] = "cosine"
+    # Linear LR ramp over the first ``warmup_steps`` micro-steps (i.e.
+    # ``warmup_steps / gradient_accumulation_steps`` optimizer updates).
     warmup_steps: int = 0
     max_grad_norm: float = 1.0
     save_checkpoint: bool = True

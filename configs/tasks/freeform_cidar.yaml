@@ -13,8 +13,11 @@ task:
     token_cap_margin: 1.15
     token_cap_floor: 32
     token_cap_ceiling: 4096
-    stop_markers: ["\nالسؤال:", "\nالسياق:", "\nالإجابة:", "\n###"]
+    stop_markers: ["\nالسؤال:", "\nالسياق:", "\nالإجابة:", "\n###", "\nفيما يلي"]   # a new block / section / header restart
     marker_check_every: 16
+    # Text-level repetition-loop stop (the rules of metrics.detect_loop, on decoded text —
+    # tokenizer-agnostic, unlike a token repetition penalty). Cut before the second copy.
+    loop_stop: true
     seed: 42
     # BERTScore (in-house implementation, tasks/freeform/bertscore.py). null = skip.
     bertscore_model: "xlm-roberta-large"

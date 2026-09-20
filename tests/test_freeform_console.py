@@ -89,7 +89,7 @@ class TestBrowser:
         r0 = d["rows"][0]
         assert r0["judges"]["ja"]["score"] == 1 and r0["judges"]["jb"]["score"] == 2 and r0["disagreement"] == 1.0
         s = d["summary"]
-        assert s["n_rows"] == 12 and s["empty"] == 1 and s["degenerate"] == 1 and s["stop"] == {"eos": 4, "marker": 4, "cap": 4}
+        assert s["n_rows"] == 12 and s["empty"] == 1 and s["degenerate"] == 1 and s["stop"] == {"eos": 4, "marker": 4, "loop": 0, "cap": 4}
         assert s["judges"]["ja"]["hist"] == [3, 3, 2, 2, 2] and s["judges"]["ja"]["flagged"] == 1
         assert s["judges"]["ja"]["unparsed"] == 0 and s["judges"]["ja"]["missing"] == 0
         assert B.query(repo, cell, {"score_min": 4, "judge": "ja"})["total"] == 4
