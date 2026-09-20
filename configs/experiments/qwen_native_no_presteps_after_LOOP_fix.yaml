@@ -1,12 +1,16 @@
-# Control: the untouched Qwen3-4B-Base with its native tokenizer, no training at
-# all (every phase disabled), evaluated on the free-form task only. Its own cell
-# folder — it used to share `native_qwen3` with the SFT arm and overwrote it.
+# Control, re-run after the 2026-09-18 loop fixes (TEMPLATE_VERSION 2 sectioned prompt,
+# text-level loop stop, cuDNN-SDPA off): the untouched Qwen3-4B-Base with its native
+# tokenizer, no training at all (every phase disabled), free-form eval only. Own cell
+# folder so it sits next to `native_qwen3` (the pre-fix control) and `native_qwen3_base`.
 experiment:
-  name: qwen_native_no_presteps_after_LOOP_fix
-  description: "After the LOOP free-generation bug fix, Qwen3-4B-Base + native tokenizer, untrained control (no phases) — free-form eval only"
-  output_dir: outputs/experiments/qwen_native_no_presteps_after_LOOP_fix
+  name: native_qwen3_base_after_loop_fix
+  description: Qwen3-4B-Base + native tokenizer, untrained control (no phases), free-form eval after the loop fix — template v2 + loop stop
+  output_dir: outputs/experiments/qwen_native_vs_araroopat/native_qwen3_base_after_loop_fix
+  created_at: "2026-09-20T10:25:42+00:00"
   seed: 42
   deterministic: true
+  runs:
+    - {started_at: "2026-09-20T11:14:43+00:00", run_id: "20260920-111443_qwen_native_no_presteps_after_LOOP_fix", source: console}
 data:
   dataset_name: Jr23xd23/ArabicText-Large
   dataset_config: null

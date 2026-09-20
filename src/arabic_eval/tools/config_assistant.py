@@ -43,7 +43,7 @@ from typing import Any, Dict, Iterable, Iterator, List, Optional, Sequence, Tupl
 
 import yaml
 
-from arabic_eval.config import CORPUS_CATEGORY, ExperimentConfig
+from arabic_eval.config import EXPERIMENT_KEYS, CORPUS_CATEGORY, ExperimentConfig
 from arabic_eval.tools.config_hints import FIELD_HINTS
 from arabic_eval.tools.experiment_console import (
     ConsoleError,
@@ -59,7 +59,7 @@ from arabic_eval.tools.experiment_console import (
     validate_config,
 )
 
-_EXPERIMENT_KEYS = ("name", "description", "output_dir", "seed", "deterministic")
+_EXPERIMENT_KEYS = EXPERIMENT_KEYS
 
 
 class AssistantError(ConsoleError):
@@ -284,6 +284,7 @@ PROTOCOL = """## How to answer
 - Reply in short markdown (no headings larger than ###). Answer questions directly from the reference above; say so when something is not covered.
 - When the request changes the config, end the reply with exactly one fenced block tagged `edits`: a YAML mapping from dotted config paths to their new values. A value REPLACES the node at that path — give lists whole (`sweep.tokenizers: [...]`), `null` is allowed, list indexes are allowed in paths (`sweep.tokenizers.0.vocab_sizes`). A mapping value also replaces its node and the keys you omit take base.yaml's defaults (NOT the working config's values), so to change one key inside a mapping address it by its full path (`training.phases.sft.early_stopping.patience: 3`). Include only the paths that change. Paths are the ones of the field reference (`training.phases.sft.enabled`, `evaluation.num_eval_samples`, top-level `name`, `output_dir`, `description`, `seed`); never wrap them in `experiment:`.
 - Creating a new config: the working config below is base.yaml; set at least name, output_dir (outputs/experiments/<name>), tokenizer.type, sweep.tokenizers and sweep.tasks, plus whatever the request implies. Modifying: edit the working config below; keep everything else as it is.
+- `created_at` and `runs` are provenance the tooling writes (first save, every start): never include them in an `edits` block.
 - Never emit a config in any other form (no full YAML, no JSON). A question gets no edits block. If the request cannot be carried out without a decision from the user, ask the one question that unblocks it and emit no edits.
 
 Example of a reply that changes the config:

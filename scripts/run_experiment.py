@@ -8,6 +8,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import logging
 import sys
 from pathlib import Path
 
@@ -15,6 +16,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from arabic_eval.config import load_config
+from arabic_eval.config_edit import is_repo_experiment_config, record_run_start
 from arabic_eval.pipeline.experiment import run_experiment, run_sweep
 from arabic_eval.utils.logging import setup_logger
 
@@ -49,6 +51,15 @@ def main() -> None:
     log_file = log_dir / "experiment.log"
     error_log_file = log_dir / "errors.log"
     setup_logger("arabic_eval", log_file=log_file, error_log_file=error_log_file)
+
+    # Run log: a start from a file under configs/experiments/ is appended to that
+    # file's ``experiment.runs``. A console run passes its snapshot under
+    # outputs/runs/ instead — the console has already stamped the source file.
+    repo_root = Path(__file__).resolve().parent.parent
+    if is_repo_experiment_config(Path(args.config), repo_root):
+        stamp = record_run_start(Path(args.config), source="cli")
+        if stamp:
+            logging.getLogger("arabic_eval").info("run recorded in %s: %s", args.config, stamp["started_at"])
 
     # Run. The 3-phase pipeline trains once per (tokenizer, vocab_size) and
     # evaluates on every task in ``sweep.tasks``. ``run_experiment`` covers

@@ -10,6 +10,7 @@
 experiment:
   name: "qwen3_4b_3phase_no_sft"
   output_dir: "outputs/experiments/qwen3_4b_3phase_no_sft"
+  created_at: "2026-09-14T09:32:50+00:00"
   seed: 42
 
 tokenizer:

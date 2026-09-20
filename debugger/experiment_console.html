@@ -170,6 +170,12 @@ details.sec.sub{background:var(--sunken)}
 .row .rowhead .sw.inl input::after{width:10px;height:10px}
 .row .rowhead .sw.inl input:checked::after{left:14px}
 .row input.inferred{color:var(--ink-3);background:var(--sunken);font-style:italic}
+.row .prov{display:flex;flex-wrap:wrap;gap:4px 14px;align-items:baseline;font-size:12.5px;color:var(--ink-2);padding:4px 0}
+.row .prov .mono{font-size:12px}
+.row .prov .runs{display:flex;flex-wrap:wrap;gap:3px 10px}
+.row .prov .runs a{color:var(--accent);text-decoration:none}
+.row .prov .runs a:hover{text-decoration:underline}
+.row .prov .src{font-size:10.5px;color:var(--ink-3);border:1px solid var(--line-2);border-radius:4px;padding:0 4px;margin-left:3px}
 .cfg-item .name .ico{margin-left:auto;opacity:0;border:0;background:none;cursor:pointer;color:var(--ink-3);font-size:14px;padding:0 4px;border-radius:4px}
 .cfg-item:hover .name .ico,.cfg-item.on .name .ico{opacity:1}
 .cfg-item .name .ico:hover{color:var(--accent);background:var(--accent-soft)}
@@ -206,6 +212,9 @@ body.steps-open #view-runs .runs-grid{padding-right:356px}
 /* step panel rows */
 .sp-h{display:flex;align-items:center;gap:8px;padding:8px 12px;border-bottom:1px solid var(--line);font-size:13px}
 .sp-h b{text-transform:uppercase;letter-spacing:.04em;font-size:12px;color:var(--ink-2)}
+.sp-sort{display:flex;align-items:center;gap:6px;padding:6px 12px;border-bottom:1px solid var(--line);font-size:12px;color:var(--ink-3)}
+.sp-sort select{padding:2px 6px;border:1px solid var(--line-2);border-radius:6px;background:var(--surface);font-size:12px;color:var(--ink)}
+.sp-sort .btn{padding:1px 7px;font-family:var(--mono)}
 .sp-body{overflow:auto;padding:8px 10px 10px;font-size:13px}
 .sp-row{display:flex;align-items:center;gap:7px;padding:4px 6px;border-radius:6px;color:var(--ink-3)}
 .sp-row.done{color:var(--ink-2)}
@@ -430,6 +439,17 @@ table.ev-ch tr.pred td{outline:1px solid var(--accent);outline-offset:-1px}
 <section class="view" id="view-runs">
 <div class="side-panel left" id="runs-panel" style="display:none">
   <div class="sp-h"><b>runs</b><span class="hint mono">outputs/runs/&lt;id&gt;/</span><span class="spacer"></span><button class="btn sm" id="rp-close" title="hide">×</button></div>
+  <div class="sp-sort">sort by
+    <select id="rs-key" title="order of the run list">
+      <option value="started">started</option>
+      <option value="experiment">experiment</option>
+      <option value="status">status</option>
+      <option value="duration">duration</option>
+      <option value="kind">kind</option>
+    </select>
+    <button class="btn sm" id="rs-dir" title="flip the direction">▼</button>
+    <span class="spacer"></span><span id="rs-count" class="hint"></span>
+  </div>
   <div id="run-list" class="cfg-list"><div class="empty">no runs yet</div></div>
 </div>
 <div class="runs-grid">
@@ -683,7 +703,7 @@ const S = {
   schema:null, base:null, reg:null, presets:null, env:null,
   configs:[], file:null, cfg:null, dirty:false, errors:[], yamlDirty:false, inferOut:true,
   open:new Set(['', 'sweep', 'training', 'tokenizer', 'model']),
-  runs:[], run:null, runDetail:null, logOffset:0, logRows:[], logCur:'', logTb:false, logFilter:'', logHideProg:false, logBig:false, runsOpen:true, pollT:null, view:'configs', etab:'form',
+  runs:[], run:null, runDetail:null, runSort:{key:'started', desc:true}, logOffset:0, logRows:[], logCur:'', logTb:false, logFilter:'', logHideProg:false, logBig:false, runsOpen:true, pollT:null, view:'configs', etab:'form',
 };
 const $ = (s, r=document) => r.querySelector(s);
 const $$ = (s, r=document) => Array.from(r.querySelectorAll(s));
@@ -717,6 +737,7 @@ async function api(method, url, body){
   return data;
 }
 const fmtTime = iso => iso ? new Date(iso).toLocaleString(undefined, {hour12:false}) : '—';
+const fmtDay = iso => iso ? iso.slice(0, 10) : '—';
 function fmtDur(sec){ if (sec==null||isNaN(sec)) return '—'; sec = Math.max(0, Math.round(sec)); const hh=Math.floor(sec/3600), mm=Math.floor(sec%3600/60), ss=sec%60; return hh?`${hh}h ${mm}m`:mm?`${mm}m ${ss}s`:`${ss}s`; }
 const fmtNum = (v, d=4) => (v==null||v==='') ? '—' : (typeof v==='number' ? (Number.isInteger(v)?String(v):v.toFixed(d)) : String(v));
 function status(kind, msg, list){
@@ -1118,7 +1139,28 @@ function experimentSection(){
   rows.append(control('seed', P.seed, {label:'seed'}));
   rows.append(control('deterministic', P.deterministic, {label:'deterministic'}));
   rows.append(control('description', P.description, {label:'description', wide:true}));
+  rows.append(provenanceRow());
   return section('', 'experiment', rows);
+}
+/* created_at / runs are written by the tooling (first save, every start) — shown, never edited here. */
+function provenanceRow(){
+  const row = h('div', {class:'row wide', 'data-row':'runs'});
+  const label = h('label', {}, h('span', {class:'k'}, 'provenance')); attachHint(label, 'runs'); row.append(label);
+  const box = h('div', {class:'prov'});
+  const born = S.cfg.created_at;
+  box.append(h('span', {title: born || 'no created_at — a hand-written file that predates the stamp (saved before 2026-09-20)'}, 'created ', h('span', {class:'mono'}, born ? fmtTime(born) : '—')));
+  const runs = S.cfg.runs || [];
+  const list = h('span', {class:'runs'}, h('span', {}, `${runs.length} run${runs.length===1?'':'s'}${runs.length?':':''}`));
+  for (const r of runs){
+    const when = h('span', {class:'mono', title: r.started_at}, fmtTime(r.started_at));
+    const item = r.run_id
+      ? h('a', {href:`?run=${encodeURIComponent(r.run_id)}`, title:`open ${r.run_id} in the Runs tab`, onclick: e => { e.preventDefault(); setView('runs'); selectRun(r.run_id); }}, when)
+      : when;
+    list.append(h('span', {}, item, h('span', {class:'src'}, r.source || 'console')));
+  }
+  box.append(list);
+  row.append(box);
+  return row;
 }
 
 function renderForm(){
@@ -1168,6 +1210,9 @@ function renderConfigList(){
         h('span', {title:'phases enabled'}, ['embedding_alignment','warmup','sft'].map((p,i)=> c.phases[p]?`P${i+1}`:`–`).join(' ')));
     } else meta.append(h('span', {class:'mono', title:c.error}, c.error));
     it.append(meta);
+    if (c.valid) it.append(h('div', {class:'meta'},
+      h('span', {title: c.created_at || 'no created_at (hand-written before the stamp)'}, `created ${c.created_at ? fmtDay(c.created_at) : '—'}`), h('span', {}, '·'),
+      h('span', {title: c.last_run_at || ''}, c.runs ? `${c.runs} run${c.runs===1?'':'s'}, last ${fmtDay(c.last_run_at)} ${c.last_run_at.slice(11,16)}` : 'never run')));
     list.append(it);
   }
 }
@@ -1364,10 +1409,34 @@ function renderGpu(gpus){
   el.textContent = `${g.name.replace('NVIDIA ','')} · ${(g.memory_used_mib/1024).toFixed(1)}/${(g.memory_total_mib/1024).toFixed(0)} GB · ${g.utilization_pct}%`;
   el.className = 'chip ' + (pct>85?'warn':pct>0?'run':'');
 }
+/* run-list order. Status ranks the states by urgency; duration counts a running run up to now;
+   every key falls back to the start time so the order is stable between polls. */
+const STATUS_RANK = {running:0, cancelling:1, failed:2, lost:3, finished:4, cancelled:5};
+const RUN_SORT_KEYS = {
+  started:    r => Date.parse(r.started_at) || 0,
+  experiment: r => (r.experiment_name || r.label || '').toLowerCase(),
+  status:     r => STATUS_RANK[r.status] ?? 9,
+  duration:   r => ((r.finished_at ? Date.parse(r.finished_at) : Date.now()) - Date.parse(r.started_at)) || 0,
+  kind:       r => r.kind || 'experiment',
+};
+function sortedRuns(){
+  const {key, desc} = S.runSort, f = RUN_SORT_KEYS[key] || RUN_SORT_KEYS.started, sign = desc ? -1 : 1;
+  const cmp = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
+  return S.runs.slice().sort((a, b) => sign * cmp(f(a), f(b)) || -cmp(Date.parse(a.started_at) || 0, Date.parse(b.started_at) || 0));
+}
+function setRunSort(key, desc){
+  if (key !== undefined) S.runSort.key = key;
+  if (desc !== undefined) S.runSort.desc = desc;
+  $('#rs-key').value = S.runSort.key; $('#rs-dir').textContent = S.runSort.desc ? '▼' : '▲';
+  $('#rs-dir').title = S.runSort.desc ? 'descending — click for ascending' : 'ascending — click for descending';
+  try { localStorage.setItem('xc-runs-sort', JSON.stringify(S.runSort)); } catch(e){}
+  renderRunList();
+}
 function renderRunList(){
   const list = $('#run-list'); list.innerHTML = '';
+  $('#rs-count').textContent = S.runs.length ? `${S.runs.length} run${S.runs.length===1?'':'s'}` : '';
   if (!S.runs.length){ list.append(h('div', {class:'empty'}, 'no runs yet — start one from the Configs tab')); return; }
-  for (const r of S.runs){
+  for (const r of sortedRuns()){
     const it = h('div', {class:'run-item' + (S.run===r.run_id?' on':''), onclick: () => selectRun(r.run_id)});
     const started = new Date(r.started_at); const end = r.finished_at ? new Date(r.finished_at) : new Date();
     it.append(h('div', {class:'name'}, r.experiment_name, statusChip(r.status)),
@@ -2677,6 +2746,10 @@ document.addEventListener('DOMContentLoaded', async () => {
   $('#rp-close').onclick = () => toggleRunsPanel(false);
   try { S.runsOpen = localStorage.getItem('xc-runs') !== '0'; } catch(e){ S.runsOpen = true; }
   toggleRunsPanel(S.runsOpen);
+  try { const so = JSON.parse(localStorage.getItem('xc-runs-sort') || 'null'); if (so && RUN_SORT_KEYS[so.key]) S.runSort = {key: so.key, desc: !!so.desc}; } catch(e){}
+  $('#rs-key').onchange = e => setRunSort(e.target.value, undefined);
+  $('#rs-dir').onclick = () => setRunSort(undefined, !S.runSort.desc);
+  setRunSort();
   wireLog();
   wireEvalTab();
   wireFfTab();

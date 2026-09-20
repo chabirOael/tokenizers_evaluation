@@ -789,12 +789,30 @@ class SweepConfig(BaseModel):
 # Top-level experiment config
 # ---------------------------------------------------------------------------
 
+EXPERIMENT_KEYS = ("name", "description", "output_dir", "seed", "deterministic", "created_at", "runs")
+"""Top-level fields a YAML may nest under ``experiment:`` (hoisted by ``load_config``)."""
+
+
+class RunStamp(BaseModel):
+    """One start of the experiment, appended to ``ExperimentConfig.runs`` by
+    whoever launches it (the console or ``scripts/run_experiment.py``).
+    Immutable facts only — status and end time live in the run record."""
+    started_at: str                       # ISO-8601 with UTC offset
+    run_id: Optional[str] = None          # the console's outputs/runs/<run_id>; None for a CLI start
+    source: Literal["console", "cli"] = "console"
+
+
 class ExperimentConfig(BaseModel):
     name: str = "experiment"
     description: str = ""
     output_dir: str = "outputs/experiments/default"
     seed: int = 42
     deterministic: bool = True
+    # Provenance, maintained by the tooling (see ``arabic_eval.config_edit``):
+    # ``created_at`` is stamped once when the file is first written, ``runs``
+    # gains one entry per start. Neither is read by the pipeline.
+    created_at: Optional[str] = None
+    runs: List[RunStamp] = Field(default_factory=list)
 
     data: DataConfig = Field(default_factory=DataConfig)
     tokenizer: TokenizerConfig = Field(default_factory=TokenizerConfig)
@@ -846,7 +864,7 @@ def load_config(
     # Flatten 'experiment' key if present (some configs nest top-level fields there)
     if "experiment" in raw:
         exp = raw.pop("experiment")
-        for k in ("name", "description", "output_dir", "seed", "deterministic"):
+        for k in EXPERIMENT_KEYS:
             if k in exp:
                 raw.setdefault(k, exp[k])
 

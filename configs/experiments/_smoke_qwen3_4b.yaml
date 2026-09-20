@@ -22,6 +22,7 @@
 experiment:
   name: "_smoke_qwen3_4b"
   output_dir: "outputs/experiments/_smoke_qwen3_4b"
+  created_at: "2026-09-14T09:32:50+00:00"
   seed: 42
 
 tokenizer:

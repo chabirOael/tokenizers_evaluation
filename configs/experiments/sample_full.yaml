@@ -21,8 +21,12 @@ experiment:
   name: "sample_full"                                # Used in logs and as fallback output dir
   output_dir: "outputs/experiments/sample_full"      # Where artifacts land
   description: ""                                    # Free text, persisted to config.json
+  created_at: "2026-05-05T19:51:30+03:00"           # Provenance, written by the tooling when the file is first
+                                                     #   saved (ISO-8601 + UTC offset). Never set by hand.
   seed: 42                                           # Master RNG seed (data shuffles, init, etc.)
   deterministic: true                                # set torch.backends.cudnn.deterministic=true
+  runs: []                                           # Provenance: one {started_at, run_id?, source} per start,
+                                                     #   appended by the console and by run_experiment.py. Read-only.
 
 
 # ---------------------------------------------------------------------------

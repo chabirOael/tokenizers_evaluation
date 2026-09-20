@@ -45,6 +45,7 @@ experiment:
   name: "all_tokenizers_sweep_pretrain_mix"
   output_dir: "outputs/experiments/all_tokenizers_sweep_pretrain_mix"
   description: "All tokenizers; Phase 1 + Phase 2 on the FineWeb-2 / Wikipedia / ArabicWeb24 packed mix."
+  created_at: "2026-09-14T14:57:17+00:00"
   seed: 42
   deterministic: true
 

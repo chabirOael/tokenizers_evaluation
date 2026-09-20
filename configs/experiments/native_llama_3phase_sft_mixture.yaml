@@ -25,6 +25,7 @@
 experiment:
   name: "native_llama_3phase_sft_mixture"
   output_dir: "outputs/experiments/native_llama_3phase_sft_mixture"
+  created_at: "2026-09-17T12:41:01+00:00"
   seed: 42
 
 tokenizer:

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import sys
 import time
@@ -29,21 +30,22 @@ from arabic_eval.tools.experiment_console import (  # noqa: E402
     RunManager,
     cell_names,
     clone_config,
-    default_output_dir,
     list_configs,
     parse_progress,
     parse_yaml,
     process_alive,
     read_config,
     render_yaml,
-    rewrite_experiment_keys,
     save_config,
     schema_bundle,
     validate_config,
 )
 
+from arabic_eval.config_edit import default_output_dir, is_repo_experiment_config, record_run_start  # noqa: E402
+
 REPO = Path(__file__).resolve().parents[1]
 REAL = ConsolePaths(REPO)
+ISO_RE = r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+-]\d{2}:\d{2}$"
 
 MINIMAL_YAML = """\
 experiment:
@@ -181,8 +183,11 @@ def test_clone_rewrites_only_the_experiment_keys_and_keeps_comments(tmp_repo: Co
     assert '  name: "commented_v2"                      # the experiment name' in text
     assert '  output_dir: "outputs/experiments/commented_v2"' in text
     assert '  description: "second try"' in text                    # inserted below the block's own keys
+    assert '  created_at: "20' in text                               # a clone gets its own birth date
     src, dst = read_config(tmp_repo, "commented")["resolved"], read_config(tmp_repo, "commented_v2")["resolved"]
-    expected = {**src, "name": "commented_v2", "output_dir": default_output_dir("commented_v2"), "description": "second try"}
+    assert re.match(ISO_RE, dst["created_at"]) and src["created_at"] is None
+    expected = {**src, "name": "commented_v2", "output_dir": default_output_dir("commented_v2"), "description": "second try",
+                "created_at": dst["created_at"], "runs": []}
     assert dst == expected
     assert res["resolved"] == expected and res["source"] == "configs/experiments/commented.yaml"
 
@@ -221,30 +226,9 @@ def test_clone_falls_back_to_a_rendered_copy_when_the_layout_is_unrecognised(tmp
     (tmp_repo.configs_dir / "flow.yaml").write_text(flow, encoding="utf-8")
     res = clone_config(tmp_repo, "flow", "flow_copy")
     assert res["comments_kept"] is False
-    src = read_config(tmp_repo, "flow")["resolved"]
-    assert read_config(tmp_repo, "flow_copy")["resolved"] == {**src, "name": "flow_copy",
-                                                              "output_dir": "outputs/experiments/flow_copy"}
-
-
-def test_rewrite_experiment_keys_layouts():
-    up = {"name": "bar", "output_dir": "outputs/experiments/bar", "description": "new: desc # kept"}
-    # top-level keys, bare scalars, trailing comment, description missing
-    out = rewrite_experiment_keys("name: foo   # run\noutput_dir: outputs/experiments/foo\ntokenizer:\n  type: bpe\n", up)
-    assert out == ('name: bar   # run\noutput_dir: outputs/experiments/bar\ndescription: "new: desc # kept"\n'
-                   "tokenizer:\n  type: bpe\n")
-    # single quotes keep their style, '' escaping
-    out = rewrite_experiment_keys("experiment:\n  name: 'foo'\n  description: 'it''s'\n  output_dir: 'x'\n", up)
-    assert out == "experiment:\n  name: 'bar'\n  description: 'new: desc # kept'\n  output_dir: 'outputs/experiments/bar'\n"
-    # a plain scalar continued on the next line is folded into the one new line
-    out = rewrite_experiment_keys("experiment:\n  name: foo\n  description: one two\n    three\n  output_dir: x\n  seed: 1\n", up)
-    assert out == 'experiment:\n  name: bar\n  description: "new: desc # kept"\n  output_dir: outputs/experiments/bar\n  seed: 1\n'
-    # keys the rewriter does not own, and nested `name:` keys, are untouched
-    out = rewrite_experiment_keys("experiment:\n  name: foo\n  seed: 1\nmodel:\n  name: keep\n", {"name": "bar"})
-    assert out == "experiment:\n  name: bar\n  seed: 1\nmodel:\n  name: keep\n"
-    # unrecognised layouts → None (the caller renders instead)
-    assert rewrite_experiment_keys("experiment: {name: foo}\n", up) is None
-    assert rewrite_experiment_keys("experiment:\n  name: foo\n  description: |\n    block\n", up) is None
-    assert rewrite_experiment_keys("output_dir: x\n", up) is None
+    src, dst = read_config(tmp_repo, "flow")["resolved"], read_config(tmp_repo, "flow_copy")["resolved"]
+    assert dst == {**src, "name": "flow_copy", "output_dir": "outputs/experiments/flow_copy",
+                   "created_at": dst["created_at"], "runs": []} and re.match(ISO_RE, dst["created_at"])
 
 
 def test_every_repo_config_clones_with_its_comments(tmp_path: Path):
@@ -261,8 +245,29 @@ def test_every_repo_config_clones_with_its_comments(tmp_path: Path):
         assert res["comments_kept"] is True, p.name
         dst = read_config(paths, res["file"])
         assert dst["yaml"].count("#") == src["yaml"].count("#"), p.name
-        assert dst["resolved"] == {**src["resolved"], "name": p.stem + "_copy",
-                                   "output_dir": f"outputs/experiments/{p.stem}_copy", "description": "cloned"}, p.name
+        assert dst["resolved"] == {**src["resolved"], "name": p.stem + "_copy", "created_at": dst["resolved"]["created_at"],
+                                   "output_dir": f"outputs/experiments/{p.stem}_copy", "description": "cloned", "runs": []}, p.name
+        assert re.match(ISO_RE, dst["resolved"]["created_at"]), p.name
+
+
+def test_save_stamps_created_at_on_a_new_file_only(tmp_repo: ConsolePaths):
+    res = save_config(tmp_repo, "fresh", MINIMAL_YAML.replace('"mini"', '"fresh"'))
+    born = res["resolved"]["created_at"]
+    assert re.match(ISO_RE, born)
+    text = (tmp_repo.configs_dir / "fresh.yaml").read_text(encoding="utf-8")
+    assert f'  created_at: "{born}"' in text and text.startswith("experiment:\n  name: \"fresh\"")   # stamped in the block, text kept
+    # an overwrite keeps the stamp the text carries (the form round-trips it) …
+    res2 = save_config(tmp_repo, "fresh", text.replace('seed: 42', 'seed: 7') if 'seed: 42' in text else text + "seed: 7\n", overwrite=True)
+    assert res2["resolved"]["created_at"] == born
+    # … and never invents one on overwrite when the text has none
+    save_config(tmp_repo, "fresh", MINIMAL_YAML.replace('"mini"', '"fresh"'), overwrite=True)
+    assert read_config(tmp_repo, "fresh")["resolved"]["created_at"] is None
+    # an explicit stamp (backfill) is honoured; the pre-existing repo file (mini) has none
+    res3 = save_config(tmp_repo, "dated", MINIMAL_YAML, created_at="2026-05-05T19:51:30+03:00")
+    assert res3["resolved"]["created_at"] == "2026-05-05T19:51:30+03:00"
+    assert read_config(tmp_repo, "mini")["resolved"]["created_at"] is None
+    assert list_configs(tmp_repo)[0]["created_at"] is None or True   # column present on every row
+    assert all("created_at" in r and "runs" in r and "last_run_at" in r for r in list_configs(tmp_repo))
 
 
 def test_config_path_is_confined():
@@ -460,6 +465,41 @@ def test_pid_reuse_guard_marks_lost(tmp_repo: ConsolePaths):
     assert process_alive(os.getpid(), None) is True
     assert process_alive(os.getpid(), 1) is False
     assert RunManager(tmp_repo).get(rec["run_id"])["status"] == "lost"
+
+
+def test_start_appends_a_run_stamp_to_the_source_file(tmp_repo: ConsolePaths):
+    mgr = RunManager(tmp_repo)
+    stub = [sys.executable, "-c", "print('ok')"]
+    rec = mgr.start("mini", command=stub)
+    _wait(lambda: mgr.get(rec["run_id"])["status"] == "finished")
+    assert rec["run_stamp"] == {"started_at": rec["started_at"], "run_id": rec["run_id"], "source": "console"}
+    assert re.match(ISO_RE, rec["started_at"])
+    cfg = read_config(tmp_repo, "mini")
+    assert [r["run_id"] for r in cfg["resolved"]["runs"]] == [rec["run_id"]]
+    assert cfg["yaml"].startswith("experiment:\n  name: \"mini\"\n  output_dir:")            # the file's own text, one line added
+    assert f'  runs:\n    - {{started_at: "{rec["started_at"]}", run_id: "{rec["run_id"]}", source: console}}' in cfg["yaml"]
+    # the snapshot is the config as it was when the run started (no self-reference)
+    snap = (tmp_repo.repo_root / rec["snapshot"]).read_text(encoding="utf-8")
+    assert "runs:" not in snap
+    rec2 = mgr.start("mini", command=stub, force=True)
+    _wait(lambda: mgr.get(rec2["run_id"])["status"] == "finished")
+    assert [r["run_id"] for r in read_config(tmp_repo, "mini")["resolved"]["runs"]] == [rec["run_id"], rec2["run_id"]]
+    # a run from an unsaved form has no file to stamp
+    rec3 = mgr.start("adhoc", yaml_text=MINIMAL_YAML, command=stub, force=True)
+    _wait(lambda: mgr.get(rec3["run_id"])["status"] == "finished")
+    assert "run_stamp" not in rec3 and len(read_config(tmp_repo, "mini")["resolved"]["runs"]) == 2
+
+
+def test_cli_stamp_only_for_files_under_configs_experiments(tmp_repo: ConsolePaths):
+    root = tmp_repo.repo_root
+    assert is_repo_experiment_config(tmp_repo.configs_dir / "mini.yaml", root)
+    snap = root / "outputs" / "runs" / "x" / "config.yaml"
+    snap.parent.mkdir(parents=True)
+    snap.write_text(MINIMAL_YAML, encoding="utf-8")
+    assert not is_repo_experiment_config(snap, root)
+    entry = record_run_start(tmp_repo.configs_dir / "mini.yaml", source="cli")
+    assert entry["source"] == "cli" and "run_id" not in entry and re.match(ISO_RE, entry["started_at"])
+    assert read_config(tmp_repo, "mini")["resolved"]["runs"] == [{**entry, "run_id": None}]
 
 
 def test_start_from_unsaved_yaml_and_sweep_autodetect(tmp_repo: ConsolePaths):

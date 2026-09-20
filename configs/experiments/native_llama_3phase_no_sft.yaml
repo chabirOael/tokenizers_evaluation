@@ -11,6 +11,7 @@
 experiment:
   name: "native_llama_3phase_no_sft"
   output_dir: "outputs/experiments/native_llama_3phase_no_sft"
+  created_at: "2026-05-05T19:51:30+03:00"
   seed: 42
 
 tokenizer:

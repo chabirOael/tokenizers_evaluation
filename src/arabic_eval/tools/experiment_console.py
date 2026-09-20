@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import copy
 import json
+import logging
 import os
 import re
 import shlex
@@ -42,7 +43,11 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple, get_args
 import yaml
 from pydantic import ValidationError
 
-from arabic_eval.config import DatasetName, ExperimentConfig, _deep_merge, load_yaml
+from arabic_eval.config import EXPERIMENT_KEYS, DatasetName, ExperimentConfig, _deep_merge, load_yaml
+from arabic_eval.config_edit import (
+    default_output_dir, get_created_at, now_iso, record_run_start, rewrite_experiment_keys,
+    stamp_created_at, strip_runs,
+)
 from arabic_eval.tools.config_hints import FIELD_HINTS
 
 # ---------------------------------------------------------------------------
@@ -50,8 +55,9 @@ from arabic_eval.tools.config_hints import FIELD_HINTS
 # ---------------------------------------------------------------------------
 
 _NAME_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.-]*$")
-_EXPERIMENT_KEYS = ("name", "description", "output_dir", "seed", "deterministic")
+_EXPERIMENT_KEYS = EXPERIMENT_KEYS
 _SECTION_ORDER = ("data", "tokenizer", "model", "task", "training", "evaluation", "tracking", "sweep")
+log = logging.getLogger(__name__)
 CANCEL_GRACE_SEC = 15.0
 _MAX_LOG_CHUNK = 512 * 1024
 
@@ -327,6 +333,8 @@ def list_configs(paths: ConsolePaths) -> List[dict]:
             cfg = _load_cfg(paths, p)
             row.update({
                 "name": cfg.name, "description": cfg.description, "output_dir": cfg.output_dir,
+                "created_at": cfg.created_at, "runs": len(cfg.runs),
+                "last_run_at": cfg.runs[-1].started_at if cfg.runs else None,
                 "tokenizer": cfg.tokenizer.type, "model": cfg.model.name_or_path,
                 "cells": cell_names(cfg), "sweep": is_sweep(cfg),
                 "tasks": [t.type for t in cfg.sweep.tasks] if cfg.sweep else [],
@@ -418,7 +426,11 @@ def parse_yaml(text: str) -> dict:
     return flatten_experiment(data)
 
 
-def save_config(paths: ConsolePaths, name: str, text: str, overwrite: bool = False) -> dict:
+def save_config(paths: ConsolePaths, name: str, text: str, overwrite: bool = False,
+                created_at: Optional[str] = None) -> dict:
+    """Write ``configs/experiments/<name>.yaml``. A file written for the first
+    time is stamped ``created_at`` (now, or *created_at*) unless the text
+    already carries one; an overwrite keeps whatever the text says."""
     path = paths.config_path(name)
     if path.exists() and not overwrite:
         raise ConsoleError(f"{paths.rel(path)} exists — tick overwrite to replace it")
@@ -426,6 +438,13 @@ def save_config(paths: ConsolePaths, name: str, text: str, overwrite: bool = Fal
     if not v["ok"]:
         raise ConsoleError("refusing to save an invalid config: "
                            + "; ".join(f"{e['loc']}: {e['msg']}" for e in v["errors"]))
+    if not path.exists() and not get_created_at(text):
+        stamped = stamp_created_at(text, created_at)
+        if stamped is None:                      # a layout the rewriter cannot edit: render it, stamped
+            resolved = dict(v["resolved"]); resolved["created_at"] = created_at or now_iso()
+            stamped = render_yaml(paths, resolved, "delta")
+        text = stamped
+        v = validate_config(paths, parse_yaml(text))
     paths.configs_dir.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(".yaml.tmp")
     tmp.write_text(text if text.endswith("\n") else text + "\n", encoding="utf-8")
@@ -438,152 +457,17 @@ def save_config(paths: ConsolePaths, name: str, text: str, overwrite: bool = Fal
 # Clone
 # ---------------------------------------------------------------------------
 
-OUTPUT_DIR_TEMPLATE = "outputs/experiments/{name}"
-_CLONE_KEYS = ("name", "output_dir", "description")
-_RE_EXP_BLOCK = re.compile(r"^experiment:\s*(#.*)?$")
-_RE_KEY_LINE = re.compile(r"^(?P<indent>[ \t]*)(?P<key>name|output_dir|description):(?P<rest>.*)$")
-_RE_BARE_SAFE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_./-]*$")
-_YAML_RESERVED = frozenset({"null", "true", "false", "yes", "no", "on", "off", "~", ""})
-DQ = '"'
-
-
-def default_output_dir(name: str) -> str:
-    """The convention every config in the repo follows unless it is a cell
-    folder of a larger campaign: ``outputs/experiments/<name>``."""
-    return OUTPUT_DIR_TEMPLATE.format(name=name)
-
-
-def _split_scalar_comment(rest: str) -> Optional[Tuple[str, str, str]]:
-    """Split the text after ``key:`` into ``(leading_ws, scalar, trailing)``
-    where *trailing* is the ``  # comment`` (or empty). ``None`` for a shape
-    the rewriter does not handle (block scalars ``|`` / ``>``, flow nodes,
-    anchors) — the caller then falls back to rendering."""
-    lead = rest[: len(rest) - len(rest.lstrip())]
-    body = rest.strip()
-    if body.startswith(("|", ">", "{", "[", "&", "*", "!")):
-        return None
-    if body.startswith('"'):
-        i, n = 1, len(body)
-        while i < n:
-            if body[i] == "\\":
-                i += 2
-                continue
-            if body[i] == '"':
-                break
-            i += 1
-        if i >= n:
-            return None
-        return lead, body[: i + 1], body[i + 1:]
-    if body.startswith("'"):
-        i, n = 1, len(body)
-        while i < n:
-            if body[i] == "'":
-                if i + 1 < n and body[i + 1] == "'":
-                    i += 2
-                    continue
-                break
-            i += 1
-        if i >= n:
-            return None
-        return lead, body[: i + 1], body[i + 1:]
-    m = re.search(r"\s+#", body)
-    if m:
-        return lead, body[: m.start()], body[m.start():]
-    return lead, body, ""
-
-
-def _render_scalar(value: str, like: str) -> str:
-    """*value* in the quoting style of the scalar it replaces."""
-    if like.startswith('"'):
-        return json.dumps(value, ensure_ascii=False)
-    if like.startswith("'"):
-        return "'" + value.replace("'", "''") + "'"
-    if _RE_BARE_SAFE.match(value) and value.lower() not in _YAML_RESERVED:
-        return value
-    return json.dumps(value, ensure_ascii=False)
-
-
-def rewrite_experiment_keys(text: str, updates: Dict[str, str]) -> Optional[str]:
-    """Rewrite ``name`` / ``output_dir`` / ``description`` in a config's own
-    text — inside its ``experiment:`` block when it has one, else at the top
-    level — keeping every other byte (comments, order, quoting). A scalar
-    that continues on more-indented lines is folded into the one new line; a
-    key the file lacks is inserted below the block's own. Returns ``None``
-    when the layout is not one of those two (flow mapping, block scalar, no
-    ``name`` line): the caller renders a fresh copy instead."""
-    lines = text.split("\n")
-    start, end, indent = None, len(lines), ""
-    for i, ln in enumerate(lines):
-        if _RE_EXP_BLOCK.match(ln):
-            start = i + 1
-            break
-    if start is not None:
-        for j in range(start, len(lines)):
-            ln = lines[j]
-            if ln.strip() and not ln[0].isspace() and not ln.lstrip().startswith("#"):
-                end = j
-                break
-        first = next((lines[j] for j in range(start, end) if lines[j].strip() and not lines[j].lstrip().startswith("#")), None)
-        if first is None:
-            return None
-        indent = first[: len(first) - len(first.lstrip())]
-    else:
-        start = 0
-
-    def _indent_of(ln: str) -> int:
-        return len(ln) - len(ln.lstrip())
-
-    found: Dict[str, Tuple[int, int]] = {}      # key → (line index, span incl. continuation lines)
-    for j in range(start, end):
-        m = _RE_KEY_LINE.match(lines[j])
-        if not (m and m.group("indent") == indent and m.group("key") not in found):
-            continue
-        span = 1
-        while j + span < end and lines[j + span].strip() and _indent_of(lines[j + span]) > len(indent) \
-                and not lines[j + span].lstrip().startswith("#"):
-            span += 1
-        found[m.group("key")] = (j, span)
-    if "name" not in found:
-        return None
-
-    replace: Dict[int, str] = {}
-    skip: set = set()
-    for key in _CLONE_KEYS:
-        if key not in updates or key not in found:
-            continue
-        j, span = found[key]
-        m = _RE_KEY_LINE.match(lines[j])
-        rest = " ".join([m.group("rest")] + [lines[j + k].strip() for k in range(1, span)])
-        parts = _split_scalar_comment(rest)
-        if parts is None:
-            return None
-        lead, scalar, trailing = parts
-        replace[j] = f"{indent}{key}:{lead or ' '}{_render_scalar(updates[key], scalar)}{trailing}"
-        skip.update(range(j + 1, j + span))
-    last = max(j + span - 1 for j, span in found.values())    # missing keys go right below the block's own
-    out: List[str] = []
-    for j, ln in enumerate(lines):
-        if j in skip:
-            continue
-        out.append(replace.get(j, ln))
-        if j == last:
-            for key in _CLONE_KEYS:
-                if key in updates and key not in found:
-                    out.append(f"{indent}{key}: {_render_scalar(updates[key], DQ)}")
-    return "\n".join(out)
-
-
 def clone_config(paths: ConsolePaths, source: str, new_file: str, *, name: Optional[str] = None,
                  output_dir: Optional[str] = None, description: Optional[str] = None,
                  overwrite: bool = False) -> dict:
     """Copy ``configs/experiments/<source>`` to ``<new_file>`` with a new
-    experiment name / output_dir / description. The copy is the source's own
-    text with only those lines rewritten (comments intact — a hand-written
-    file stays readable); when the file's layout defeats the rewriter, or the
-    rewrite does not re-parse to exactly the intended config, a rendered
-    delta copy is written instead and ``comments_kept`` is false. Defaults:
-    ``name`` = the new file's stem, ``output_dir`` = ``outputs/experiments/<name>``,
-    ``description`` untouched."""
+    experiment name / output_dir / description, a fresh ``created_at`` and an
+    empty ``runs``. The copy is the source's own text with only those lines
+    rewritten (comments intact — a hand-written file stays readable); when
+    the file's layout defeats the rewriter, or the rewrite does not re-parse
+    to exactly the intended config, a rendered delta copy is written instead
+    and ``comments_kept`` is false. Defaults: ``name`` = the new file's stem,
+    ``output_dir`` = ``outputs/experiments/<name>``, ``description`` untouched."""
     src_path = paths.config_path(source)
     if not src_path.exists():
         raise ConsoleError(f"no such config: {paths.rel(src_path)}")
@@ -598,13 +482,15 @@ def clone_config(paths: ConsolePaths, source: str, new_file: str, *, name: Optio
                            + "; ".join(f"{e['loc']}: {e['msg']}" for e in src["errors"]))
     name = (name or "").strip() or dst_path.stem
     output_dir = (output_dir or "").strip() or default_output_dir(name)
-    updates: Dict[str, str] = {"name": name, "output_dir": output_dir}
+    updates: Dict[str, str] = {"name": name, "output_dir": output_dir, "created_at": now_iso()}
     if description is not None:
         updates["description"] = description
     expected = dict(src["resolved"])
     expected.update(updates)
+    expected["runs"] = []                        # a clone is a new experiment: its own birth date, no run history
 
-    text = rewrite_experiment_keys(src["yaml"], updates)
+    text = strip_runs(src["yaml"])
+    text = rewrite_experiment_keys(text, updates) if text is not None else None
     comments_kept = False
     if text is not None:
         try:
@@ -1117,7 +1003,16 @@ class RunManager:
             "experiment_log": f"outputs/logs/{cfg.name}/experiment.log",
         }
         snapshots = {"config.yaml": yaml_text if yaml_text.endswith("\n") else yaml_text + "\n"}
-        return self._launch(label, argv, record, snapshots, snapshot_main="config.yaml", force=force, env=env)
+        rec = self._launch(label, argv, record, snapshots, snapshot_main="config.yaml", force=force, env=env)
+        if config_ref is not None:               # a run from a saved file goes into that file's run log
+            try:
+                stamp = record_run_start(src, source="console", run_id=rec["run_id"], when=rec["started_at"])
+            except OSError as e:
+                log.warning("could not record the run start in %s: %s", config_ref, e)
+                stamp = None
+            rec["run_stamp"] = stamp
+            self._write(rec)
+        return rec
 
     def start_judge(self, experiment: str, judges: Sequence[str], *, baseline: Optional[str] = None,
                     limit: Optional[int] = None, overwrite: bool = False, force: bool = False,
@@ -1176,7 +1071,7 @@ class RunManager:
                 raise RunConflict(
                     f"run {active[0]['run_id']} is still {active[0]['status']}; tick 'run concurrently' to start anyway"
                 )
-            ts = datetime.now()
+            ts = datetime.now().astimezone()
             run_id = f"{ts.strftime('%Y%m%d-%H%M%S')}_{label}"
             n = 1
             while self.run_dir(run_id).exists():
