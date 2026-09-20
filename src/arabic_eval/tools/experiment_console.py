@@ -430,7 +430,192 @@ def save_config(paths: ConsolePaths, name: str, text: str, overwrite: bool = Fal
     tmp = path.with_suffix(".yaml.tmp")
     tmp.write_text(text if text.endswith("\n") else text + "\n", encoding="utf-8")
     os.replace(tmp, path)
-    return {"path": paths.rel(path), "file": path.name, "resolved": v["resolved"]}
+    return {"path": paths.rel(path), "file": path.name, "resolved": v["resolved"], "results": v["results"],
+            "warnings": v["warnings"]}
+
+
+# ---------------------------------------------------------------------------
+# Clone
+# ---------------------------------------------------------------------------
+
+OUTPUT_DIR_TEMPLATE = "outputs/experiments/{name}"
+_CLONE_KEYS = ("name", "output_dir", "description")
+_RE_EXP_BLOCK = re.compile(r"^experiment:\s*(#.*)?$")
+_RE_KEY_LINE = re.compile(r"^(?P<indent>[ \t]*)(?P<key>name|output_dir|description):(?P<rest>.*)$")
+_RE_BARE_SAFE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_./-]*$")
+_YAML_RESERVED = frozenset({"null", "true", "false", "yes", "no", "on", "off", "~", ""})
+DQ = '"'
+
+
+def default_output_dir(name: str) -> str:
+    """The convention every config in the repo follows unless it is a cell
+    folder of a larger campaign: ``outputs/experiments/<name>``."""
+    return OUTPUT_DIR_TEMPLATE.format(name=name)
+
+
+def _split_scalar_comment(rest: str) -> Optional[Tuple[str, str, str]]:
+    """Split the text after ``key:`` into ``(leading_ws, scalar, trailing)``
+    where *trailing* is the ``  # comment`` (or empty). ``None`` for a shape
+    the rewriter does not handle (block scalars ``|`` / ``>``, flow nodes,
+    anchors) — the caller then falls back to rendering."""
+    lead = rest[: len(rest) - len(rest.lstrip())]
+    body = rest.strip()
+    if body.startswith(("|", ">", "{", "[", "&", "*", "!")):
+        return None
+    if body.startswith('"'):
+        i, n = 1, len(body)
+        while i < n:
+            if body[i] == "\\":
+                i += 2
+                continue
+            if body[i] == '"':
+                break
+            i += 1
+        if i >= n:
+            return None
+        return lead, body[: i + 1], body[i + 1:]
+    if body.startswith("'"):
+        i, n = 1, len(body)
+        while i < n:
+            if body[i] == "'":
+                if i + 1 < n and body[i + 1] == "'":
+                    i += 2
+                    continue
+                break
+            i += 1
+        if i >= n:
+            return None
+        return lead, body[: i + 1], body[i + 1:]
+    m = re.search(r"\s+#", body)
+    if m:
+        return lead, body[: m.start()], body[m.start():]
+    return lead, body, ""
+
+
+def _render_scalar(value: str, like: str) -> str:
+    """*value* in the quoting style of the scalar it replaces."""
+    if like.startswith('"'):
+        return json.dumps(value, ensure_ascii=False)
+    if like.startswith("'"):
+        return "'" + value.replace("'", "''") + "'"
+    if _RE_BARE_SAFE.match(value) and value.lower() not in _YAML_RESERVED:
+        return value
+    return json.dumps(value, ensure_ascii=False)
+
+
+def rewrite_experiment_keys(text: str, updates: Dict[str, str]) -> Optional[str]:
+    """Rewrite ``name`` / ``output_dir`` / ``description`` in a config's own
+    text — inside its ``experiment:`` block when it has one, else at the top
+    level — keeping every other byte (comments, order, quoting). A scalar
+    that continues on more-indented lines is folded into the one new line; a
+    key the file lacks is inserted below the block's own. Returns ``None``
+    when the layout is not one of those two (flow mapping, block scalar, no
+    ``name`` line): the caller renders a fresh copy instead."""
+    lines = text.split("\n")
+    start, end, indent = None, len(lines), ""
+    for i, ln in enumerate(lines):
+        if _RE_EXP_BLOCK.match(ln):
+            start = i + 1
+            break
+    if start is not None:
+        for j in range(start, len(lines)):
+            ln = lines[j]
+            if ln.strip() and not ln[0].isspace() and not ln.lstrip().startswith("#"):
+                end = j
+                break
+        first = next((lines[j] for j in range(start, end) if lines[j].strip() and not lines[j].lstrip().startswith("#")), None)
+        if first is None:
+            return None
+        indent = first[: len(first) - len(first.lstrip())]
+    else:
+        start = 0
+
+    def _indent_of(ln: str) -> int:
+        return len(ln) - len(ln.lstrip())
+
+    found: Dict[str, Tuple[int, int]] = {}      # key → (line index, span incl. continuation lines)
+    for j in range(start, end):
+        m = _RE_KEY_LINE.match(lines[j])
+        if not (m and m.group("indent") == indent and m.group("key") not in found):
+            continue
+        span = 1
+        while j + span < end and lines[j + span].strip() and _indent_of(lines[j + span]) > len(indent) \
+                and not lines[j + span].lstrip().startswith("#"):
+            span += 1
+        found[m.group("key")] = (j, span)
+    if "name" not in found:
+        return None
+
+    replace: Dict[int, str] = {}
+    skip: set = set()
+    for key in _CLONE_KEYS:
+        if key not in updates or key not in found:
+            continue
+        j, span = found[key]
+        m = _RE_KEY_LINE.match(lines[j])
+        rest = " ".join([m.group("rest")] + [lines[j + k].strip() for k in range(1, span)])
+        parts = _split_scalar_comment(rest)
+        if parts is None:
+            return None
+        lead, scalar, trailing = parts
+        replace[j] = f"{indent}{key}:{lead or ' '}{_render_scalar(updates[key], scalar)}{trailing}"
+        skip.update(range(j + 1, j + span))
+    last = max(j + span - 1 for j, span in found.values())    # missing keys go right below the block's own
+    out: List[str] = []
+    for j, ln in enumerate(lines):
+        if j in skip:
+            continue
+        out.append(replace.get(j, ln))
+        if j == last:
+            for key in _CLONE_KEYS:
+                if key in updates and key not in found:
+                    out.append(f"{indent}{key}: {_render_scalar(updates[key], DQ)}")
+    return "\n".join(out)
+
+
+def clone_config(paths: ConsolePaths, source: str, new_file: str, *, name: Optional[str] = None,
+                 output_dir: Optional[str] = None, description: Optional[str] = None,
+                 overwrite: bool = False) -> dict:
+    """Copy ``configs/experiments/<source>`` to ``<new_file>`` with a new
+    experiment name / output_dir / description. The copy is the source's own
+    text with only those lines rewritten (comments intact — a hand-written
+    file stays readable); when the file's layout defeats the rewriter, or the
+    rewrite does not re-parse to exactly the intended config, a rendered
+    delta copy is written instead and ``comments_kept`` is false. Defaults:
+    ``name`` = the new file's stem, ``output_dir`` = ``outputs/experiments/<name>``,
+    ``description`` untouched."""
+    src_path = paths.config_path(source)
+    if not src_path.exists():
+        raise ConsoleError(f"no such config: {paths.rel(src_path)}")
+    dst_path = paths.config_path(new_file)
+    if dst_path == src_path:
+        raise ConsoleError("the clone needs a different file name")
+    if dst_path.exists() and not overwrite:
+        raise ConsoleError(f"{paths.rel(dst_path)} exists — tick overwrite to replace it")
+    src = read_config(paths, source)
+    if not src["valid"]:
+        raise ConsoleError("the source does not validate — fix it before cloning: "
+                           + "; ".join(f"{e['loc']}: {e['msg']}" for e in src["errors"]))
+    name = (name or "").strip() or dst_path.stem
+    output_dir = (output_dir or "").strip() or default_output_dir(name)
+    updates: Dict[str, str] = {"name": name, "output_dir": output_dir}
+    if description is not None:
+        updates["description"] = description
+    expected = dict(src["resolved"])
+    expected.update(updates)
+
+    text = rewrite_experiment_keys(src["yaml"], updates)
+    comments_kept = False
+    if text is not None:
+        try:
+            v = validate_config(paths, parse_yaml(text))
+        except ConsoleError:
+            v = {"ok": False}
+        comments_kept = bool(v.get("ok")) and v["resolved"] == expected
+    if not comments_kept:
+        text = render_yaml(paths, expected, "delta")
+    saved = save_config(paths, new_file, text, overwrite=overwrite)
+    return {**saved, "source": paths.rel(src_path), "comments_kept": comments_kept}
 
 
 # ---------------------------------------------------------------------------

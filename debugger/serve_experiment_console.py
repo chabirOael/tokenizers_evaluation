@@ -21,6 +21,9 @@ Routes
     POST /api/config/render         {"config": {...}, "mode": "full"|"delta"}  → {"yaml": "..."}
     POST /api/config/parse          {"yaml": "..."}                → {"config": {...}}
     POST /api/configs/save          {"name", "yaml", "overwrite"}  → {"path"}
+    POST /api/configs/clone         {"source", "name", "experiment_name", "output_dir", "description", "overwrite"}
+                                    → {"path", "comments_kept", …}: a copy of the source file with only the
+                                    experiment name / output_dir / description rewritten (comments intact)
     GET  /api/configs/results?path= per-cell metrics summary of a config's output_dir
     GET  /api/runs                  every run (status reconciled from disk)
     GET  /api/runs/<id>             record + parsed progress + log tail + results
@@ -80,6 +83,7 @@ from arabic_eval.tools.experiment_console import (  # noqa: E402
     ConsolePaths,
     RunConflict,
     RunManager,
+    clone_config,
     config_results,
     gpu_snapshot,
     list_configs,
@@ -273,6 +277,13 @@ class Handler(SimpleHTTPRequestHandler):
         elif route == "/api/configs/save":
             self._send_json(save_config(PATHS, str(req.get("name") or ""), str(req.get("yaml") or ""),
                                         bool(req.get("overwrite"))))
+        elif route == "/api/configs/clone":
+            desc = req.get("description")
+            self._send_json(clone_config(
+                PATHS, str(req.get("source") or ""), str(req.get("name") or ""),
+                name=(str(req["experiment_name"]) if req.get("experiment_name") else None),
+                output_dir=(str(req["output_dir"]) if req.get("output_dir") else None),
+                description=(str(desc) if desc is not None else None), overwrite=bool(req.get("overwrite"))))
         elif route == "/api/runs/start":
             seed = req.get("seed")
             rec = RUNS.start(

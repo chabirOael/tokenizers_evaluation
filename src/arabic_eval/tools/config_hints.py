@@ -16,7 +16,7 @@ FIELD_HINTS: Dict[str, Tuple[str, str]] = {
              'bpe_32k_with_sft'),
     'description': ('Free text stored in config.json for your future self.',
                     '"BPE 32K vs native Llama, 3 phases, PMI scoring"'),
-    'output_dir': ('Where all_metrics.json, checkpoints and reports land. In a sweep each cell gets a sub-folder here.',
+    'output_dir': ('Where all_metrics.json, checkpoints and reports land. In a sweep each cell gets a sub-folder here. Convention: outputs/experiments/<name> (the "infer from name" switch keeps it there); a cell folder of a campaign is the usual exception.',
                    'outputs/experiments/bpe_32k_with_sft → outputs/experiments/bpe_32k_with_sft/bpe_32k/'),
     'seed': ('Master random seed for data shuffles, sampling and init. Same seed + same config = same run.',
              '42'),

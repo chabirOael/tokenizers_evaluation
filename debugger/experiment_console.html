@@ -164,6 +164,15 @@ details.sec.sub{background:var(--sunken)}
 .row.err input,.row.err select,.row.err textarea{border-color:var(--bad);background:var(--bad-soft)}
 .row .emsg{color:var(--bad);font-size:11.5px}
 .row .nul{font-size:11px;color:var(--ink-3);margin-left:auto;display:flex;gap:4px;align-items:center;font-weight:400}
+.row .rowhead{display:flex;align-items:center;gap:6px}
+.row .rowhead .sw.inl{margin-left:auto;font-size:11px;color:var(--ink-3);gap:5px;font-weight:400}
+.row .rowhead .sw.inl input{width:26px;height:14px}
+.row .rowhead .sw.inl input::after{width:10px;height:10px}
+.row .rowhead .sw.inl input:checked::after{left:14px}
+.row input.inferred{color:var(--ink-3);background:var(--sunken);font-style:italic}
+.cfg-item .name .ico{margin-left:auto;opacity:0;border:0;background:none;cursor:pointer;color:var(--ink-3);font-size:14px;padding:0 4px;border-radius:4px}
+.cfg-item:hover .name .ico,.cfg-item.on .name .ico{opacity:1}
+.cfg-item .name .ico:hover{color:var(--accent);background:var(--accent-soft)}
 .sw{display:inline-flex;align-items:center;gap:8px;cursor:pointer}
 .sw input{width:34px;height:18px;appearance:none;background:var(--line-2);border-radius:999px;position:relative;cursor:pointer;margin:0}
 .sw input::after{content:"";position:absolute;top:2px;left:2px;width:14px;height:14px;border-radius:50%;background:#fff;transition:.15s}
@@ -363,6 +372,7 @@ table.ev-ch tr.pred td{outline:1px solid var(--accent);outline-offset:-1px}
       <div class="toolbar" style="margin-left:auto">
         <button class="btn sm" id="btn-assist" title="fill or edit the form with an LLM, or ask it about the fields">✨ assistant</button>
         <button class="btn sm" id="btn-validate">Validate</button>
+        <button class="btn sm" id="btn-clone" title="copy the opened file under a new name with its own output_dir (comments kept)">⧉ Clone…</button>
         <button class="btn sm" id="btn-save">Save…</button>
         <button class="btn sm primary" id="btn-start">▶ Start run…</button>
       </div>
@@ -625,6 +635,22 @@ table.ev-ch tr.pred td{outline:1px solid var(--accent);outline-offset:-1px}
   </div>
 </div>
 
+<div class="modal-bg" id="clone-modal">
+  <div class="modal">
+    <h3>Clone config</h3>
+    <div class="rows">
+      <div class="row wide"><label>source</label><input type="text" id="clone-source" readonly class="mono"></div>
+      <div class="row wide"><label>new file name (configs/experiments/&lt;name&gt;.yaml)</label><input type="text" id="clone-file" class="mono"></div>
+      <div class="row wide"><label>experiment name <span class="hint">(follows the file name until you edit it)</span></label><input type="text" id="clone-name" class="mono"></div>
+      <div class="row wide"><div class="rowhead"><label>output_dir</label><label class="sw inl" title="outputs/experiments/&lt;experiment name&gt;"><input type="checkbox" id="clone-infer" checked> infer from name</label></div><input type="text" id="clone-outdir" class="mono"></div>
+      <div class="row wide"><label>description</label><input type="text" id="clone-desc"></div>
+      <div class="row"><label>&nbsp;</label><label class="sw"><input type="checkbox" id="clone-overwrite"> overwrite if it exists</label></div>
+    </div>
+    <div class="hint" id="clone-hint">The copy is the source file's own text with only these three lines rewritten — its comments are kept.</div>
+    <div class="foot"><button class="btn" data-close>Cancel</button><button class="btn primary" id="clone-go">Clone</button></div>
+  </div>
+</div>
+
 <div class="modal-bg" id="start-modal">
   <div class="modal">
     <h3>Start run</h3>
@@ -655,7 +681,7 @@ table.ev-ch tr.pred td{outline:1px solid var(--accent);outline-offset:-1px}
    ========================================================================= */
 const S = {
   schema:null, base:null, reg:null, presets:null, env:null,
-  configs:[], file:null, cfg:null, dirty:false, errors:[], yamlDirty:false,
+  configs:[], file:null, cfg:null, dirty:false, errors:[], yamlDirty:false, inferOut:true,
   open:new Set(['', 'sweep', 'training', 'tokenizer', 'model']),
   runs:[], run:null, runDetail:null, logOffset:0, logRows:[], logCur:'', logTb:false, logFilter:'', logHideProg:false, logBig:false, runsOpen:true, pollT:null, view:'configs', etab:'form',
 };
@@ -1066,11 +1092,29 @@ function trainingSection(){
   body.append(control('training.corpus_params', S.schema.$defs.TrainingConfig.properties.corpus_params, {label:'corpus_params (per-corpus loader parameters, e.g. aya_ar.include_datasets)', wide:true}));
   return section('training', 'training — 3-phase pipeline', body, {help: fieldInfo(S.schema.properties.training).description});
 }
+/* output_dir convention: outputs/experiments/<experiment name> (every config in the repo follows it unless it is a
+   cell folder of a larger campaign). `S.inferOut` locks output_dir to it; it is re-derived from the config whenever
+   one is loaded, so a campaign config opens with the switch off and renaming it leaves output_dir alone. */
+function inferredOutputDir(name){ return `outputs/experiments/${name ?? ''}`; }
+function syncInferOut(){ S.inferOut = !!S.cfg && S.cfg.output_dir === inferredOutputDir(S.cfg.name); }
+function applyInferredOutputDir(){
+  if (!S.cfg || !S.inferOut) return;
+  const want = inferredOutputDir(S.cfg.name);
+  if (S.cfg.output_dir !== want){ S.cfg.output_dir = want; markDirty(); }
+  const r = $$('.row').find(r=>r.dataset.row==='output_dir'); if (r) r.querySelector('input[type=text]').value = want;
+}
 function experimentSection(){
   const rows = h('div', {class:'rows'});
   const P = S.schema.properties;
-  rows.append(control('name', P.name, {label:'name', onChange: v => { const od = S.cfg.output_dir||''; if (!od || /^outputs\/experiments\/[^/]*$/.test(od)) { S.cfg.output_dir = `outputs/experiments/${v}`; const r = $$('.row').find(r=>r.dataset.row==='output_dir'); if (r) r.querySelector('input').value = S.cfg.output_dir; } }}));
-  rows.append(control('output_dir', P.output_dir, {label:'output_dir'}));
+  rows.append(control('name', P.name, {label:'name', onChange: () => applyInferredOutputDir()}));
+  const od = control('output_dir', P.output_dir, {label:'output_dir'});
+  const odInput = od.querySelector('input');
+  const sw = h('input', {type:'checkbox', onchange: e => { S.inferOut = e.target.checked; odInput.readOnly = S.inferOut; odInput.classList.toggle('inferred', S.inferOut); applyInferredOutputDir(); }});
+  sw.checked = S.inferOut; odInput.readOnly = S.inferOut; odInput.classList.toggle('inferred', S.inferOut);
+  const odLabel = od.querySelector('label');   // the switch sits beside the caption, not inside it (a label activates its first checkbox)
+  const head = h('div', {class:'rowhead'}); od.insertBefore(head, odLabel);
+  head.append(odLabel, h('label', {class:'sw inl', title:'lock output_dir to outputs/experiments/<name>; off = any path (e.g. a cell folder of a campaign)'}, sw, 'infer from name'));
+  rows.append(od);
   rows.append(control('seed', P.seed, {label:'seed'}));
   rows.append(control('deterministic', P.deterministic, {label:'deterministic'}));
   rows.append(control('description', P.description, {label:'description', wide:true}));
@@ -1115,7 +1159,8 @@ function renderConfigList(){
       if (res.sweep){ const n = res.cells_done.length, t = res.cells.length; resChip = n ? h('span', {class:'chip ' + (n===t?'good':'warn'), title: `done: ${res.cells_done.join(', ')}`}, `${n}/${t} cells`) : null; }
       else if (res.exists) resChip = h('span', {class:'chip good'}, 'results');
     }
-    it.append(h('div', {class:'name'}, c.file.replace(/\.yaml$/,''), resChip, c.valid ? null : h('span', {class:'chip bad'}, 'invalid')));
+    it.append(h('div', {class:'name'}, c.file.replace(/\.yaml$/,''), resChip, c.valid ? null : h('span', {class:'chip bad'}, 'invalid'),
+      c.valid ? h('button', {class:'ico', title:'clone this config…', onclick: e => { e.stopPropagation(); cloneFlow(c.file); }}, '⧉') : null));
     const meta = h('div', {class:'meta'});
     if (c.valid){
       meta.append(h('span', {}, c.model.split('/').pop()), h('span', {}, '·'), h('span', {}, `${c.cells.length} cell${c.cells.length===1?'':'s'}: ${c.cells.slice(0,4).join(', ')}${c.cells.length>4?'…':''}`),
@@ -1131,7 +1176,7 @@ async function openConfig(file){
   clearStatus();
   const d = await api('GET', `/api/configs/get?path=${encodeURIComponent(file)}`);
   S.file = file; S.cfg = d.resolved; S.dirty = false; S.yamlDirty = false; $('#dirty-chip').style.display='none';
-  S.errors = d.errors || [];
+  S.errors = d.errors || []; syncInferOut();
   $('#editor-title').textContent = file;
   $('#yaml').value = d.yaml;
   renderConfigList(); renderForm();
@@ -1145,7 +1190,7 @@ function newConfig(){
   cfg.name = 'new_experiment'; cfg.output_dir = 'outputs/experiments/new_experiment'; cfg.description = '';
   cfg.sweep = {tokenizers:[{type:'bpe', vocab_sizes:[32000], params:{min_frequency:2}}], tasks:[{type:'acva',params:{num_fewshot:0}},{type:'alghafa',params:{}},{type:'arabic_exam',params:{}}]};
   cfg.evaluation.score_normalization = 'char+pmi'; cfg.evaluation.num_eval_samples = null; cfg.evaluation.failure_reports = true;
-  S.file = null; S.cfg = cfg; S.errors = []; S.dirty = true; $('#dirty-chip').style.display='';
+  S.file = null; S.cfg = cfg; S.errors = []; S.dirty = true; S.inferOut = true; $('#dirty-chip').style.display='';
   $('#editor-title').textContent = 'new config (unsaved)'; $('#yaml').value = '';
   renderConfigList(); renderForm(); setEtab('form');
   $('#etab-results').innerHTML = '<div class="empty">no results yet</div>';
@@ -1169,7 +1214,7 @@ async function yamlToForm(){
     const d = await api('POST', '/api/config/parse', {yaml: $('#yaml').value});
     S.errors = d.errors || [];
     S.cfg = d.ok ? d.resolved : deepMerge(deep(S.base), d.config);
-    S.yamlDirty = false; markDirty(); renderForm(); setEtab('form');
+    syncInferOut(); S.yamlDirty = false; markDirty(); renderForm(); setEtab('form');
     if (d.ok) status('good', 'YAML applied to the form'); else status('bad', 'YAML parsed but does not validate', d.errors);
   } catch(e){ status('bad', e.message); }
 }
@@ -1197,6 +1242,48 @@ async function doSave(){
     await loadConfigs(); await openConfig(d.file);
     status('good', `saved ${d.path}`);
   } catch(e){ $('#save-hint').textContent = e.message; $('#save-hint').style.color='var(--bad)'; }
+}
+/* clone: copy a saved file under a new name — the server rewrites only name / output_dir / description in the
+   file's own text (comments kept) and the copy opens in the editor. Acts on the file on disk, never on the form. */
+const C = {source:null, nameTouched:false};
+function cloneFlow(file){
+  const c = S.configs.find(x => x.file === file);
+  if (!c){ status('bad', `${file} is not in the list — refresh`); return; }
+  if (!c.valid){ status('bad', `${file} does not validate — fix it before cloning`); return; }
+  C.source = c; C.nameTouched = false;
+  const stem = file.replace(/\.yaml$/, '');
+  let cand = `${stem}_copy`, i = 2; while (S.configs.some(x => x.file === `${cand}.yaml`)) cand = `${stem}_copy${i++}`;
+  $('#clone-source').value = `configs/experiments/${file}`; $('#clone-file').value = cand; $('#clone-name').value = cand;
+  $('#clone-infer').checked = true; $('#clone-desc').value = c.description || ''; $('#clone-overwrite').checked = false;
+  cloneSync(); openModal('#clone-modal'); $('#clone-file').focus(); $('#clone-file').select();
+}
+function cloneSync(){
+  const file = $('#clone-file').value.trim().replace(/\.yaml$/, ''), infer = $('#clone-infer').checked;
+  if (!C.nameTouched) $('#clone-name').value = file;
+  const name = $('#clone-name').value.trim();
+  const od = $('#clone-outdir'); od.readOnly = infer; od.classList.toggle('inferred', infer);
+  if (infer) od.value = inferredOutputDir(name);
+  const outdir = od.value.trim(), notes = [];
+  if (file && C.source && `${file}.yaml` === C.source.file) notes.push('⚠ that is the source file itself — pick another name');
+  else if (file && S.configs.some(x => x.file === `${file}.yaml`)) notes.push(`⚠ ${file}.yaml exists — tick overwrite to replace it`);
+  const sharing = S.configs.filter(x => x.valid && x.output_dir === outdir && x.file !== `${file}.yaml`);
+  if (outdir && sharing.length) notes.push(`⚠ ${outdir} is already the output_dir of ${sharing.map(x => x.file).join(', ')} — two configs writing one directory share results, and run_sweep skips cells whose all_metrics.json exists`);
+  if (S.file === C.source?.file && S.dirty) notes.push('the form has unsaved changes — the clone copies the file as saved on disk');
+  const hint = $('#clone-hint'); hint.style.color = notes.some(n => n.startsWith('⚠')) ? 'var(--warn)' : '';
+  hint.textContent = notes.length ? notes.join(' · ') : "The copy is the source file's own text with only these three lines rewritten — its comments are kept.";
+}
+async function doClone(){
+  const body = {source: C.source.file, name: $('#clone-file').value.trim(), experiment_name: $('#clone-name').value.trim(),
+    output_dir: $('#clone-infer').checked ? null : $('#clone-outdir').value.trim(),
+    description: $('#clone-desc').value === (C.source.description || '') ? null : $('#clone-desc').value,   // null = leave the source's line alone
+    overwrite: $('#clone-overwrite').checked};
+  try {
+    const d = await api('POST', '/api/configs/clone', body);
+    closeModals();
+    await loadConfigs();
+    await openConfig(d.file);              // asks before discarding unsaved edits of the source; the clone exists either way
+    status(d.comments_kept ? 'good' : 'warn', `cloned ${d.source} → ${d.path}` + (d.comments_kept ? '' : ' — the source layout was not recognised, so the copy is a rendered delta over base.yaml (its comments are dropped)'));
+  } catch(e){ $('#clone-hint').textContent = e.message; $('#clone-hint').style.color='var(--bad)'; }
 }
 async function startFlow(){
   if (!S.cfg) return;
@@ -2451,7 +2538,7 @@ function asApply(m, force){
   if (!res.ok && !force) return;
   A.undo.push(asSnapshot()); m.undoIdx = A.undo.length - 1; m.applied = res; m.undone = false;
   if (m.fromBase){ S.file = null; $('#editor-title').textContent = `new config from the assistant (unsaved) — ${res.config.name}`; $('#yaml').value = ''; $('#etab-results').innerHTML = '<div class="empty">no results yet</div>'; renderConfigList(); }
-  S.cfg = res.config; S.errors = res.errors || []; S.yamlDirty = false; markDirty(); renderForm(); setEtab('form');
+  S.cfg = res.config; S.errors = res.errors || []; syncInferOut(); S.yamlDirty = false; markDirty(); renderForm(); setEtab('form');
   if (res.ok) status('good', `assistant: ${res.changes.length} change${res.changes.length===1?'':'s'} applied — ${res.cells.length} cell${res.cells.length===1?'':'s'} (${res.cells.join(', ')})${res.sweep?' · sweep':''}`);
   else status('bad', `assistant edits applied but the config does not validate (${res.errors.length})`, res.errors);
   $('#as-base').checked = false;
@@ -2462,7 +2549,7 @@ function asUndo(m){
   const snap = A.undo.pop();
   S.cfg = snap.cfg; S.errors = snap.errors; S.file = snap.file; S.dirty = snap.dirty; $('#dirty-chip').style.display = snap.dirty ? '' : 'none';
   $('#editor-title').textContent = snap.title; $('#yaml').value = snap.yaml; $('#etab-results').innerHTML = snap.results;
-  m.undone = true; m.undoIdx = null;
+  syncInferOut(); m.undone = true; m.undoIdx = null;
   renderConfigList(); renderForm(); status('good', 'assistant change undone'); asStore(); renderChat(false);
 }
 function asBody(message){
@@ -2573,6 +2660,13 @@ document.addEventListener('DOMContentLoaded', async () => {
   $('#yaml').addEventListener('input', () => { S.yamlDirty = true; markDirty(); });
   $$('input[name=ymode]').forEach(r => r.onchange = formToYaml);
   $('#btn-save').onclick = saveFlow; $('#save-go').onclick = doSave;
+  $('#btn-clone').onclick = () => { if (!S.cfg) return; if (!S.file){ status('warn', 'save the config first — clone copies a file on disk'); return; } cloneFlow(S.file); };
+  $('#clone-go').onclick = doClone;
+  $('#clone-file').addEventListener('input', cloneSync);
+  $('#clone-name').addEventListener('input', () => { C.nameTouched = true; cloneSync(); });
+  $('#clone-infer').addEventListener('change', cloneSync);
+  $('#clone-outdir').addEventListener('input', cloneSync);
+  for (const id of ['#clone-file', '#clone-name', '#clone-outdir', '#clone-desc']) $(id).addEventListener('keydown', e => { if (e.key === 'Enter') doClone(); });
   $('#btn-start').onclick = startFlow; $('#start-go').onclick = doStart;
   $('#btn-cancel').onclick = cancelRun;
   $('#btn-steps').onclick = () => toggleSteps();

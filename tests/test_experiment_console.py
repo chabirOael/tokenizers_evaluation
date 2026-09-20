@@ -28,12 +28,15 @@ from arabic_eval.tools.experiment_console import (  # noqa: E402
     RunConflict,
     RunManager,
     cell_names,
+    clone_config,
+    default_output_dir,
     list_configs,
     parse_progress,
     parse_yaml,
     process_alive,
     read_config,
     render_yaml,
+    rewrite_experiment_keys,
     save_config,
     schema_bundle,
     validate_config,
@@ -148,6 +151,118 @@ def test_save_refuses_invalid_and_existing(tmp_repo: ConsolePaths):
     assert (tmp_repo.configs_dir / "new_one.yaml").exists() and res["resolved"]["name"] == "mini"
     save_config(tmp_repo, "mini.yaml", MINIMAL_YAML.replace('"mini"', '"mini2"'), overwrite=True)
     assert read_config(tmp_repo, "mini")["resolved"]["name"] == "mini2"
+
+
+COMMENTED_YAML = """\
+# Reference run — keep the comments, they explain the choices.
+experiment:
+  name: "commented"                      # the experiment name
+  output_dir: "outputs/experiments/commented"
+  seed: 42            # master seed
+tokenizer:
+  type: "native_llama"   # no training
+  vocab_size: null
+sweep:
+  tokenizers:
+    - type: "native_llama"
+      vocab_sizes: [null]
+  tasks:
+    - type: "acva"   # label-noisy, see CLAUDE.md
+      params: {}
+"""
+
+
+def test_clone_rewrites_only_the_experiment_keys_and_keeps_comments(tmp_repo: ConsolePaths):
+    (tmp_repo.configs_dir / "commented.yaml").write_text(COMMENTED_YAML, encoding="utf-8")
+    res = clone_config(tmp_repo, "commented", "commented_v2", description="second try")
+    assert res["file"] == "commented_v2.yaml" and res["comments_kept"] is True
+    text = (tmp_repo.configs_dir / "commented_v2.yaml").read_text(encoding="utf-8")
+    assert text.count("#") == COMMENTED_YAML.count("#")           # every comment survived
+    assert '  name: "commented_v2"                      # the experiment name' in text
+    assert '  output_dir: "outputs/experiments/commented_v2"' in text
+    assert '  description: "second try"' in text                    # inserted below the block's own keys
+    src, dst = read_config(tmp_repo, "commented")["resolved"], read_config(tmp_repo, "commented_v2")["resolved"]
+    expected = {**src, "name": "commented_v2", "output_dir": default_output_dir("commented_v2"), "description": "second try"}
+    assert dst == expected
+    assert res["resolved"] == expected and res["source"] == "configs/experiments/commented.yaml"
+
+
+def test_clone_defaults_and_explicit_output_dir(tmp_repo: ConsolePaths):
+    res = clone_config(tmp_repo, "mini.yaml", "campaign_cell", name="cell_a",
+                       output_dir="outputs/experiments/campaign/cell_a")
+    r, src = res["resolved"], read_config(tmp_repo, "mini")["resolved"]
+    assert (r["name"], r["output_dir"]) == ("cell_a", "outputs/experiments/campaign/cell_a")
+    assert r["description"] == src["description"]            # untouched when not given
+    res = clone_config(tmp_repo, "mini", "mini_copy")
+    assert res["resolved"]["name"] == "mini_copy" and res["resolved"]["output_dir"] == "outputs/experiments/mini_copy"
+    assert default_output_dir("x") == "outputs/experiments/x"
+
+
+def test_clone_refuses_same_file_existing_and_invalid_source(tmp_repo: ConsolePaths):
+    with pytest.raises(ConsoleError, match="different file name"):
+        clone_config(tmp_repo, "mini", "mini.yaml")
+    with pytest.raises(ConsoleError, match="no such config"):
+        clone_config(tmp_repo, "nope", "x")
+    clone_config(tmp_repo, "mini", "twice")
+    with pytest.raises(ConsoleError, match="exists"):
+        clone_config(tmp_repo, "mini", "twice")
+    clone_config(tmp_repo, "mini", "twice", overwrite=True, description="again")
+    assert read_config(tmp_repo, "twice")["resolved"]["description"] == "again"
+    (tmp_repo.configs_dir / "broken.yaml").write_text("experiment:\n  name: b\ntraining:\n  phases:\n    sft:\n      steps: -1\n")
+    with pytest.raises(ConsoleError, match="does not validate"):
+        clone_config(tmp_repo, "broken", "broken_copy")
+    with pytest.raises(ValueError):
+        clone_config(tmp_repo, "mini", "../escape")
+
+
+def test_clone_falls_back_to_a_rendered_copy_when_the_layout_is_unrecognised(tmp_repo: ConsolePaths):
+    flow = MINIMAL_YAML.replace('experiment:\n  name: "mini"\n  output_dir: "outputs/experiments/mini"\n',
+                                'experiment: {name: mini, output_dir: outputs/experiments/mini}\n')
+    (tmp_repo.configs_dir / "flow.yaml").write_text(flow, encoding="utf-8")
+    res = clone_config(tmp_repo, "flow", "flow_copy")
+    assert res["comments_kept"] is False
+    src = read_config(tmp_repo, "flow")["resolved"]
+    assert read_config(tmp_repo, "flow_copy")["resolved"] == {**src, "name": "flow_copy",
+                                                              "output_dir": "outputs/experiments/flow_copy"}
+
+
+def test_rewrite_experiment_keys_layouts():
+    up = {"name": "bar", "output_dir": "outputs/experiments/bar", "description": "new: desc # kept"}
+    # top-level keys, bare scalars, trailing comment, description missing
+    out = rewrite_experiment_keys("name: foo   # run\noutput_dir: outputs/experiments/foo\ntokenizer:\n  type: bpe\n", up)
+    assert out == ('name: bar   # run\noutput_dir: outputs/experiments/bar\ndescription: "new: desc # kept"\n'
+                   "tokenizer:\n  type: bpe\n")
+    # single quotes keep their style, '' escaping
+    out = rewrite_experiment_keys("experiment:\n  name: 'foo'\n  description: 'it''s'\n  output_dir: 'x'\n", up)
+    assert out == "experiment:\n  name: 'bar'\n  description: 'new: desc # kept'\n  output_dir: 'outputs/experiments/bar'\n"
+    # a plain scalar continued on the next line is folded into the one new line
+    out = rewrite_experiment_keys("experiment:\n  name: foo\n  description: one two\n    three\n  output_dir: x\n  seed: 1\n", up)
+    assert out == 'experiment:\n  name: bar\n  description: "new: desc # kept"\n  output_dir: outputs/experiments/bar\n  seed: 1\n'
+    # keys the rewriter does not own, and nested `name:` keys, are untouched
+    out = rewrite_experiment_keys("experiment:\n  name: foo\n  seed: 1\nmodel:\n  name: keep\n", {"name": "bar"})
+    assert out == "experiment:\n  name: bar\n  seed: 1\nmodel:\n  name: keep\n"
+    # unrecognised layouts → None (the caller renders instead)
+    assert rewrite_experiment_keys("experiment: {name: foo}\n", up) is None
+    assert rewrite_experiment_keys("experiment:\n  name: foo\n  description: |\n    block\n", up) is None
+    assert rewrite_experiment_keys("output_dir: x\n", up) is None
+
+
+def test_every_repo_config_clones_with_its_comments(tmp_path: Path):
+    """Every file under configs/experiments is cloned through the text rewriter (no render fallback)
+    and reloads to its own resolved config with only name / output_dir / description changed."""
+    (tmp_path / "configs" / "experiments").mkdir(parents=True)
+    shutil.copy(REPO / "configs" / "base.yaml", tmp_path / "configs" / "base.yaml")
+    for p in (REPO / "configs" / "experiments").glob("*.yaml"):
+        shutil.copy(p, tmp_path / "configs" / "experiments" / p.name)
+    paths = ConsolePaths(tmp_path)
+    for p in sorted(paths.configs_dir.glob("*.yaml")):
+        src = read_config(paths, p.name)
+        res = clone_config(paths, p.name, p.stem + "_copy", description="cloned")
+        assert res["comments_kept"] is True, p.name
+        dst = read_config(paths, res["file"])
+        assert dst["yaml"].count("#") == src["yaml"].count("#"), p.name
+        assert dst["resolved"] == {**src["resolved"], "name": p.stem + "_copy",
+                                   "output_dir": f"outputs/experiments/{p.stem}_copy", "description": "cloned"}, p.name
 
 
 def test_config_path_is_confined():
