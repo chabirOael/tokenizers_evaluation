@@ -12,6 +12,7 @@ every reference-based score below 100 before the model generates a word.
 """
 from __future__ import annotations
 
+import math
 import re
 import statistics
 from collections import Counter
@@ -20,66 +21,96 @@ from typing import Any, Dict, List, NamedTuple, Optional, Sequence
 from sacrebleu.metrics import CHRF
 
 _CHRF = CHRF()                                     # char order 6, word order 0, beta 2 — sacrebleu defaults
-_RUN_RE = re.compile(r"(.)\1{19,}")                # one character 20+ times in a row
+_RUN_RE = re.compile(r"([^\W_\u0640])\1{19,}")      # one letter or digit 20+ times in a row: a markdown table's
+                                                   # padding (spaces), its separator row (dashes), a horizontal
+                                                   # rule (---, ===, ___) or a tatweel stretch are formatting
 _WORD_RE = re.compile(r"\S+")
 
-# Loop thresholds — shared by the degeneration metric and the generation-time
-# loop stop, so a stopped generation is exactly one the metric would flag.
-LOOP_NGRAM_ORDER = 4          # a word 4-gram …
-LOOP_NGRAM_REPEATS = 3        # … occurring this many times
-LOOP_WORD_RUN = 5             # one word this many times in a row
-LOOP_CHAR_RUN = 20            # one character this many times in a row
+# Loop stop — a *periodic tail*: the decoded text ends in k contiguous copies of
+# the same unit of p words. The old rule ("a word 4-gram occurs 3 times anywhere",
+# cut before its second occurrence) fired on numbered lists whose headings share
+# the question's terms, on markdown tables and on answers that restate the
+# question, and cut hundreds of characters before a real loop began (measured
+# 2026-09-20: 53 of 68 stops of the untrained control were not loop-like).
+LOOP_MAX_PERIOD = 60          # longest unit considered, in words (the longest loops measured were ~59 tokens)
+LOOP_CHAR_RUN = 20            # one letter or digit this many times in a row
+
+
+def loop_min_copies(period: int) -> int:
+    """Contiguous copies of a ``period``-word unit that make a loop: 5 for a
+    single word (the old word-run rule), 4 up to three words, 3 beyond."""
+    if period <= 1:
+        return 5
+    if period <= 3:
+        return 4
+    return 3
 
 
 class Loop(NamedTuple):
-    """A repetition loop found in a text: ``cut`` is the character offset of
-    the *second* copy of the repeated unit (everything before it keeps the
-    first full copy), ``kind`` names the rule, ``unit`` the repeated text."""
+    """A repetition loop at the end of a text. ``cut`` is the character offset
+    right after the *first* copy of the unit (everything before the loop is
+    kept, plus one copy); ``rule`` is ``"period"`` (a periodic tail of
+    ``period`` words) or ``"char"`` (one character ``LOOP_CHAR_RUN`` times in a
+    row); ``unit`` the repeated text; ``copies`` the contiguous full copies at
+    the tail; ``partial`` whether a trailing partial copy was counted too."""
     cut: int
-    kind: str                 # "ngram" | "word" | "char"
+    rule: str                 # "period" | "char"
     unit: str
+    period: int
+    copies: int
+    partial: bool = False
+
+
+def _periodic_tail(words: List[str], spans: List[tuple]) -> Optional[Loop]:
+    """The periodic-tail rule. For every period ``p`` up to ``LOOP_MAX_PERIOD``
+    take the longest suffix with ``words[i] == words[i + p]`` (the last word —
+    possibly unfinished when the check runs — only has to be a *prefix* of the
+    word one period back). Its length splits into ``copies`` full copies of
+    the unit ``words[s:s + p]`` and a remainder that is a partial copy by
+    construction (an unfinished last word counts toward the partial copy, never
+    toward a full one). Fires when ``copies >= loop_min_copies(p)``, or when
+    ``copies == loop_min_copies(p) - 1`` and the partial copy covers at least
+    half the unit (``remainder >= ceil(p / 2)``). The cut is the end of the
+    first copy; among the periods that fire the earliest cut wins (a loop of
+    period p also satisfies every multiple of p, whose first copy ends later)."""
+    n = len(words)
+    best: Optional[Loop] = None
+    for p in range(1, min(LOOP_MAX_PERIOD, n - 1) + 1):
+        i = n - 1 - p
+        if not words[i].startswith(words[n - 1]):
+            continue
+        unfinished = words[i] != words[n - 1]          # a strict prefix: the last word is still being written
+        i -= 1
+        while i >= 0 and words[i] == words[i + p]:
+            i -= 1
+        s = i + 1
+        copies, remainder = divmod(n - s - unfinished, p)
+        remainder += unfinished                        # the unfinished word belongs to the partial copy
+        need = loop_min_copies(p)
+        if copies >= need or (copies == need - 1 and remainder >= math.ceil(p / 2)):
+            cand = Loop(spans[s + p - 1][1], "period", " ".join(words[s:s + p]), p, copies, copies < need)
+            if best is None or cand.cut < best.cut:
+                best = cand
+    return best
 
 
 def detect_loop(text: str) -> Optional[Loop]:
-    """The three loop rules of ``is_degenerate`` with a cut position: a word
-    ``LOOP_NGRAM_ORDER``-gram occurring ``LOOP_NGRAM_REPEATS`` times (the unit
-    is the span from its first to its second occurrence — the whole cycle, not
-    just the 4-gram), one word ``LOOP_WORD_RUN`` times in a row, one character
-    ``LOOP_CHAR_RUN`` times in a row. Tokenizer-agnostic: words and characters
-    of the decoded text. When several rules fire the earliest cut wins.
-    Returns ``None`` for a text without a loop."""
-    t = text
-    if not t.strip():
+    """The generation-time loop rule, on decoded text (words and characters,
+    so tokenizer-agnostic): a periodic tail (``_periodic_tail``) or one
+    letter or digit ``LOOP_CHAR_RUN`` times in a row. When both fire the
+    earlier cut wins. ``None`` for a text without a loop. Every text this
+    returns a loop for is ``is_degenerate`` (a test pins the invariant)."""
+    if not text.strip():
         return None
     found: List[Loop] = []
-    m = _RUN_RE.search(t)
+    m = _RUN_RE.search(text)
     if m:
-        found.append(Loop(m.start() + 1, "char", m.group(1)))
-    spans = [(w.start(), w.end()) for w in _WORD_RE.finditer(t)]
-    words = [t[a:b] for a, b in spans]
-    n = LOOP_NGRAM_ORDER
-    if len(words) >= n * 2:
-        first: Dict[tuple, int] = {}
-        second: Dict[tuple, int] = {}
-        count: Counter = Counter()
-        for i in range(len(words) - n + 1):
-            g = tuple(words[i:i + n])
-            count[g] += 1
-            if g not in first:
-                first[g] = i
-            elif g not in second:
-                second[g] = i
-        hits = [g for g, c in count.items() if c >= LOOP_NGRAM_REPEATS]
-        if hits:
-            g = min(hits, key=lambda g: first[g])       # the cycle that starts earliest
-            a, b = first[g], second[g]
-            found.append(Loop(spans[b][0], "ngram", t[spans[a][0]:spans[b][0]].rstrip()))
-    run = 1
-    for i in range(1, len(words)):
-        run = run + 1 if words[i] == words[i - 1] else 1
-        if run >= LOOP_WORD_RUN:
-            found.append(Loop(spans[i - run + 2][0], "word", words[i]))
-            break
+        found.append(Loop(m.start() + 1, "char", m.group(1), 1, len(m.group(0)), False))
+    spans = [(w.start(), w.end()) for w in _WORD_RE.finditer(text)]
+    words = [text[a:b] for a, b in spans]
+    loop = _periodic_tail(words, spans) if words else None
+    if loop is not None:
+        found.append(loop)
     if not found:
         return None
     return min(found, key=lambda l: l.cut)
@@ -106,11 +137,13 @@ def ngram_duplicate_ratio(items: Sequence[str], n: int) -> float:
 
 
 def is_degenerate(text: str) -> bool:
-    """A repetition loop: the three ``detect_loop`` rules (a word 4-gram
-    repeated three times, one word five times in a row, one character twenty
-    times in a row) or, ratio-based, duplicate word 4-grams making up half the
-    text and (for space-less loops) duplicate character 8-grams making up 60 %
-    of a text of 40+ characters."""
+    """A repetition loop: the generation-time rules of ``detect_loop`` (a
+    periodic tail, one letter or digit twenty times in a row) or, density-based on
+    the whole text, duplicate word 4-grams making up half the text and (for
+    space-less loops) duplicate character 8-grams making up 60 % of a text of
+    40+ characters. Every text ``detect_loop`` stops is degenerate; the density
+    rules add loops that ended before the tail (a loop-stopped generation's raw
+    text ends in the loop, so the tail rule covers those)."""
     t = text.strip()
     if not t:
         return False

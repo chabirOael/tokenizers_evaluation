@@ -170,31 +170,31 @@ class TestMetrics:
         assert not M.is_degenerate("البومة طائر ليلي بعينين كبيرتين ووجه مستدير أما الصقر فطائر نهاري حاد البصر")
         assert not M.is_degenerate("")
 
-    def test_detect_loop_cuts_before_the_second_copy(self):
+    def test_detect_loop_keeps_the_first_copy(self):
         """The generation-time loop stop and the degeneration metric share one
-        detector: every text ``detect_loop`` flags is degenerate, and the cut
-        keeps exactly the first copy of the repeated unit."""
-        # a word 4-gram three times → the whole 6-word cycle is the unit
+        detector (a periodic tail, ``tests/test_loop_detector.py`` has the
+        rule in full): every text ``detect_loop`` flags is degenerate, and the
+        cut keeps exactly the first copy of the repeated unit."""
         cycle = "أ ب ج د ه و"
-        t = "مقدمة أولا ثم " + " ".join([cycle] * 3) + " نهاية"
+        t = "مقدمة أولا ثم " + " ".join([cycle] * 3)
         loop = M.detect_loop(t)
-        assert loop is not None and loop.kind == "ngram" and loop.unit == cycle
-        assert t[: loop.cut].rstrip() == "مقدمة أولا ثم " + cycle
+        assert loop is not None and loop.rule == "period" and loop.unit == cycle and loop.period == 6
+        assert t[: loop.cut] == "مقدمة أولا ثم " + cycle
         # one word five times in a row → keep one
         t = "قال الطبيب الطبيب الطبيب الطبيب الطبيب الطبيب"
         loop = M.detect_loop(t)
-        assert loop is not None and loop.kind == "word" and t[: loop.cut].rstrip() == "قال الطبيب"
+        assert loop is not None and loop.period == 1 and t[: loop.cut] == "قال الطبيب"
         # one character twenty times in a row → keep one
         t = "نعم " + "ه" * 30
         loop = M.detect_loop(t)
-        assert loop is not None and loop.kind == "char" and t[: loop.cut] == "نعم ه"
+        assert loop is not None and loop.rule == "char" and t[: loop.cut] == "نعم ه"
         # two copies only, or four distinct words repeated twice: not a loop
         assert M.detect_loop(" ".join([cycle] * 2)) is None
         assert M.detect_loop("الطبيب الطبيب الطبيب الطبيب") is None
         assert M.detect_loop("") is None and M.detect_loop("   ") is None
         for text in ("هذا نص عادي " * 6, "ن" * 25, "قال الطبيب الطبيب الطبيب الطبيب الطبيب"):
             assert M.detect_loop(text) is not None and M.is_degenerate(text)
-        assert M.LOOP_NGRAM_ORDER == 4 and M.LOOP_NGRAM_REPEATS == 3 and M.LOOP_WORD_RUN == 5 and M.LOOP_CHAR_RUN == 20
+        assert M.LOOP_MAX_PERIOD == 60 and M.LOOP_CHAR_RUN == 20 and M.loop_min_copies(1) == 5
 
     def test_generation_uses_the_metrics_detector(self):
         """One function for both: the generator's loop stop is ``metrics.detect_loop``."""
@@ -203,10 +203,11 @@ class TestMetrics:
         # text_stop: earliest of marker and loop wins; nothing → ""
         cycle = "أ ب ج د ه و"
         looping = " ".join([cycle] * 3) + "\nالسؤال: تالي"
-        assert text_stop(looping, ("\nالسؤال:",), True) == (cycle + " ", "loop")
-        assert text_stop(looping, ("\nالسؤال:",), False) == (" ".join([cycle] * 3), "marker")
-        assert text_stop("جواب\nالسؤال: " + " ".join([cycle] * 3), ("\nالسؤال:",), True) == ("جواب", "marker")
-        assert text_stop("جواب سليم قصير", ("\nالسؤال:",), True) == ("جواب سليم قصير", "")
+        out = text_stop(looping, ("\nالسؤال:",), True)
+        assert (out.text, out.reason) == (cycle, "loop") and out.loop.period == 6
+        assert text_stop(looping, ("\nالسؤال:",), False) == (" ".join([cycle] * 3), "marker", None)
+        assert text_stop("جواب\nالسؤال: " + " ".join([cycle] * 3), ("\nالسؤال:",), True) == ("جواب", "marker", None)
+        assert text_stop("جواب سليم قصير", ("\nالسؤال:",), True) == ("جواب سليم قصير", "", None)
 
     def test_arabic_ratio_and_chrf(self):
         assert M.arabic_letter_ratio("نص عربي") == 1.0
@@ -269,7 +270,7 @@ class TestEvaluate:
         out = task.evaluate(adapter, tokenizer)
         assert out["marker_stop_rate"] == 1.0 and out["mean_gen_chars"] == len("نعم")
 
-    def test_loop_stop_cuts_before_the_second_copy(self, adapter, tokenizer, heldout, monkeypatch):
+    def test_loop_stop_keeps_the_first_copy(self, adapter, tokenizer, heldout, monkeypatch):
         """A synthetic looping continuation: the stopping criterion fires on the
         decoded text (checked every ``marker_check_every`` steps), the row gets
         ``stop_reason="loop"`` / ``hit_loop``, ``generation`` keeps the first copy,
@@ -346,13 +347,14 @@ class TestEvaluate:
         cycle = ["الكتاب", "على", "الطاولة", "ذهب"]
 
         def fake_generate(input_ids, **kw):
-            cont = torch.tensor([[w[x] for x in cycle * 3 + ["المدرسة"]]] * input_ids.shape[0])
+            # three copies of the 4-word cycle and half of a fourth: the model is mid-loop at the cap
+            cont = torch.tensor([[w[x] for x in cycle * 3 + cycle[:2]]] * input_ids.shape[0])
             return torch.cat([input_ids, cont], dim=1)
 
         monkeypatch.setattr(adapter, "generate", fake_generate)
         adapter.adapt_to_tokenizer(tokenizer)
         task = FreeformCidarTask({"heldout_path": str(heldout), "bertscore_model": None, "batch_size": 8,
-                                  "token_cap_floor": 13, "token_cap_ceiling": 13})
+                                  "token_cap_floor": 14, "token_cap_ceiling": 14})
         task.evaluate(adapter, tokenizer, max_samples=2, row_dump_dir=tmp_path)
         import pyarrow.parquet as pq
         t = pq.read_table(tmp_path / "freeform_cidar.parquet")
@@ -361,12 +363,13 @@ class TestEvaluate:
         for r in rows:
             assert r["stop_reason"] == "loop" and r["hit_loop"] and not r["hit_cap"] and r["degenerate"]
             assert r["generation"] == " ".join(cycle)
-            assert r["generation_raw"] == " ".join(cycle * 3 + ["المدرسة"])
+            assert r["generation_raw"] == " ".join(cycle * 3 + cycle[:2])
+            assert r["loop_rule"] == "period" and r["loop_period"] == 4
         meta = json.loads(t.schema.metadata[b"arabic_eval"].decode("utf-8"))
-        assert meta["decoding"]["loop_stop"] is True and meta["schema_version"] == 2
+        assert meta["decoding"]["loop_stop"] is True and meta["schema_version"] == 3
         # loop_stop off: the same continuation runs to the cap and is flagged degenerate only
         task_off = FreeformCidarTask({"heldout_path": str(heldout), "bertscore_model": None, "batch_size": 8,
-                                      "token_cap_floor": 13, "token_cap_ceiling": 13, "loop_stop": False})
+                                      "token_cap_floor": 14, "token_cap_ceiling": 14, "loop_stop": False})
         out = task_off.evaluate(adapter, tokenizer, max_samples=2)
         assert out["loop_stop_rate"] == 0.0 and out["degenerate_rate"] == 1.0 and out["hit_cap_rate"] == 1.0
 

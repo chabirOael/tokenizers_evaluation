@@ -5,7 +5,8 @@ greedy-decodes an answer to the *exact* Phase 3 instruction prompt
 (``_format_qa_prompt`` on an ``instruction`` record — the string the
 mixture trained on, so generation continues where training left off), under
 the shared decoding rules of ``generation.py`` (EOS / stop marker / text-level
-repetition-loop stop / character-budget cap; ``stop_reason`` per row). Reference-based (chrF,
+repetition-loop stop — a periodic tail, cut after its first copy — /
+character-budget cap; ``stop_reason`` per row). Reference-based (chrF,
 BERTScore) and reference-free metrics are computed inline and every row goes
 to ``eval_rows/freeform_cidar.parquet`` (prompt, reference, generation, per-
 row metrics). LLM-judge scoring is a separate stage
@@ -48,7 +49,8 @@ DEFAULT_HELDOUT_PATH = "configs/contamination/freeform_cidar_heldout_v1.jsonl"
 TASK_NAME = "freeform_cidar"
 ROW_FIELDS = [
     "id", "stratum", "instruction", "context", "prompt_text", "reference", "generation", "generation_raw",
-    "prompt_tokens", "gen_tokens", "gen_chars", "ref_chars", "stop_reason", "hit_cap", "hit_loop", "char_truncated",
+    "prompt_tokens", "gen_tokens", "gen_chars", "ref_chars", "stop_reason", "hit_cap", "hit_loop", "loop_rule",
+    "loop_period", "char_truncated",
     "empty", "degenerate", "latin", "arabic_letter_ratio", "chrf",
     "bertscore_p", "bertscore_r", "bertscore_f1", "reference_roundtrip_chrf", "gen_time_sec",
 ]
@@ -186,6 +188,7 @@ class FreeformCidarTask(BaseTask):
                 "generation": g.generation, "generation_raw": g.generation_raw,
                 "prompt_tokens": g.prompt_tokens, "gen_tokens": g.gen_tokens, "gen_chars": len(g.generation),
                 "ref_chars": len(ref), "stop_reason": g.stop_reason, "hit_cap": g.hit_cap, "hit_loop": g.hit_loop,
+                "loop_rule": g.loop_rule, "loop_period": g.loop_period,
                 "char_truncated": g.char_truncated, "empty": not g.generation.strip(),
                 # On the raw text: a loop-stopped generation keeps only the first copy of the
                 # repeated unit, so the flag has to look at what the model actually produced
@@ -218,7 +221,7 @@ class FreeformCidarTask(BaseTask):
         if row_dump_dir is not None:
             path = Path(row_dump_dir) / f"{TASK_NAME}.parquet"
             write_report_table(path, records, ROW_FIELDS, metadata={
-                "task": TASK_NAME, "kind": "freeform_generations", "schema_version": 2,
+                "task": TASK_NAME, "kind": "freeform_generations", "schema_version": 3,
                 "heldout_path": str(self.heldout_path), "heldout_sha256": _sha256(self.heldout_path),
                 "tokenizer_class": type(tokenizer).__name__, "embedding_type": tokenizer.embedding_type,
                 "decoding": self.decoding.to_json(), "token_cap": token_cap, "chars_per_token": round(cpt, 4),

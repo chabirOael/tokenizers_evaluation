@@ -13,17 +13,20 @@ and the judge to penalize.
 
 Stops: the tokenizer's EOS; a stop marker in the decoded text (the model
 starting a new ``### `` section or a header line is the common failure of a
-small SFT'd model); a **repetition loop** in the decoded text — the three
-rules of ``metrics.detect_loop`` (a word 4-gram three times, a word five
-times in a row, a character twenty times in a row), so the stop is exactly
-what ``degenerate_rate`` would flag and is tokenizer-agnostic (words and
-characters of decoded text, not tokens — a repetition *penalty* would charge
-char-JABER for spelling); the cap otherwise. Markers and loops are checked
-every ``marker_check_every`` steps by decoding the unfinished sequences. A
-loop-stopped generation is cut right before the second copy of the repeated
-unit (``stop_reason="loop"``); ``generation_raw`` keeps the whole text and
-the degeneration flag is computed on it, so ``degenerate_rate`` stays
-comparable with runs that had no loop stop. (The cuDNN SDPA backend, whose
+small SFT'd model); a **repetition loop** in the decoded text —
+``metrics.detect_loop``: the text *ends* in enough contiguous copies of one
+unit of up to ``LOOP_MAX_PERIOD`` words (a periodic tail; 5 copies of a
+single word, 4 of a unit of ≤ 3 words, 3 beyond, a trailing partial copy
+counted once it covers half the unit), or one letter or digit twenty times
+in a row — tokenizer-agnostic (words and characters of decoded text,
+not tokens — a repetition *penalty* would charge char-JABER for spelling), and
+every stopped text is one ``degenerate_rate`` flags; the cap otherwise.
+Markers and loops are checked every ``marker_check_every`` steps by decoding
+the unfinished sequences. A loop-stopped generation is cut right after the
+*first* copy of the repeated unit (``stop_reason="loop"``, ``loop_rule`` /
+``loop_period`` on the row); ``generation_raw`` keeps the whole text and the
+degeneration flag is computed on it, so ``degenerate_rate`` stays comparable
+with runs that had no loop stop. (The cuDNN SDPA backend, whose
 per-shape kernel compilation made the first and the odd-sized last batch cost
 ~300 s of host time each, is disabled at adapter load —
 ``models.llama_adapter.configure_sdpa_backends``.)
@@ -39,10 +42,10 @@ import logging
 import math
 import time
 from dataclasses import dataclass, field
-from typing import Any, List, Optional, Sequence, Tuple
+from typing import Any, List, NamedTuple, Optional, Sequence, Tuple
 
 from arabic_eval.models.base import BaseModelAdapter
-from arabic_eval.tasks.freeform.metrics import detect_loop
+from arabic_eval.tasks.freeform.metrics import Loop, detect_loop
 from arabic_eval.tokenizers.base import BaseTokenizer, EmbeddingType
 
 logger = logging.getLogger(__name__)
@@ -87,6 +90,8 @@ class GenerationRow:
     hit_loop: bool              # a repetition loop ended it; ``generation`` keeps the first copy
     char_truncated: bool
     gen_time_sec: float         # the batch's wall time divided by its size
+    loop_rule: Optional[str] = None      # "period" | "char" when hit_loop
+    loop_period: Optional[int] = None    # the unit's length in words when hit_loop (1 for the char rule)
 
 
 def generation_supported(tokenizer: BaseTokenizer) -> Tuple[bool, str]:
@@ -133,17 +138,28 @@ def truncate_at_marker(text: str, markers: Sequence[str]) -> Tuple[str, bool]:
     return (text[:cut], True) if cut < len(text) else (text, False)
 
 
-def text_stop(text: str, markers: Sequence[str], loop_stop: bool) -> Tuple[str, str]:
-    """Apply the text-level stops to a decoded generation: the earliest of a
-    stop marker and (when ``loop_stop``) the second copy of a repetition loop.
-    Returns ``(text_cut, reason)`` with reason ``""`` when nothing fired."""
+class TextStop(NamedTuple):
+    """The text-level stop applied to a decoded generation: ``text`` after the
+    cut, ``reason`` (``"loop"`` / ``"marker"`` / ``""`` when nothing fired)
+    and the ``Loop`` when a loop ended it."""
+    text: str
+    reason: str
+    loop: Optional[Loop] = None
+
+
+def text_stop(text: str, markers: Sequence[str], loop_stop: bool) -> TextStop:
+    """Apply the text-level stops to a decoded generation: cut at the first
+    stop marker, then (when ``loop_stop``) look for a repetition loop at the
+    tail of what is left — a loop the model ran before starting a new section
+    is still a loop — and keep the first copy of its unit. The reason is
+    ``"loop"`` when one fired, else ``"marker"``, else ``""``."""
     text_m, hit_marker = truncate_at_marker(text, markers)
-    loop = detect_loop(text) if loop_stop else None
-    if loop is not None and (not hit_marker or loop.cut < len(text_m)):
-        return text[: loop.cut], "loop"
+    loop = detect_loop(text_m) if loop_stop else None
+    if loop is not None:
+        return TextStop(text_m[: loop.cut], "loop", loop)
     if hit_marker:
-        return text_m, "marker"
-    return text, ""
+        return TextStop(text_m, "marker")
+    return TextStop(text, "")
 
 
 def _marker_stopping(tokenizer: BaseTokenizer, markers: Sequence[str], prompt_len: int, every: int,
@@ -163,7 +179,7 @@ def _marker_stopping(tokenizer: BaseTokenizer, markers: Sequence[str], prompt_le
                 return done
             for i in range(input_ids.shape[0]):
                 text = tokenizer.decode(input_ids[i, prompt_len:].tolist())
-                if text_stop(text, markers, loop_stop)[1]:
+                if text_stop(text, markers, loop_stop).reason:
                     done[i] = True
             return done
 
@@ -245,7 +261,7 @@ def generate_freeform(
                     new = new[: new.index(eos_id)]
                     reason = "eos"
                 raw = tokenizer.decode(new)
-                text, text_reason = text_stop(raw, cfg.stop_markers, cfg.loop_stop)
+                text, text_reason, loop = text_stop(raw, cfg.stop_markers, cfg.loop_stop)
                 if text_reason:
                     reason = text_reason
                 elif reason == "cap" and len(new) < token_cap:
@@ -258,6 +274,8 @@ def generate_freeform(
                     prompt_tokens=len(encoded[i]), gen_tokens=len(new), generation_raw=raw, generation=text,
                     stop_reason=reason, hit_cap=(reason == "cap"), hit_loop=(reason == "loop"),
                     char_truncated=char_truncated, gen_time_sec=dt,
+                    loop_rule=loop.rule if reason == "loop" and loop is not None else None,
+                    loop_period=loop.period if reason == "loop" and loop is not None else None,
                 )
             n_new = sum(rows[i].gen_tokens for i in idx)   # type: ignore[union-attr]
             logger.info("free-form generation: %d/%d prompts (batch of %d × ≤%d tokens, width %d, %d new tokens, %.1fs = %.1f tok/s)",
