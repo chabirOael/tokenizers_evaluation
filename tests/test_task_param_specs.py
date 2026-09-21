@@ -257,7 +257,7 @@ def test_pipeline_warns_at_run_start_and_never_fails(caplog):
     assert findings[0].startswith("sweep.tasks[0].params: acva does not declare a parameter 'train_split_ratio'")
     assert findings[1] == 'sweep.tasks[0].params: acva.max_length should be int, got "512" (str)'
     logged = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
-    assert any("task params: sweep.tasks[0].params: acva does not declare a parameter 'train_split_ratio'" in m for m in logged)
+    assert any("declared params: sweep.tasks[0].params: acva does not declare a parameter 'train_split_ratio'" in m for m in logged)
     assert _warn_task_params(_cfg([{"type": "acva", "params": {"num_fewshot": 0}}])) == []
 
 

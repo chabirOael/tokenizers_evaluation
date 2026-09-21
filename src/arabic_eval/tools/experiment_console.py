@@ -49,7 +49,7 @@ from arabic_eval.config_edit import (
     stamp_created_at, strip_runs,
 )
 from arabic_eval.evaluation.eval_rows import SUPERSEDED_DIR
-from arabic_eval.params_spec import ParamSpec, task_param_specs, validate_params
+from arabic_eval.params_spec import ParamSpec, task_param_specs, tokenizer_param_specs, validate_params
 from arabic_eval.tools.config_hints import FIELD_HINTS
 
 # ---------------------------------------------------------------------------
@@ -241,6 +241,17 @@ def task_specs() -> Dict[str, List[ParamSpec]]:
 _TASK_SPECS: Optional[Dict[str, List[ParamSpec]]] = None
 
 
+def tokenizer_specs() -> Dict[str, List[ParamSpec]]:
+    """``{tokenizer_type: ParamSpec list}`` for every registered tokenizer (cached like ``task_specs``)."""
+    global _TOKENIZER_SPECS
+    if _TOKENIZER_SPECS is None:
+        _TOKENIZER_SPECS = tokenizer_param_specs()
+    return _TOKENIZER_SPECS
+
+
+_TOKENIZER_SPECS: Optional[Dict[str, List[ParamSpec]]] = None
+
+
 def schema_bundle(paths: ConsolePaths) -> dict:
     keys = _registry_keys()
     presets = {
@@ -262,6 +273,7 @@ def schema_bundle(paths: ConsolePaths) -> dict:
         "registries": {**keys, "datasets": list(get_args(DatasetName))},
         "presets": presets,
         "task_params": {t: [s.to_dict() for s in spec] for t, spec in task_specs().items()},
+        "tokenizer_params": {t: [s.to_dict() for s in spec] for t, spec in tokenizer_specs().items()},
         "hints": {k: list(v) for k, v in FIELD_HINTS.items()},
         "env": {
             "hf_token_set": bool(os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN")),
@@ -296,29 +308,45 @@ def is_sweep(cfg: ExperimentConfig) -> bool:
     return cfg.sweep is not None and len(cfg.sweep.tokenizers) > 1
 
 
+def _finding_key(owner: str, msg: str) -> str:
+    head = msg.split(" ", 1)[0]
+    if head.startswith(owner + "."):
+        return head[len(owner) + 1:]
+    if "does not declare a parameter '" in msg:
+        return msg.split("does not declare a parameter '", 1)[1].split("'", 1)[0]
+    return ""
+
+
 def param_warnings(cfg: ExperimentConfig) -> List[Dict[str, str]]:
-    """Every ``sweep.tasks[i].params`` checked against the task's declared
-    ``param_spec`` (unknown key, wrong type, out of range) — advisory, the run
-    would proceed. Each finding carries the ``loc`` of the params dict so the
-    form can paint the row, plus the task type and the offending key."""
+    """Every ``params`` dict checked against its owner's declared ``param_spec``
+    (unknown key, wrong type, out of range) — ``sweep.tasks[i].params`` against
+    the task, ``tokenizer.params`` / ``sweep.tokenizers[i].params`` against the
+    tokenizer. Advisory, the run would proceed. Each finding carries the ``loc``
+    of the params dict so the form can paint the row, the owner type (``task``
+    for both kinds, historically) and the offending key."""
     out: List[Dict[str, str]] = []
     specs = task_specs()
-    if not specs or cfg.sweep is None:
-        return out
-    for i, t in enumerate(cfg.sweep.tasks):
-        loc = f"sweep.tasks.{i}.params"
-        if t.type not in specs:
-            out.append({"loc": f"sweep.tasks.{i}.type", "task": t.type, "key": "",
-                        "msg": f"task type {t.type!r} is not in the registry ({', '.join(sorted(specs))})"})
-            continue
-        for msg in validate_params(specs[t.type], t.params, owner=t.type):
-            key = ""
-            head = msg.split(" ", 1)[0]
-            if head.startswith(t.type + "."):
-                key = head[len(t.type) + 1:]
-            elif "does not declare a parameter '" in msg:
-                key = msg.split("does not declare a parameter '", 1)[1].split("'", 1)[0]
-            out.append({"loc": loc, "task": t.type, "key": key, "msg": msg})
+    if specs and cfg.sweep is not None:
+        for i, t in enumerate(cfg.sweep.tasks):
+            loc = f"sweep.tasks.{i}.params"
+            if t.type not in specs:
+                out.append({"loc": f"sweep.tasks.{i}.type", "task": t.type, "key": "",
+                            "msg": f"task type {t.type!r} is not in the registry ({', '.join(sorted(specs))})"})
+                continue
+            for msg in validate_params(specs[t.type], t.params, owner=t.type):
+                out.append({"loc": loc, "task": t.type, "key": _finding_key(t.type, msg), "msg": msg})
+    tspecs = tokenizer_specs()
+    if tspecs:
+        holders = [("tokenizer.params", cfg.tokenizer.type, cfg.tokenizer.params)]
+        if cfg.sweep is not None:
+            holders += [(f"sweep.tokenizers.{i}.params", t.type, t.params) for i, t in enumerate(cfg.sweep.tokenizers)]
+        for loc, ttype, params in holders:
+            if ttype not in tspecs:
+                out.append({"loc": loc.rsplit(".", 1)[0] + ".type", "task": ttype, "key": "",
+                            "msg": f"tokenizer type {ttype!r} is not in the registry ({', '.join(sorted(tspecs))})"})
+                continue
+            for msg in validate_params(tspecs[ttype], params, owner=ttype):
+                out.append({"loc": loc, "task": ttype, "key": _finding_key(ttype, msg), "msg": msg})
     return out
 
 

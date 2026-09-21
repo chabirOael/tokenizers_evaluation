@@ -39,6 +39,7 @@ from typing import Any, Dict, List, Optional
 from transformers import AutoTokenizer
 
 from arabic_eval.registry import tokenizer_registry
+from arabic_eval.params_spec import ParamSpec
 from arabic_eval.tokenizers.base import BaseTokenizer, EmbeddingType, TokenizerOutput
 
 logger = logging.getLogger("arabic_eval.tokenizers.native_llama")
@@ -57,6 +58,16 @@ UNK_TOKEN_ID = 128002
 @tokenizer_registry.register("native_llama")
 class NativeLlamaTokenizer(BaseTokenizer):
     """Wrapper around a pretrained Llama tokenizer."""
+
+    DEFAULT_MODEL_FOR_SPEC = DEFAULT_MODEL
+
+    @classmethod
+    def param_spec(cls) -> List[ParamSpec]:
+        return [
+            ParamSpec("model_name_or_path", "str", cls.DEFAULT_MODEL_FOR_SPEC,
+                      help="The HuggingFace checkpoint whose pretrained tokenizer is wrapped (train() is a no-op); keep it "
+                           "equal to the base model of model.name_or_path so the vocabulary matches the embedding matrix."),
+        ]
 
     def __init__(self, model_name_or_path: str = DEFAULT_MODEL, **kwargs: Any) -> None:
         self._model_name_or_path = model_name_or_path

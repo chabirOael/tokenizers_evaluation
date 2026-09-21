@@ -8,12 +8,15 @@ from typing import Any, Dict, List, Optional
 from tokenizers import Tokenizer, decoders, models, pre_tokenizers, trainers, processors
 
 from arabic_eval.registry import tokenizer_registry
+from arabic_eval.params_spec import ParamSpec
 from arabic_eval.tokenizers.base import BaseTokenizer, EmbeddingType, TokenizerOutput
 
 logger = logging.getLogger("arabic_eval.tokenizers.wordpiece")
 
 SPECIAL_TOKENS = ["<pad>", "<s>", "</s>", "<unk>", "<mask>"]
 
+
+DEFAULT_MIN_FREQUENCY = 2      # the trainer's min pair / piece frequency (also the spec default)
 
 @tokenizer_registry.register("wordpiece")
 class WordPieceTokenizer(BaseTokenizer):
@@ -23,8 +26,15 @@ class WordPieceTokenizer(BaseTokenizer):
         self._tokenizer: Optional[Tokenizer] = None
         self._special_token_map: Dict[str, int] = {}
 
+    @classmethod
+    def param_spec(cls) -> List[ParamSpec]:
+        return [
+            ParamSpec("min_frequency", "int", DEFAULT_MIN_FREQUENCY, min=1,
+                      help="Minimum frequency of a pair / piece for HF WordPieceTrainer to merge it (read at train time)."),
+        ]
+
     def train(self, texts: List[str], vocab_size: int, **kwargs: Any) -> None:
-        min_frequency = kwargs.get("min_frequency", 2)
+        min_frequency = kwargs.get("min_frequency", DEFAULT_MIN_FREQUENCY)
 
         tokenizer = Tokenizer(models.WordPiece(unk_token="<unk>"))
         tokenizer.pre_tokenizer = pre_tokenizers.Whitespace()

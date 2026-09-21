@@ -51,6 +51,8 @@ class FarasaCharacterBERTTokenizer(CharacterBERTTokenizer):
         super().__init__(max_char_len=max_char_len, **kwargs)
         self._segmenter = None
 
+    DEFAULT_MAX_CHAR_LEN_FOR_SPEC = DEFAULT_MORPHEME_MAX_CHAR_LEN     # morphemes are shorter than words
+
     def _ensure_segmenter(self) -> None:
         if self._segmenter is None:
             self._segmenter = _get_farasa_segmenter()

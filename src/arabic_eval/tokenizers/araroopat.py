@@ -29,6 +29,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from tqdm import tqdm
 
+from arabic_eval.params_spec import ParamSpec
 from arabic_eval.registry import tokenizer_registry
 from arabic_eval.tokenizers.araroopat_backend import (
     FUNC_INVENTORY,
@@ -84,6 +85,24 @@ TOK_PROP_END = "[PROP_END]"
 # those with a root (محمد, مصر, القاهرة), which then no longer feed the
 # root / pattern tables.
 PROPER_NOUN_MODES = ("unrooted", "all")
+
+# Constructor defaults of the configurable params — one table read by ``__init__`` and
+# ``param_spec`` so the two cannot drift. NOTE ``max_patterns`` 500 is the class default
+# the code has always had; the Balanced tier every experiment uses is 4000, set in
+# configs/tokenizers/araroopat.yaml (a changed default here would change every future vocab).
+DEFAULTS: Dict[str, Any] = {
+    "max_roots": 10000,
+    "max_patterns": 500,
+    "min_root_freq": 2,
+    "min_pattern_freq": 2,
+    "generator_timeout_ms": 50,
+    "use_diacritized_surface": False,
+    "cache_corpus_analysis": True,
+    "add_bos_eos": True,
+    "clitic_peeler": True,
+    "peel_bare_alef": False,
+    "proper_nouns": "unrooted",
+}
 
 SPECIAL_TOKENS_ORDERED = [TOK_PAD, TOK_BOS, TOK_EOS, TOK_UNK]
 
@@ -173,14 +192,14 @@ class AraRooPatTokenizer(BaseTokenizer):
 
     def __init__(self, **kwargs: Any) -> None:
         # Configurable params (also exposed via configs/tokenizers/araroopat.yaml).
-        self.max_roots: int = int(kwargs.get("max_roots", 10000))
-        self.max_patterns: int = int(kwargs.get("max_patterns", 500))
-        self.min_root_freq: int = int(kwargs.get("min_root_freq", 2))
-        self.min_pattern_freq: int = int(kwargs.get("min_pattern_freq", 2))
-        self.generator_timeout_ms: int = int(kwargs.get("generator_timeout_ms", 50))
-        self.use_diacritized_surface: bool = bool(kwargs.get("use_diacritized_surface", False))
-        self.cache_corpus_analysis: bool = bool(kwargs.get("cache_corpus_analysis", True))
-        self.add_bos_eos: bool = bool(kwargs.get("add_bos_eos", True))
+        self.max_roots: int = int(kwargs.get("max_roots", DEFAULTS["max_roots"]))
+        self.max_patterns: int = int(kwargs.get("max_patterns", DEFAULTS["max_patterns"]))
+        self.min_root_freq: int = int(kwargs.get("min_root_freq", DEFAULTS["min_root_freq"]))
+        self.min_pattern_freq: int = int(kwargs.get("min_pattern_freq", DEFAULTS["min_pattern_freq"]))
+        self.generator_timeout_ms: int = int(kwargs.get("generator_timeout_ms", DEFAULTS["generator_timeout_ms"]))
+        self.use_diacritized_surface: bool = bool(kwargs.get("use_diacritized_surface", DEFAULTS["use_diacritized_surface"]))
+        self.cache_corpus_analysis: bool = bool(kwargs.get("cache_corpus_analysis", DEFAULTS["cache_corpus_analysis"]))
+        self.add_bos_eos: bool = bool(kwargs.get("add_bos_eos", DEFAULTS["add_bos_eos"]))
         # Closed-class words emitted as a single [PREP_*] token. Order is
         # the vocab ID order. See PREPOSITION_INVENTORY in the backend.
         self.prepositions: Tuple[str, ...] = tuple(
@@ -198,15 +217,15 @@ class AraRooPatTokenizer(BaseTokenizer):
         # database has no row for (interrogative أ, double object pronouns,
         # classical كمو/همو). Runs only on a native CAMeL miss. See
         # ``peel_candidates`` in the backend.
-        self.clitic_peeler: bool = bool(kwargs.get("clitic_peeler", True))
+        self.clitic_peeler: bool = bool(kwargs.get("clitic_peeler", DEFAULTS["clitic_peeler"]))
         # Also accept a bare ا as the interrogative (alef-normalised text).
         # Off by default — see BARE_ALEF_INTERROGATIVE in the backend.
-        self.peel_bare_alef: bool = bool(kwargs.get("peel_bare_alef", False))
+        self.peel_bare_alef: bool = bool(kwargs.get("peel_bare_alef", DEFAULTS["peel_bare_alef"]))
         # Proper nouns (CAMeL database noun_prop) between [PROP_BEGIN] /
         # [PROP_END]: "unrooted" (default) or "all". Applied at vocab-build
         # and encode time, never in the pre-pass cache, so switching it
         # re-runs only the vocab build.
-        self.proper_nouns: str = str(kwargs.get("proper_nouns") or "unrooted")
+        self.proper_nouns: str = str(kwargs.get("proper_nouns") or DEFAULTS["proper_nouns"])
         if self.proper_nouns not in PROPER_NOUN_MODES:
             raise ValueError(
                 f"araroopat: proper_nouns must be one of {PROPER_NOUN_MODES}, got {self.proper_nouns!r}"
@@ -221,6 +240,47 @@ class AraRooPatTokenizer(BaseTokenizer):
         self._reconstruction: Dict[Tuple[int, int], str] = {}
         # Provenance: per-token-string metadata.
         self._metadata: Dict[str, Any] = {"roots": {}, "patterns": {}, "config": {}}
+
+    @classmethod
+    def param_spec(cls) -> List[ParamSpec]:
+        d = DEFAULTS
+        return [
+            ParamSpec("max_roots", "int", d["max_roots"], min=1, group="budget",
+                      help="Cap on [ROOT_*] tokens (most frequent roots first). Never binding on ArabicText-Large: only "
+                           "~4 100 roots clear min_root_freq."),
+            ParamSpec("max_patterns", "int", d["max_patterns"], min=1, group="budget",
+                      help="Cap on [PAT_*] tokens — the binding budget (keeping # in roots moves the weak letter into the "
+                           "pattern). The class default 500 is a stale legacy value; the Balanced tier every experiment uses "
+                           "is 4000 (configs/tokenizers/araroopat.yaml), Compact 1000, Max 6076."),
+            ParamSpec("min_root_freq", "int", d["min_root_freq"], min=1, group="budget",
+                      help="A root needs this many corpus occurrences to enter the vocabulary."),
+            ParamSpec("min_pattern_freq", "int", d["min_pattern_freq"], min=1, group="budget",
+                      help="A pattern needs this many corpus occurrences to enter the vocabulary."),
+            ParamSpec("proper_nouns", "str", d["proper_nouns"], choices=PROPER_NOUN_MODES, group="analysis",
+                      help="Names CAMeL's database knows: 'unrooted' sends only the rootless ones between [PROP_BEGIN]/"
+                           "[PROP_END] (rooted names keep ROOT+PAT), 'all' sends every name there (+2.7 % fertility)."),
+            ParamSpec("clitic_peeler", "bool", d["clitic_peeler"], group="analysis",
+                      help="On a native CAMeL miss, strip clitic combinations the database lacks (interrogative أ, double "
+                           "object pronouns, كمو/همو) from a closed list and re-analyse the residual."),
+            ParamSpec("peel_bare_alef", "bool", d["peel_bare_alef"], group="analysis",
+                      help="Also accept a bare ا as the interrogative prefix (for alef-normalised text); 1.1 % false peels "
+                           "when on, keep off with raw hamza text."),
+            ParamSpec("prepositions", "list[str]", list(PREPOSITION_INVENTORY), group="analysis",
+                      help="Closed-class prepositions emitted as one [PREP_*] token each (fixed order = vocab id order); "
+                           "matched alef-insensitively on CAMeL's lemma."),
+            ParamSpec("func_words", "list[str]", list(FUNC_INVENTORY), group="analysis",
+                      help="Closed-class function words emitted as one [FUNC_*] token each (pronouns, demonstratives, "
+                           "relatives, conjunctions, particles); a surface may not also be a preposition."),
+            ParamSpec("use_diacritized_surface", "bool", d["use_diacritized_surface"], group="decode",
+                      help="Store the diacritized stem in the reconstruction table instead of the cleaned one."),
+            ParamSpec("generator_timeout_ms", "int", d["generator_timeout_ms"], min=1, advanced=True, group="decode",
+                      help="Per-call timeout of CAMeL's Generator (tier 2 of the decode resolver, unseen root/pattern pairs)."),
+            ParamSpec("add_bos_eos", "bool", d["add_bos_eos"], advanced=True, group="misc",
+                      help="Wrap every encoding in <s> … </s>."),
+            ParamSpec("cache_corpus_analysis", "bool", d["cache_corpus_analysis"], advanced=True, group="misc",
+                      help="Reuse outputs/tokenizers/araroopat_cache/corpus_analysis.pkl for chunks the pre-pass already "
+                           "analysed (hours of CAMeL otherwise)."),
+        ]
 
     # ------------------------------------------------------------------
     # Backend

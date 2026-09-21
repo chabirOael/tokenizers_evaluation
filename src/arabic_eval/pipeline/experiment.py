@@ -331,10 +331,11 @@ def _task_params(task_cls: type, params: Dict[str, Any], config: ExperimentConfi
 
 
 def _warn_task_params(config: ExperimentConfig) -> List[str]:
-    """Advisory check of every ``sweep.tasks[].params`` against the task's
-    ``param_spec`` at run start — before hours of training, not at Step 6.
-    Each finding is one WARNING line; nothing is fatal (an old YAML with a key a
-    task no longer reads keeps running exactly as before, the key is ignored).
+    """Advisory check of every ``params`` dict against its owner's ``param_spec``
+    at run start — before hours of training, not at Step 6: ``sweep.tasks[].params``
+    against the task, ``tokenizer.params`` against the tokenizer that runs. Each
+    finding is one WARNING line; nothing is fatal (an old YAML with a key a task
+    no longer reads keeps running exactly as before, the key is ignored).
     Returns the findings (for tests)."""
     findings: List[str] = []
     for i, task_cfg in enumerate(config.sweep.tasks if config.sweep else []):
@@ -345,8 +346,15 @@ def _warn_task_params(config: ExperimentConfig) -> List[str]:
             continue
         for msg in validate_params(task_cls.param_spec(), task_cfg.params, owner=task_cfg.type):
             findings.append(f"sweep.tasks[{i}].params: {msg}")
+    try:
+        tok_cls = tokenizer_registry.get(config.tokenizer.type)
+    except KeyError as e:
+        findings.append(f"tokenizer: {e}")
+    else:
+        for msg in validate_params(tok_cls.param_spec(), config.tokenizer.params, owner=config.tokenizer.type):
+            findings.append(f"tokenizer.params: {msg}")
     for f in findings:
-        logger.warning("task params: %s", f)
+        logger.warning("declared params: %s", f)
     return findings
 
 

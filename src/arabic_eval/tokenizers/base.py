@@ -6,6 +6,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from arabic_eval.params_spec import ParamSpec
+
 
 @dataclass
 class TokenizerOutput:
@@ -26,6 +28,18 @@ class EmbeddingType:
 
 class BaseTokenizer(ABC):
     """Abstract interface that all tokenizers must implement."""
+
+    @classmethod
+    def param_spec(cls) -> List[ParamSpec]:
+        """The keys this tokenizer reads from ``tokenizer.params`` (the pipeline
+        passes the dict to **both** the constructor and ``train()``), with type,
+        default and one-line help — see ``arabic_eval.params_spec``. Defaults are
+        the code's own constants, never retyped: a changed default would change
+        every future vocabulary. Advisory only (the Pydantic field stays
+        ``Dict[str, Any]``); an unknown key is warned about at validation and at
+        run start, and the console renders a typed row per entry. Default: none
+        declared, which turns the checks off for this tokenizer."""
+        return []
 
     @abstractmethod
     def train(self, texts: List[str], vocab_size: int, **kwargs) -> None:

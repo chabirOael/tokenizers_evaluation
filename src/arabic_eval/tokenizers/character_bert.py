@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from arabic_eval.registry import tokenizer_registry
+from arabic_eval.params_spec import ParamSpec
 from arabic_eval.tokenizers.base import BaseTokenizer, EmbeddingType, TokenizerOutput
 
 logger = logging.getLogger("arabic_eval.tokenizers.character_bert")
@@ -34,6 +35,7 @@ EOS_TOKEN = "</s>"
 UNK_TOKEN = "<unk>"
 
 DEFAULT_MAX_CHAR_LEN = 50
+DEFAULT_MAX_WORD_VOCAB = 50_000     # output-head vocabulary cap (most-frequent words), read at train time
 
 
 @tokenizer_registry.register("character_bert")
@@ -59,6 +61,19 @@ class CharacterBERTTokenizer(BaseTokenizer):
         }
         self._next_word_id = len(self._special_word_tokens)
 
+    DEFAULT_MAX_CHAR_LEN_FOR_SPEC = DEFAULT_MAX_CHAR_LEN      # a subclass overrides it with its own constructor default
+
+    @classmethod
+    def param_spec(cls) -> List[ParamSpec]:
+        return [
+            ParamSpec("max_char_len", "int", cls.DEFAULT_MAX_CHAR_LEN_FOR_SPEC, min=1,
+                      help="Characters kept per input unit (a word here, a morpheme for farasa_character_bert); longer "
+                           "units are cut, shorter ones padded — the CharCNN's fixed input width."),
+            ParamSpec("max_word_vocab", "int", DEFAULT_MAX_WORD_VOCAB, min=8,
+                      help="Cap on the output-head vocabulary (the most frequent whole units); the rest score as UNK "
+                           "(read at train time)."),
+        ]
+
     def train(self, texts: List[str], vocab_size: int = 0, **kwargs: Any) -> None:
         """Build the character vocabulary from the training texts.
 
@@ -67,7 +82,7 @@ class CharacterBERTTokenizer(BaseTokenizer):
         built for the output head (lm_head) — capped at ``max_word_vocab``
         most-frequent words.
         """
-        max_word_vocab = kwargs.get("max_word_vocab", 50_000)
+        max_word_vocab = kwargs.get("max_word_vocab", DEFAULT_MAX_WORD_VOCAB)
         logger.info("Building character vocabulary from %d texts", len(texts))
 
         # Build character vocab

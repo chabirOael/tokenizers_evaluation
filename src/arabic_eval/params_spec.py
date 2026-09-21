@@ -217,6 +217,18 @@ def render_task_preset(task_type: str, cls_name: str, spec: Sequence[ParamSpec])
     return "\n".join(lines) + "\n"
 
 
+def _registry_specs(registry: Any) -> Dict[str, List[ParamSpec]]:
+    out: Dict[str, List[ParamSpec]] = {}
+    for key in registry.list_available():
+        cls = registry.get(key)
+        fn = getattr(cls, "param_spec", None)
+        try:
+            out[key] = list(fn()) if callable(fn) else []
+        except Exception:  # noqa: BLE001 — a broken spec must not take the console down
+            out[key] = []
+    return out
+
+
 def task_param_specs() -> Dict[str, List[ParamSpec]]:
     """``{task_type: spec}`` for every registered task (an empty list for a task that
     declares none). Imports the task registry lazily; ``{}`` when torch is missing."""
@@ -225,12 +237,14 @@ def task_param_specs() -> Dict[str, List[ParamSpec]]:
         from arabic_eval.registry import task_registry
     except Exception:  # noqa: BLE001
         return {}
-    out: Dict[str, List[ParamSpec]] = {}
-    for key in task_registry.list_available():
-        cls = task_registry.get(key)
-        fn = getattr(cls, "param_spec", None)
-        try:
-            out[key] = list(fn()) if callable(fn) else []
-        except Exception:  # noqa: BLE001 — a broken spec must not take the console down
-            out[key] = []
-    return out
+    return _registry_specs(task_registry)
+
+
+def tokenizer_param_specs() -> Dict[str, List[ParamSpec]]:
+    """``{tokenizer_type: spec}`` for every registered tokenizer (torch-free registry)."""
+    try:
+        import arabic_eval.tokenizers  # noqa: F401  (registers the tokenizers)
+        from arabic_eval.registry import tokenizer_registry
+    except Exception:  # noqa: BLE001
+        return {}
+    return _registry_specs(tokenizer_registry)

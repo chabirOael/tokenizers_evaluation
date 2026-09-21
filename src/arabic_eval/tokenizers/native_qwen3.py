@@ -52,6 +52,8 @@ ENDOFTEXT_TOKEN_ID = 151643
 class NativeQwen3Tokenizer(NativeLlamaTokenizer):
     """Wrapper around a pretrained Qwen3 tokenizer."""
 
+    DEFAULT_MODEL_FOR_SPEC = DEFAULT_MODEL
+
     def __init__(self, model_name_or_path: str = DEFAULT_MODEL, **kwargs: Any) -> None:
         super().__init__(model_name_or_path=model_name_or_path, **kwargs)
         self._model_vocab_size: Optional[int] = None

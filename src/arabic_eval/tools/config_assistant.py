@@ -342,16 +342,25 @@ def field_reference() -> str:
 
 
 def _presets_text(bundle: dict) -> str:
-    lines = ["### tokenizer types (registry) — params are the documented defaults of configs/tokenizers/<type>.yaml"]
+    lines = ["### tokenizer types (registry) — `preset` = the recommended values of configs/tokenizers/<type>.yaml (what the form's "
+             "fill button copies; these are what experiments use), `declares` = every key the tokenizer reads with its type, "
+             "CODE default and meaning (an undeclared key is ignored at run time and flagged). Write preset values, not defaults, "
+             "unless the request says otherwise."]
     presets = bundle["presets"]["tokenizers"]
+    tspecs = bundle.get("tokenizer_params") or {}
     for t in bundle["registries"]["tokenizers"]:
         p = dict(presets.get(t) or {})
         p.pop("file", None)
         p.pop("type", None)
         params = p.get("params") if isinstance(p.get("params"), dict) else {}
         note = _TOKENIZER_NOTES.get(t, "")
-        ptxt = ", ".join(f"{k}: {json.dumps(v, ensure_ascii=False)}" for k, v in params.items()) if params else "no params"
-        lines.append(f"- {t}: {note}; params: {ptxt}")
+        ptxt = ", ".join(f"{k}: {_short(v)}" for k, v in params.items()) if params else "no params"
+        lines.append(f"- {t}: {note}; preset: {ptxt}")
+        for s in tspecs.get(t) or []:
+            meta = s["type"] + (" | null" if s.get("nullable") else "")
+            if s.get("choices"):
+                meta += "; one of " + ", ".join(json.dumps(c, ensure_ascii=False) for c in s["choices"])
+            lines.append(f"  - declares {s['name']} ({meta}, code default {_short(s['default'])}): {s['help']}")
     lines.append("### model types (registry): " + ", ".join(bundle["registries"]["models"]))
     for name, p in bundle["presets"]["models"].items():
         lines.append(f"- {name}: name_or_path {p.get('name_or_path')}, dtype {p.get('dtype')} ({p.get('file')})")
@@ -360,6 +369,13 @@ def _presets_text(bundle: dict) -> str:
     lines.append("### dataset names (training.phases.*.datasets): "
                  + ", ".join(f"{d} ({CORPUS_CATEGORY.get(d, 'raw text')})" for d in bundle["registries"]["datasets"]))
     return "\n".join(lines)
+
+
+def _short(v: Any) -> str:
+    """A value for the prompt: long string lists (the AraRooPat inventories) by their size."""
+    if isinstance(v, list) and len(v) > 3:
+        return f"a list of {len(v)} strings"
+    return json.dumps(v, ensure_ascii=False)
 
 
 def _task_params_text(bundle: dict) -> str:

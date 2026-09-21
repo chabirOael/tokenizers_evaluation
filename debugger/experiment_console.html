@@ -762,7 +762,7 @@ table.ev-ch tr.pred td{outline:1px solid var(--accent);outline-offset:-1px}
    state + helpers
    ========================================================================= */
 const S = {
-  schema:null, base:null, reg:null, presets:null, env:null, taskParams:{},
+  schema:null, base:null, reg:null, presets:null, env:null, taskParams:{}, tokParams:{},
   configs:[], file:null, cfg:null, dirty:false, errors:[], paramWarnings:[], yamlDirty:false, outMode:'infer', outExp:null, experiments:[],
   open:new Set(['', 'sweep', 'training', 'tokenizer', 'model']),
   runs:[], run:null, runDetail:null, runSort:{key:'started', desc:true}, logOffset:0, logRows:[], logCur:'', logTb:false, logFilter:'', logHideProg:false, logBig:false, runsOpen:true, pollT:null, view:'configs', etab:'form',
@@ -894,12 +894,19 @@ const SECTION_ORDER = ['experiment','sweep','tokenizer','model','training','eval
 let HINTS = {};
 const normPath = p => p.replace(/\.\d+(?=\.|$)/g, '.*').replace(/^training\.phases\.(embedding_alignment|warmup|sft)/, 'training.phases.*');
 const TP_PATH_RE = /^sweep\.tasks\.(\d+)\.params\.(.+)$/;
+const TK_PATH_RE = /^(tokenizer|sweep\.tokenizers\.(\d+))\.params\.(.+)$/;
 function hintFor(path){
-  const m = TP_PATH_RE.exec(path);                      // a typed task-param row: the spec's help is the hint
+  let m = TP_PATH_RE.exec(path);                        // a typed task-param row: the spec's help is the hint
   if (m && S.cfg && S.cfg.sweep){
     const t = (S.cfg.sweep.tasks||[])[Number(m[1])];
     const sp = t && (taskSpec(t.type)||[]).find(x => x.name===m[2]);
     if (sp) return {key: `${t.type} · ${sp.name} (${sp.type}${sp.nullable?' | null':''})`, text: sp.help, example: `default ${tpShow(sp, tpDefault(sp))}` + (tpInjected(sp) ? ' (evaluation.num_fewshot)' : '')};
+  }
+  m = TK_PATH_RE.exec(path);                            // a typed tokenizer-param row
+  if (m && S.cfg){
+    const holder = m[2]!==undefined ? (S.cfg.sweep?.tokenizers||[])[Number(m[2])] : S.cfg.tokenizer;
+    const sp = holder && (tokSpec(holder.type)||[]).find(x => x.name===m[3]);
+    if (sp) return {key: `${holder.type} · ${sp.name} (${sp.type}${sp.nullable?' | null':''})`, text: sp.help, example: `code default ${tpShow(sp, sp.default)}`};
   }
   const n = normPath(path);
   const hit = HINTS[n] || HINTS[n.split('.').pop()];
@@ -1045,15 +1052,35 @@ function objectSection(path, node, opts={}){
 }
 
 /* ---- custom widgets ---- */
+/* tokenizer params: typed rows from the tokenizer's param_spec() (same machinery as the task cards; the greyed
+   value is the CODE default), plus the preset button — configs/tokenizers/<type>.yaml holds the RECOMMENDED
+   values (araroopat's Balanced tier max_patterns 4000 against a class default of 500), which the button copies
+   as explicit keys. `holder` = the object owning .type / .params (S.cfg.tokenizer or a sweep cell). */
 function tokenizerParamsRow(path, type){
-  const val = getPath(S.cfg, path) || {};
-  const row = h('div', {class:'row wide' + (errorsFor(path).length?' err':'')});
-  const preset = S.presets.tokenizers[type];
-  const ta = h('textarea', {placeholder:'key: value', onchange: e => { try { setPath(S.cfg, path, parseFlat(e.target.value)); markDirty(); row.classList.remove('err'); } catch(err){ row.classList.add('err'); } }});
-  ta.value = fmtFlat(val);
+  const holder = getPath(S.cfg, path.replace(/\.params$/, ''));
+  if (!holder.params || typeof holder.params !== 'object' || Array.isArray(holder.params)) holder.params = {};
+  const spec = tokSpec(type), preset = S.presets.tokenizers[type], uiKey = `tok:${path}`;
+  const row = h('div', {class:'row wide' + (errorsFor(path).length?' err':''), 'data-row': path});
+  const keys = Object.keys(holder.params);
   const lab = attachHint(h('label', {}, h('span', {class:'k'}, 'params')), path);
-  if (preset && preset.params) lab.append(h('button', {class:'btn sm', style:'margin-left:auto', title: preset.file, onclick: () => { ta.value = fmtFlat(preset.params); ta.dispatchEvent(new Event('change')); }}, `fill from configs/tokenizers/${preset.file}`));
-  row.append(lab, ta);
+  const head = h('div', {class:'rowhead'}, lab, h('span', {class:'badge', title: keys.length ? `in the file: ${keys.join(', ')}` : 'no key — the code defaults'}, keys.length ? `${keys.length} in file` : 'code defaults'));
+  const x = h('span', {style:'margin-left:auto;display:inline-flex;gap:6px;align-items:center'});
+  if (spec){
+    const cb = h('input', {type:'checkbox', onchange: () => { TP.raw.has(uiKey) ? TP.raw.delete(uiKey) : TP.raw.add(uiKey); renderForm(); }}); cb.checked = TP.raw.has(uiKey);
+    x.append(h('label', {class:'chip', title:'edit the same params as flat key: value text'}, cb, 'raw'));
+  }
+  if (preset && preset.params) x.append(h('button', {class:'btn sm', title: `${preset.file}: the recommended values (written as explicit keys, even where they equal the code default)`, onclick: () => { holder.params = deep(preset.params); markDirty(); renderForm(); }}, `fill from configs/tokenizers/${preset.file}`));
+  head.append(x); row.append(head);
+  if (!spec || TP.raw.has(uiKey)){
+    const ta = h('textarea', {placeholder:'key: value', onchange: e => { try { holder.params = parseFlat(e.target.value); markDirty(); row.classList.remove('err'); renderForm(); } catch(err){ row.classList.add('err'); } }});
+    ta.value = fmtFlat(holder.params); row.append(ta);
+    for (const w of paramWarningsAt(path)) row.append(h('div', {class:'wmsg'}, '⚠ ' + w.msg));
+    if (!spec) row.append(h('div', {class:'hint'}, `${type} declares no parameters (no param_spec) — keys are passed through unchecked.`));
+    return row;
+  }
+  const body = h('div', {class:'card', style:'padding:6px 10px'});
+  paramsBody(body, holder, path, spec, 'tokenizer', uiKey, paramWarningsAt(path));
+  row.append(body);
   return row;
 }
 function tokenizerSelect(path, onChange){
@@ -1115,12 +1142,13 @@ function sweepSection(){
    silently dropped. `raw` shows the same params as flat key: value text; both views edit one object. ---- */
 const TP = { raw: new Set(), more: new Set() };            // per task type: raw view on / advanced rows shown
 function taskSpec(type){ const sp = S.taskParams && S.taskParams[type]; return Array.isArray(sp) && sp.length ? sp : null; }
+function tokSpec(type){ const sp = S.tokParams && S.tokParams[type]; return Array.isArray(sp) && sp.length ? sp : null; }
 const tpSame = (a, b) => JSON.stringify(a===undefined?null:a) === JSON.stringify(b===undefined?null:b);
 /* the effective default of a param when its key is absent: the spec default — except num_fewshot, which the
    pipeline injects from evaluation.num_fewshot into every task whose spec declares it (so "back to the default"
    must mean that value, or typing 0 under evaluation.num_fewshot: 3 would silently become 3) */
-function tpDefault(sp){ return (sp.name==='num_fewshot' && S.cfg && S.cfg.evaluation && Number.isInteger(S.cfg.evaluation.num_fewshot)) ? S.cfg.evaluation.num_fewshot : sp.default; }
-const tpInjected = sp => sp.name==='num_fewshot' && S.cfg && S.cfg.evaluation && Number.isInteger(S.cfg.evaluation.num_fewshot) && S.cfg.evaluation.num_fewshot !== sp.default;
+function tpDefault(sp, kind='task'){ return (kind==='task' && sp.name==='num_fewshot' && S.cfg && S.cfg.evaluation && Number.isInteger(S.cfg.evaluation.num_fewshot)) ? S.cfg.evaluation.num_fewshot : sp.default; }
+const tpInjected = (sp, kind='task') => kind==='task' && sp.name==='num_fewshot' && S.cfg && S.cfg.evaluation && Number.isInteger(S.cfg.evaluation.num_fewshot) && S.cfg.evaluation.num_fewshot !== sp.default;
 function tpShow(sp, v){                                     // compact display form of a param value
   if (v===null || v===undefined) return 'null';
   if (Array.isArray(v)) return sp && sp.type==='list[str]' ? `${v.length} item${v.length===1?'':'s'}` : `[${v.join(', ')}]`;
@@ -1139,7 +1167,8 @@ function tpNumber(text, sp){
   if (sp.max!=null && n > sp.max) return {err: `must be ≤ ${sp.max}`};
   return {v: n};
 }
-function taskParamWarnings(i){ return (S.paramWarnings||[]).filter(w => w.loc===`sweep.tasks.${i}.params`); }
+function paramWarningsAt(loc){ return (S.paramWarnings||[]).filter(w => w.loc===loc); }
+function taskParamWarnings(i){ return paramWarningsAt(`sweep.tasks.${i}.params`); }
 
 function taskCard(t, i){
   const spec = taskSpec(t.type);
@@ -1162,29 +1191,34 @@ function taskCard(t, i){
     if (!spec) card.append(h('div', {class:'hint'}, `${t.type} declares no parameters (no param_spec) — keys are passed through unchecked.`));
     return card;
   }
-  const warns = taskParamWarnings(i), byKey = {};
+  paramsBody(card, t, p, spec, 'task', t.type, paramWarningsAt(p));
+  return card;
+}
+/* the typed rows of one params dict: groups, advanced rows behind "more…", the undeclared-keys group, orphan
+   warnings. `holder.params` is edited in place; `uiKey` scopes the more/fewer state; `kind` task | tokenizer */
+function paramsBody(into, holder, prefix, spec, kind, uiKey, warns){
+  const byKey = {};
   for (const w of warns) (byKey[w.key||''] = byKey[w.key||''] || []).push(w.msg);
   const rows = h('div', {class:'rows'});
   const groups = [];
   for (const sp of spec){ const g = sp.group || ''; let grp = groups.find(z => z.g===g); if (!grp){ grp = {g, items:[]}; groups.push(grp); } grp.items.push(sp); }
-  const showAdv = TP.more.has(t.type);
-  const hidden = spec.filter(sp => sp.advanced && !(sp.name in t.params) && !byKey[sp.name]).length;
+  const showAdv = TP.more.has(uiKey);
+  const hidden = spec.filter(sp => sp.advanced && !(sp.name in holder.params) && !byKey[sp.name]).length;
   for (const grp of groups){
-    const items = grp.items.filter(sp => showAdv || !sp.advanced || (sp.name in t.params) || byKey[sp.name]);
+    const items = grp.items.filter(sp => showAdv || !sp.advanced || (sp.name in holder.params) || byKey[sp.name]);
     if (!items.length) continue;
     if (grp.g) rows.append(h('div', {class:'tp-group'}, grp.g));
-    for (const sp of items) rows.append(taskParamRow(t, i, sp, byKey[sp.name]));
+    for (const sp of items) rows.append(paramRow(holder, prefix, sp, byKey[sp.name], kind));
   }
   const declared = new Set(spec.map(sp => sp.name));
-  const unknown = keys.filter(k => !declared.has(k));
+  const unknown = Object.keys(holder.params).filter(k => !declared.has(k));
   if (unknown.length){
-    rows.append(h('div', {class:'tp-group warn', title:'a run passes these keys to the task, which reads only the declared ones — they change nothing (the trap of 2026-09-21: an edited preset file that no run reads)'}, `⚠ not declared by ${t.type} — ignored at run time`));
-    for (const k of unknown) rows.append(taskUnknownRow(t, i, k, byKey[k]));
+    rows.append(h('div', {class:'tp-group warn', title:`a run passes these keys to the ${kind}, which reads only the declared ones — they change nothing (the trap of 2026-09-21: an edited preset file that no run reads)`}, `⚠ not declared by ${holder.type} — ignored at run time`));
+    for (const k of unknown) rows.append(unknownParamRow(holder, prefix, k, byKey[k]));
   }
   for (const msg of (byKey[''] || [])) rows.append(h('div', {class:'row wide wmsg'}, '⚠ ' + msg));
-  card.append(rows);
-  if (hidden || showAdv) card.append(h('button', {class:'btn sm tp-more', onclick: () => { showAdv ? TP.more.delete(t.type) : TP.more.add(t.type); renderForm(); }}, showAdv ? 'fewer' : `more… (${hidden} advanced)`));
-  return card;
+  into.append(rows);
+  if (hidden || showAdv) into.append(h('button', {class:'btn sm tp-more', onclick: () => { showAdv ? TP.more.delete(uiKey) : TP.more.add(uiKey); renderForm(); }}, showAdv ? 'fewer' : `more… (${hidden} advanced)`));
 }
 function taskRawRow(t, i){
   const row = h('div', {class:'row wide', 'data-row': `sweep.tasks.${i}.params`});
@@ -1193,10 +1227,10 @@ function taskRawRow(t, i){
   for (const w of taskParamWarnings(i)) row.append(h('div', {class:'wmsg'}, '⚠ ' + w.msg));
   return row;
 }
-function taskParamRow(t, i, sp, msgs){
-  const path = `sweep.tasks.${i}.params.${sp.name}`;
+function paramRow(t, prefix, sp, msgs, kind){
+  const path = `${prefix}.${sp.name}`;
   const present = Object.prototype.hasOwnProperty.call(t.params, sp.name);
-  const dflt = tpDefault(sp);
+  const dflt = tpDefault(sp, kind);
   const value = present ? t.params[sp.name] : dflt;
   const isDefault = tpSame(value, dflt);
   const pinned = present && isDefault;                    // an explicit key at its default: the user's choice to freeze it
@@ -1225,10 +1259,10 @@ function taskParamRow(t, i, sp, msgs){
     if (value===null && sp.nullable) input.value = ' null';
     row.append(input);
   } else if (sp.type==='int' || sp.type==='float'){
-    input = h('input', {type:'text', class:'mono' + (present?'':' inferred'), value: value===null ? 'null' : String(value), title: `default ${tpShow(sp, dflt)}` + (tpInjected(sp) ? ' (injected from evaluation.num_fewshot)' : '') + (sp.min!=null?` · min ${sp.min}`:'') + (sp.max!=null?` · max ${sp.max}`:''),
+    input = h('input', {type:'text', class:'mono' + (present?'':' inferred'), value: value===null ? 'null' : String(value), title: `default ${tpShow(sp, dflt)}` + (tpInjected(sp, kind) ? ' (injected from evaluation.num_fewshot)' : '') + (sp.min!=null?` · min ${sp.min}`:'') + (sp.max!=null?` · max ${sp.max}`:''),
       onchange: e => { const r = tpNumber(e.target.value, sp); if (r.err) fail(input, r.err); else set(r.v); }});
     row.append(input);
-    if (tpInjected(sp) && !present) row.append(h('div', {class:'hint'}, `← evaluation.num_fewshot (${dflt}); the spec default ${sp.default} applies only when nothing is injected`));
+    if (tpInjected(sp, kind) && !present) row.append(h('div', {class:'hint'}, `← evaluation.num_fewshot (${dflt}); the spec default ${sp.default} applies only when nothing is injected`));
   } else if (list){
     input = h('textarea', {class:'mono' + (present?'':' inferred'), spellcheck:'false', title:'one item per line; a newline inside an item is written \\n, a backslash \\\\',
       onchange: e => { const items = e.target.value.split('\n').filter(l => l!=='').map(tpUnescLine); set(items.length ? items : (sp.default.length ? undefined : [])); }});
@@ -1247,8 +1281,8 @@ function taskParamRow(t, i, sp, msgs){
   for (const m of (msgs||[])) row.append(h('div', {class:'wmsg'}, '⚠ ' + m));
   return row;
 }
-function taskUnknownRow(t, i, key, msgs){
-  const path = `sweep.tasks.${i}.params.${key}`;
+function unknownParamRow(t, prefix, key, msgs){
+  const path = `${prefix}.${key}`;
   const row = h('div', {class:'row tp warn', 'data-row': path});
   const label = h('label', {title: (msgs||[]).join(' · ') || `${t.type} does not declare ${key}`}, h('span', {class:'k'}, '⚠ ' + key));
   const del = h('button', {class:'btn sm', style:'margin-left:auto', title:'remove this key from params', onclick: () => { delete t.params[key]; markDirty(); renderForm(); }}, '✕');
@@ -3179,7 +3213,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   try {
     const b = await api('GET', '/api/schema');
-    S.schema = b.schema; S.base = b.base; S.reg = b.registries; S.presets = b.presets; S.env = b.env; HINTS = b.hints || {}; S.taskParams = b.task_params || {};
+    S.schema = b.schema; S.base = b.base; S.reg = b.registries; S.presets = b.presets; S.env = b.env; HINTS = b.hints || {}; S.taskParams = b.task_params || {}; S.tokParams = b.tokenizer_params || {};
     const env = $('#env-chip'); env.textContent = `${b.env.python.replace(/^.*\//,'')} · ${b.env.hf_token_set?'HF_TOKEN set':'no HF_TOKEN'}`; env.className = 'chip ' + (b.env.hf_token_set?'good':'warn');
     env.title = `${b.env.python} ${b.env.script}`;
     await loadConfigs(); await loadExperiments();

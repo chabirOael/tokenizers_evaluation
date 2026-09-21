@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from arabic_eval.registry import tokenizer_registry
+from arabic_eval.params_spec import ParamSpec
 from arabic_eval.tokenizers.base import BaseTokenizer, EmbeddingType, TokenizerOutput
 
 logger = logging.getLogger("arabic_eval.tokenizers.char_jaber")
@@ -32,10 +33,21 @@ class CharJaberTokenizer(BaseTokenizer):
     Sequences are much longer than subword tokenizers.
     """
 
-    def __init__(self, downsample_factor: int = 1, **kwargs: Any) -> None:
+    DEFAULT_DOWNSAMPLE_FACTOR = 1
+
+    def __init__(self, downsample_factor: int = DEFAULT_DOWNSAMPLE_FACTOR, **kwargs: Any) -> None:
         self._char_to_id: Dict[str, int] = {}
         self._id_to_char: Dict[int, str] = {}
         self.downsample_factor = downsample_factor
+
+    @classmethod
+    def param_spec(cls) -> List[ParamSpec]:
+        return [
+            ParamSpec("downsample_factor", "int", cls.DEFAULT_DOWNSAMPLE_FACTOR, min=1, advanced=True,
+                      help="Strided-convolution shrink of the character sequence inside CharJaberEmbedding. Leave at 1: "
+                           "the adapter feeds the full-length attention mask to the transformer, so any other value "
+                           "misaligns mask and embeddings (a known latent issue, see the skill)."),
+        ]
 
     def train(self, texts: List[str], vocab_size: int = 0, **kwargs: Any) -> None:
         """Build the character vocabulary from training texts.

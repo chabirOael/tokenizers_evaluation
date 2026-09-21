@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from arabic_eval.registry import tokenizer_registry
+from arabic_eval.params_spec import ParamSpec
 from arabic_eval.tokenizers.base import BaseTokenizer, EmbeddingType, TokenizerOutput
 
 logger = logging.getLogger("arabic_eval.tokenizers.charformer")
@@ -58,10 +59,30 @@ class CharformerTokenizer(BaseTokenizer):
     inside the GBST module of the model, not here.
     """
 
+    # GBST hyper-parameters (Tay et al., 2021, main configuration); ``get_embedding_config``
+    # reads them from ``params`` with these defaults and the adapter builds GBSTEmbedding from it.
+    GBST_DEFAULTS = {"max_block_size": 4, "downsample_rate": 2, "conv_kernel_size": 5, "block_attention": False}
+
     def __init__(self, **kwargs: Any) -> None:
         # No state to learn — vocabulary is the same for every Charformer
         # instance — but expose ``params`` for symmetry with sibling tokenizers.
         self._params = dict(kwargs)
+
+    @classmethod
+    def param_spec(cls) -> List[ParamSpec]:
+        d = cls.GBST_DEFAULTS
+        return [
+            ParamSpec("max_block_size", "int", d["max_block_size"], min=1,
+                      help="M: GBST enumerates candidate byte blocks of size 1..M at every position and soft-mixes them."),
+            ParamSpec("downsample_rate", "int", d["downsample_rate"], min=1,
+                      help="d_s: the final mean-pool stride; the transformer runs on a sequence ~L/d_s long and the output "
+                           "head upsamples logits back by the same factor (the two must agree)."),
+            ParamSpec("conv_kernel_size", "int", d["conv_kernel_size"], min=0,
+                      help="Kernel of the 1-D convolution before block scoring; 0 disables it."),
+            ParamSpec("block_attention", "bool", d["block_attention"],
+                      help="Position-wise score calibration P̂ = softmax(P Pᵀ) P (§2.1.4 of the paper): helps in English, "
+                           "neutral multilingually."),
+        ]
 
     def train(self, texts: List[str], vocab_size: int = 0, **kwargs: Any) -> None:
         """No-op: Charformer's byte vocabulary is fixed at 256 + 4 specials."""
@@ -179,10 +200,11 @@ class CharformerTokenizer(BaseTokenizer):
         # Forward GBST hyperparameters declared in the tokenizer config (e.g.
         # ``params: {max_block_size: 4, downsample_rate: 2, ...}``) to the
         # adapter, which constructs GBSTEmbedding from this dict.
+        d = self.GBST_DEFAULTS
         return {
             "vocab_size": VOCAB_SIZE,
-            "max_block_size": self._params.get("max_block_size", 4),
-            "downsample_rate": self._params.get("downsample_rate", 2),
-            "conv_kernel_size": self._params.get("conv_kernel_size", 5),
-            "block_attention": self._params.get("block_attention", False),
+            "max_block_size": self._params.get("max_block_size", d["max_block_size"]),
+            "downsample_rate": self._params.get("downsample_rate", d["downsample_rate"]),
+            "conv_kernel_size": self._params.get("conv_kernel_size", d["conv_kernel_size"]),
+            "block_attention": self._params.get("block_attention", d["block_attention"]),
         }
