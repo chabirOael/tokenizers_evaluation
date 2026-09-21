@@ -182,6 +182,21 @@ details.sec.sub{background:var(--sunken)}
 .task-card .card-h .chip{padding:1px 7px;font-size:11px;cursor:pointer}
 .task-card .card-h .chip input{margin:0}
 .task-card .tp-more{margin-top:6px}
+/* output_dir modes (form row, clone / re-eval dialogs): infer from name · cell of experiment… · custom */
+.outmode{margin-left:auto;display:inline-flex;align-items:center;gap:5px;font-size:11px;color:var(--ink-3);font-weight:400}
+.outmode select{padding:1px 4px;font-size:11px;border:1px solid var(--line-2);border-radius:5px;background:var(--surface);color:var(--ink-2);max-width:200px}
+/* compare dialog */
+.cmp{max-height:60vh;overflow:auto;border:1px solid var(--line);border-radius:8px}
+.cmp table{width:100%;border-collapse:collapse;font-size:12.5px}
+.cmp th{position:sticky;top:0;background:var(--sunken);text-align:left;padding:4px 8px;font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:var(--ink-3)}
+.cmp td{padding:3px 8px;border-top:1px solid var(--line);vertical-align:top;max-width:280px;overflow-wrap:anywhere}
+.cmp td.p{font-family:var(--mono);font-size:11.5px;white-space:nowrap}
+.cmp td.v{font-family:var(--mono);font-size:11.5px}
+.cmp tr.sec td{background:var(--sunken);font-weight:600;font-size:11.5px;text-transform:uppercase;letter-spacing:.04em;color:var(--ink-2)}
+.cmp .abs{color:var(--ink-3);font-style:italic}
+.start-warn{color:var(--bad);font-weight:600}
+.tp-sum{font-family:var(--mono);font-size:11.5px;line-height:1.5;color:var(--ink-2)}
+.tp-sum b{color:var(--accent);font-weight:600}
 .row .prov{display:flex;flex-wrap:wrap;gap:4px 14px;align-items:baseline;font-size:12.5px;color:var(--ink-2);padding:4px 0}
 .row .prov .mono{font-size:12px}
 .row .prov .runs{display:flex;flex-wrap:wrap;gap:3px 10px}
@@ -397,6 +412,8 @@ table.ev-ch tr.pred td{outline:1px solid var(--accent);outline-offset:-1px}
         <button class="btn sm" id="btn-assist" title="fill or edit the form with an LLM, or ask it about the fields">✨ assistant</button>
         <button class="btn sm" id="btn-validate">Validate</button>
         <button class="btn sm" id="btn-clone" title="copy the opened file under a new name with its own output_dir (comments kept)">⧉ Clone…</button>
+        <button class="btn sm" id="btn-reeval" title="build an eval-only config from a finished cell's checkpoint (phases off, the ticked tasks) — opens unsaved in the form">⟳ Re-eval…</button>
+        <button class="btn sm" id="btn-compare" title="every resolved value that differs between this config and another saved one, with a copy button per row">⇄ Compare…</button>
         <button class="btn sm" id="btn-save">Save…</button>
         <button class="btn sm primary" id="btn-start">▶ Start run…</button>
       </div>
@@ -677,7 +694,7 @@ table.ev-ch tr.pred td{outline:1px solid var(--accent);outline-offset:-1px}
       <div class="row wide"><label>source</label><input type="text" id="clone-source" readonly class="mono"></div>
       <div class="row wide"><label>new file name (configs/experiments/&lt;name&gt;.yaml)</label><input type="text" id="clone-file" class="mono"></div>
       <div class="row wide"><label>experiment name <span class="hint">(follows the file name until you edit it)</span></label><input type="text" id="clone-name" class="mono"></div>
-      <div class="row wide"><div class="rowhead"><label>output_dir</label><label class="sw inl" title="outputs/experiments/&lt;experiment name&gt;"><input type="checkbox" id="clone-infer" checked> infer from name</label></div><input type="text" id="clone-outdir" class="mono"></div>
+      <div class="row wide"><div class="rowhead"><label>output_dir</label><span id="clone-outmode"></span></div><input type="text" id="clone-outdir" class="mono"></div>
       <div class="row wide"><label>description</label><input type="text" id="clone-desc"></div>
       <div class="row"><label>&nbsp;</label><label class="sw"><input type="checkbox" id="clone-overwrite"> overwrite if it exists</label></div>
     </div>
@@ -686,8 +703,37 @@ table.ev-ch tr.pred td{outline:1px solid var(--accent);outline-offset:-1px}
   </div>
 </div>
 
+<div class="modal-bg" id="reeval-modal">
+  <div class="modal" style="width:min(780px,96vw)">
+    <h3>Re-eval from a checkpoint</h3>
+    <div class="rows">
+      <div class="row wide"><label>source config</label><input type="text" id="re-source" readonly class="mono"></div>
+      <div class="row"><label>finished cell</label><select id="re-cell"></select></div>
+      <div class="row"><label>checkpoint</label><select id="re-ck"></select></div>
+      <div class="row wide"><label>tasks to evaluate <span class="hint">(params taken from the source config)</span></label><div class="checks" id="re-tasks"></div></div>
+      <div class="row wide"><label>experiment name</label><input type="text" id="re-name" class="mono"></div>
+      <div class="row wide"><div class="rowhead"><label>output_dir</label><span id="re-outmode"></span></div><input type="text" id="re-outdir" class="mono"></div>
+      <div class="row wide"><label>description <span class="hint">(prefilled until you edit it)</span></label><input type="text" id="re-desc"></div>
+    </div>
+    <div class="hint" id="re-hint">The new config is the source with model.name_or_path = the checkpoint, every phase disabled and only the ticked tasks; it opens UNSAVED in the form — Save… and ▶ Start as usual.</div>
+    <div class="foot"><button class="btn" data-close>Cancel</button><button class="btn primary" id="re-go">Build → form</button></div>
+  </div>
+</div>
+
+<div class="modal-bg" id="cmp-modal">
+  <div class="modal" style="width:min(1100px,96vw)">
+    <h3>Compare configs</h3>
+    <div class="rows" style="margin-bottom:8px">
+      <div class="row wide"><label>this <span class="hint" id="cmp-this"></span> vs saved config</label><select id="cmp-other"></select></div>
+    </div>
+    <div class="cmp" id="cmp-body"><div class="empty">pick a config</div></div>
+    <div class="hint" id="cmp-hint">Resolved values (each merged over base.yaml); lists of scalars compare whole, lists of mappings element by element. ← copies the other value into the form.</div>
+    <div class="foot" style="margin-top:10px"><button class="btn" data-close>Close</button></div>
+  </div>
+</div>
+
 <div class="modal-bg" id="start-modal">
-  <div class="modal">
+  <div class="modal" style="width:min(760px,96vw)">
     <h3>Start run</h3>
     <div class="kv" id="start-summary" style="margin-bottom:12px"></div>
     <div class="rows">
@@ -695,6 +741,7 @@ table.ev-ch tr.pred td{outline:1px solid var(--accent);outline-offset:-1px}
       <div class="row"><label>--device (blank = config)</label><input type="text" id="start-device" placeholder="cuda:0"></div>
       <div class="row"><label>--seed (blank = config)</label><input type="number" id="start-seed"></div>
       <div class="row"><label>&nbsp;</label><label class="sw"><input type="checkbox" id="start-force"> run concurrently with an active run</label></div>
+      <div class="row wide" id="start-overwrite-row" style="display:none"><label class="sw"><input type="checkbox" id="start-overwrite"> <span class="start-warn">results exist — the run will overwrite them; tick to confirm</span></label></div>
     </div>
     <div class="hint" id="start-hint"></div>
     <div class="foot"><button class="btn" data-close>Cancel</button><button class="btn primary" id="start-go">▶ Start</button></div>
@@ -716,7 +763,7 @@ table.ev-ch tr.pred td{outline:1px solid var(--accent);outline-offset:-1px}
    ========================================================================= */
 const S = {
   schema:null, base:null, reg:null, presets:null, env:null, taskParams:{},
-  configs:[], file:null, cfg:null, dirty:false, errors:[], paramWarnings:[], yamlDirty:false, inferOut:true,
+  configs:[], file:null, cfg:null, dirty:false, errors:[], paramWarnings:[], yamlDirty:false, outMode:'infer', outExp:null, experiments:[],
   open:new Set(['', 'sweep', 'training', 'tokenizer', 'model']),
   runs:[], run:null, runDetail:null, runSort:{key:'started', desc:true}, logOffset:0, logRows:[], logCur:'', logTb:false, logFilter:'', logHideProg:false, logBig:false, runsOpen:true, pollT:null, view:'configs', etab:'form',
 };
@@ -852,7 +899,7 @@ function hintFor(path){
   if (m && S.cfg && S.cfg.sweep){
     const t = (S.cfg.sweep.tasks||[])[Number(m[1])];
     const sp = t && (taskSpec(t.type)||[]).find(x => x.name===m[2]);
-    if (sp) return {key: `${t.type} · ${sp.name} (${sp.type}${sp.nullable?' | null':''})`, text: sp.help, example: `default ${tpShow(sp, sp.default)}`};
+    if (sp) return {key: `${t.type} · ${sp.name} (${sp.type}${sp.nullable?' | null':''})`, text: sp.help, example: `default ${tpShow(sp, tpDefault(sp))}` + (tpInjected(sp) ? ' (evaluation.num_fewshot)' : '')};
   }
   const n = normPath(path);
   const hit = HINTS[n] || HINTS[n.split('.').pop()];
@@ -1069,6 +1116,11 @@ function sweepSection(){
 const TP = { raw: new Set(), more: new Set() };            // per task type: raw view on / advanced rows shown
 function taskSpec(type){ const sp = S.taskParams && S.taskParams[type]; return Array.isArray(sp) && sp.length ? sp : null; }
 const tpSame = (a, b) => JSON.stringify(a===undefined?null:a) === JSON.stringify(b===undefined?null:b);
+/* the effective default of a param when its key is absent: the spec default — except num_fewshot, which the
+   pipeline injects from evaluation.num_fewshot into every task whose spec declares it (so "back to the default"
+   must mean that value, or typing 0 under evaluation.num_fewshot: 3 would silently become 3) */
+function tpDefault(sp){ return (sp.name==='num_fewshot' && S.cfg && S.cfg.evaluation && Number.isInteger(S.cfg.evaluation.num_fewshot)) ? S.cfg.evaluation.num_fewshot : sp.default; }
+const tpInjected = sp => sp.name==='num_fewshot' && S.cfg && S.cfg.evaluation && Number.isInteger(S.cfg.evaluation.num_fewshot) && S.cfg.evaluation.num_fewshot !== sp.default;
 function tpShow(sp, v){                                     // compact display form of a param value
   if (v===null || v===undefined) return 'null';
   if (Array.isArray(v)) return sp && sp.type==='list[str]' ? `${v.length} item${v.length===1?'':'s'}` : `[${v.join(', ')}]`;
@@ -1144,8 +1196,9 @@ function taskRawRow(t, i){
 function taskParamRow(t, i, sp, msgs){
   const path = `sweep.tasks.${i}.params.${sp.name}`;
   const present = Object.prototype.hasOwnProperty.call(t.params, sp.name);
-  const value = present ? t.params[sp.name] : sp.default;
-  const isDefault = tpSame(value, sp.default);
+  const dflt = tpDefault(sp);
+  const value = present ? t.params[sp.name] : dflt;
+  const isDefault = tpSame(value, dflt);
   const pinned = present && isDefault;                    // an explicit key at its default: the user's choice to freeze it
   const list = sp.type==='list[str]';
   const row = h('div', {class:'row tp' + (list?' wide':'') + (msgs?' warn':''), 'data-row': path});
@@ -1157,7 +1210,7 @@ function taskParamRow(t, i, sp, msgs){
          : pinned ? 'pinned: written to the file although it equals the default — unpin to drop the key' : 'pin: write the key at its default so the value is frozen in the file'}, pinCb, '📌', present ? (isDefault ? 'pinned' : 'set') : '');
   row.append(h('div', {class:'rowhead'}, label, pin));  // the pin beside the caption, not inside it (a label toggles its first checkbox)
   const set = v => {                                     // v === undefined → back to the default
-    if (v===undefined || (tpSame(v, sp.default) && !pinned)) delete t.params[sp.name]; else t.params[sp.name] = v;
+    if (v===undefined || (tpSame(v, dflt) && !pinned)) delete t.params[sp.name]; else t.params[sp.name] = v;
     markDirty(); renderForm();
   };
   const fail = (input, msg) => { row.classList.add('err'); $$('.emsg', row).forEach(x=>x.remove()); row.append(h('div', {class:'emsg'}, msg)); };
@@ -1172,9 +1225,10 @@ function taskParamRow(t, i, sp, msgs){
     if (value===null && sp.nullable) input.value = ' null';
     row.append(input);
   } else if (sp.type==='int' || sp.type==='float'){
-    input = h('input', {type:'text', class:'mono' + (present?'':' inferred'), value: value===null ? 'null' : String(value), title: `default ${tpShow(sp, sp.default)}` + (sp.min!=null?` · min ${sp.min}`:'') + (sp.max!=null?` · max ${sp.max}`:''),
+    input = h('input', {type:'text', class:'mono' + (present?'':' inferred'), value: value===null ? 'null' : String(value), title: `default ${tpShow(sp, dflt)}` + (tpInjected(sp) ? ' (injected from evaluation.num_fewshot)' : '') + (sp.min!=null?` · min ${sp.min}`:'') + (sp.max!=null?` · max ${sp.max}`:''),
       onchange: e => { const r = tpNumber(e.target.value, sp); if (r.err) fail(input, r.err); else set(r.v); }});
     row.append(input);
+    if (tpInjected(sp) && !present) row.append(h('div', {class:'hint'}, `← evaluation.num_fewshot (${dflt}); the spec default ${sp.default} applies only when nothing is injected`));
   } else if (list){
     input = h('textarea', {class:'mono' + (present?'':' inferred'), spellcheck:'false', title:'one item per line; a newline inside an item is written \\n, a backslash \\\\',
       onchange: e => { const items = e.target.value.split('\n').filter(l => l!=='').map(tpUnescLine); set(items.length ? items : (sp.default.length ? undefined : [])); }});
@@ -1273,28 +1327,61 @@ function trainingSection(){
   body.append(control('training.corpus_params', S.schema.$defs.TrainingConfig.properties.corpus_params, {label:'corpus_params (per-corpus loader parameters, e.g. aya_ar.include_datasets)', wide:true}));
   return section('training', 'training — 3-phase pipeline', body, {help: fieldInfo(S.schema.properties.training).description});
 }
-/* output_dir convention: outputs/experiments/<experiment name> (every config in the repo follows it unless it is a
-   cell folder of a larger campaign). `S.inferOut` locks output_dir to it; it is re-derived from the config whenever
-   one is loaded, so a campaign config opens with the switch off and renaming it leaves output_dir alone. */
-function inferredOutputDir(name){ return `outputs/experiments/${name ?? ''}`; }
-function syncInferOut(){ S.inferOut = !!S.cfg && S.cfg.output_dir === inferredOutputDir(S.cfg.name); }
-function applyInferredOutputDir(){
-  if (!S.cfg || !S.inferOut) return;
-  const want = inferredOutputDir(S.cfg.name);
+/* output_dir modes. Convention: outputs/experiments/<experiment name> (`infer`); a CELL of a campaign is
+   outputs/experiments/<experiment>/<name> (`cell`, the experiment folder picked from the existing ones — the layout the
+   Free-form tab, the judge and compare_results.py read as one experiment; the three stray control copies of 2026-09-21
+   were top-level folders because the form only offered the first convention); anything else is `custom`. The mode is
+   re-derived from the config whenever one is loaded, so renaming a campaign cell keeps it under its experiment. */
+const OUT_PREFIX = 'outputs/experiments/';
+function inferredOutputDir(name){ return `${OUT_PREFIX}${name ?? ''}`; }
+function cellOutputDir(exp, name){ return `${OUT_PREFIX}${exp}/${name ?? ''}`; }
+function outModeOf(outDir, name){
+  if (outDir === inferredOutputDir(name)) return {mode:'infer', exp:null};
+  const rest = typeof outDir === 'string' && outDir.startsWith(OUT_PREFIX) ? outDir.slice(OUT_PREFIX.length).split('/') : null;
+  if (rest && rest.length===2 && rest[0] && rest[1]===name) return {mode:'cell', exp:rest[0]};
+  return {mode:'custom', exp:null};
+}
+function outDirFor(mode, exp, name, current){ return mode==='infer' ? inferredOutputDir(name) : mode==='cell' && exp ? cellOutputDir(exp, name) : current; }
+/* the widget: a mode select + (in cell mode) the experiment folder select; `st` = {mode, exp} it mutates; `onChange` re-derives the path */
+function outModeWidget(st, onChange){
+  const wrap = h('span', {class:'outmode'});
+  const mode = h('select', {title:'infer = outputs/experiments/<name> · cell of experiment = outputs/experiments/<experiment>/<name> · custom = any path', onchange: e => { st.mode = e.target.value; if (st.mode==='cell' && !st.exp) st.exp = (S.experiments[0] || null); sync(); onChange(); }});
+  [['infer','infer from name'], ['cell','cell of experiment…'], ['custom','custom path']].forEach(([v,l]) => mode.append(h('option', {value:v}, l)));
+  const exp = h('select', {title:'the experiment folder under outputs/experiments/ this run is a cell of', onchange: e => { st.exp = e.target.value; onChange(); }});
+  const sync = () => {
+    mode.value = st.mode;
+    exp.innerHTML = '';
+    const opts = Array.from(new Set([...(S.experiments||[]), st.exp].filter(Boolean)));
+    opts.forEach(x => exp.append(h('option', {value:x, selected: x===st.exp}, x)));
+    if (!opts.length) exp.append(h('option', {value:''}, '— no experiment folder yet —'));
+    exp.style.display = st.mode==='cell' ? '' : 'none';
+  };
+  sync();
+  wrap.append(mode, exp);
+  return {el: wrap, sync};
+}
+function syncOutMode(){ const r = S.cfg ? outModeOf(S.cfg.output_dir, S.cfg.name) : {mode:'infer', exp:null}; S.outMode = r.mode; if (r.exp) S.outExp = r.exp; }
+function applyOutMode(){
+  if (!S.cfg || S.outMode==='custom') return;
+  const want = outDirFor(S.outMode, S.outExp, S.cfg.name, S.cfg.output_dir);
   if (S.cfg.output_dir !== want){ S.cfg.output_dir = want; markDirty(); }
   const r = $$('.row').find(r=>r.dataset.row==='output_dir'); if (r) r.querySelector('input[type=text]').value = want;
 }
+async function loadExperiments(){ try { S.experiments = (await api('GET', '/api/experiments')).experiments || []; } catch(e){ S.experiments = []; } }
 function experimentSection(){
   const rows = h('div', {class:'rows'});
   const P = S.schema.properties;
-  rows.append(control('name', P.name, {label:'name', onChange: () => applyInferredOutputDir()}));
+  rows.append(control('name', P.name, {label:'name', onChange: () => applyOutMode()}));
   const od = control('output_dir', P.output_dir, {label:'output_dir'});
-  const odInput = od.querySelector('input');
-  const sw = h('input', {type:'checkbox', onchange: e => { S.inferOut = e.target.checked; odInput.readOnly = S.inferOut; odInput.classList.toggle('inferred', S.inferOut); applyInferredOutputDir(); }});
-  sw.checked = S.inferOut; odInput.readOnly = S.inferOut; odInput.classList.toggle('inferred', S.inferOut);
-  const odLabel = od.querySelector('label');   // the switch sits beside the caption, not inside it (a label activates its first checkbox)
+  const odInput = od.querySelector('input[type=text]');
+  const st = {get mode(){ return S.outMode; }, set mode(v){ S.outMode = v; }, get exp(){ return S.outExp; }, set exp(v){ S.outExp = v; }};
+  const paint = () => { const locked = S.outMode!=='custom'; odInput.readOnly = locked; odInput.classList.toggle('inferred', locked); };
+  const w = outModeWidget(st, () => { paint(); applyOutMode(); });
+  paint();
+  odInput.addEventListener('change', () => { syncOutMode(); w.sync(); paint(); });   // a typed path re-derives the mode
+  const odLabel = od.querySelector('label');   // the widget sits beside the caption, not inside it (a label activates its first control)
   const head = h('div', {class:'rowhead'}); od.insertBefore(head, odLabel);
-  head.append(odLabel, h('label', {class:'sw inl', title:'lock output_dir to outputs/experiments/<name>; off = any path (e.g. a cell folder of a campaign)'}, sw, 'infer from name'));
+  head.append(odLabel, w.el);
   rows.append(od);
   rows.append(control('seed', P.seed, {label:'seed'}));
   rows.append(control('deterministic', P.deterministic, {label:'deterministic'}));
@@ -1347,6 +1434,7 @@ function renderForm(){
 async function loadConfigs(){
   const d = await api('GET', '/api/configs');
   S.configs = d.configs; renderConfigList();
+  loadExperiments();                       // the experiment folders for the "cell of experiment…" output_dir mode
 }
 function renderConfigList(){
   const list = $('#cfg-list'); list.innerHTML = '';
@@ -1361,8 +1449,10 @@ function renderConfigList(){
       if (res.sweep){ const n = res.cells_done.length, t = res.cells.length; resChip = n ? h('span', {class:'chip ' + (n===t?'good':'warn'), title: `done: ${res.cells_done.join(', ')}`}, `${n}/${t} cells`) : null; }
       else if (res.exists) resChip = h('span', {class:'chip good'}, 'results');
     }
+    const hasResults = c.valid && res && (res.exists || (res.cells_done||[]).length);
     it.append(h('div', {class:'name'}, c.file.replace(/\.yaml$/,''), resChip, c.valid ? null : h('span', {class:'chip bad'}, 'invalid'),
-      c.valid ? h('button', {class:'ico', title:'clone this config…', onclick: e => { e.stopPropagation(); cloneFlow(c.file); }}, '⧉') : null));
+      c.valid ? h('button', {class:'ico', title:'clone this config…', onclick: e => { e.stopPropagation(); cloneFlow(c.file); }}, '⧉') : null,
+      hasResults ? h('button', {class:'ico', title:'re-evaluate a finished cell from its checkpoint…', onclick: e => { e.stopPropagation(); reevalFlow(c.file); }}, '⟳') : null));
     const meta = h('div', {class:'meta'});
     if (c.valid){
       meta.append(h('span', {}, c.model.split('/').pop()), h('span', {}, '·'), h('span', {}, `${c.cells.length} cell${c.cells.length===1?'':'s'}: ${c.cells.slice(0,4).join(', ')}${c.cells.length>4?'…':''}`),
@@ -1381,7 +1471,7 @@ async function openConfig(file){
   clearStatus();
   const d = await api('GET', `/api/configs/get?path=${encodeURIComponent(file)}`);
   S.file = file; S.cfg = d.resolved; S.dirty = false; S.yamlDirty = false; $('#dirty-chip').style.display='none';
-  S.errors = d.errors || []; S.paramWarnings = d.param_warnings || []; syncInferOut();
+  S.errors = d.errors || []; S.paramWarnings = d.param_warnings || []; syncOutMode();
   $('#editor-title').textContent = file;
   $('#yaml').value = d.yaml;
   renderConfigList(); renderForm();
@@ -1395,7 +1485,7 @@ function newConfig(){
   cfg.name = 'new_experiment'; cfg.output_dir = 'outputs/experiments/new_experiment'; cfg.description = '';
   cfg.sweep = {tokenizers:[{type:'bpe', vocab_sizes:[32000], params:{min_frequency:2}}], tasks:[{type:'acva',params:{num_fewshot:0}},{type:'alghafa',params:{}},{type:'arabic_exam',params:{}}]};
   cfg.evaluation.score_normalization = 'char+pmi'; cfg.evaluation.num_eval_samples = null; cfg.evaluation.failure_reports = true;
-  S.file = null; S.cfg = cfg; S.errors = []; S.paramWarnings = []; S.dirty = true; S.inferOut = true; $('#dirty-chip').style.display='';
+  S.file = null; S.cfg = cfg; S.errors = []; S.paramWarnings = []; S.dirty = true; S.outMode = 'infer'; $('#dirty-chip').style.display='';
   $('#editor-title').textContent = 'new config (unsaved)'; $('#yaml').value = '';
   renderConfigList(); renderForm(); setEtab('form');
   $('#etab-results').innerHTML = '<div class="empty">no results yet</div>';
@@ -1419,7 +1509,7 @@ async function yamlToForm(){
     const d = await api('POST', '/api/config/parse', {yaml: $('#yaml').value, file: S.file});
     S.errors = d.errors || []; S.paramWarnings = d.param_warnings || [];
     S.cfg = d.ok ? d.resolved : deepMerge(deep(S.base), d.config);
-    syncInferOut(); S.yamlDirty = false; markDirty(); renderForm(); setEtab('form');
+    syncOutMode(); S.yamlDirty = false; markDirty(); renderForm(); setEtab('form');
     if (d.ok) status('good', 'YAML applied to the form'); else status('bad', 'YAML parsed but does not validate', d.errors);
   } catch(e){ status('bad', e.message); }
 }
@@ -1450,7 +1540,7 @@ async function doSave(){
 }
 /* clone: copy a saved file under a new name — the server rewrites only name / output_dir / description in the
    file's own text (comments kept) and the copy opens in the editor. Acts on the file on disk, never on the form. */
-const C = {source:null, nameTouched:false};
+const C = {source:null, nameTouched:false, out:{mode:'infer', exp:null}, widget:null};
 function cloneFlow(file){
   const c = S.configs.find(x => x.file === file);
   if (!c){ status('bad', `${file} is not in the list — refresh`); return; }
@@ -1459,15 +1549,18 @@ function cloneFlow(file){
   const stem = file.replace(/\.yaml$/, '');
   let cand = `${stem}_copy`, i = 2; while (S.configs.some(x => x.file === `${cand}.yaml`)) cand = `${stem}_copy${i++}`;
   $('#clone-source').value = `configs/experiments/${file}`; $('#clone-file').value = cand; $('#clone-name').value = cand;
-  $('#clone-infer').checked = true; $('#clone-desc').value = c.description || ''; $('#clone-overwrite').checked = false;
+  const src = outModeOf(c.output_dir, c.name);            // a campaign cell clones as a sibling cell of the same experiment
+  C.out.mode = src.mode==='custom' ? 'infer' : src.mode; C.out.exp = src.exp;
+  const box = $('#clone-outmode'); box.innerHTML = ''; C.widget = outModeWidget(C.out, cloneSync); box.append(C.widget.el);
+  $('#clone-desc').value = c.description || ''; $('#clone-overwrite').checked = false;
   cloneSync(); openModal('#clone-modal'); $('#clone-file').focus(); $('#clone-file').select();
 }
 function cloneSync(){
-  const file = $('#clone-file').value.trim().replace(/\.yaml$/, ''), infer = $('#clone-infer').checked;
+  const file = $('#clone-file').value.trim().replace(/\.yaml$/, ''), locked = C.out.mode!=='custom';
   if (!C.nameTouched) $('#clone-name').value = file;
   const name = $('#clone-name').value.trim();
-  const od = $('#clone-outdir'); od.readOnly = infer; od.classList.toggle('inferred', infer);
-  if (infer) od.value = inferredOutputDir(name);
+  const od = $('#clone-outdir'); od.readOnly = locked; od.classList.toggle('inferred', locked);
+  if (locked) od.value = outDirFor(C.out.mode, C.out.exp, name, od.value);
   const outdir = od.value.trim(), notes = [];
   if (file && C.source && `${file}.yaml` === C.source.file) notes.push('⚠ that is the source file itself — pick another name');
   else if (file && S.configs.some(x => x.file === `${file}.yaml`)) notes.push(`⚠ ${file}.yaml exists — tick overwrite to replace it`);
@@ -1479,7 +1572,7 @@ function cloneSync(){
 }
 async function doClone(){
   const body = {source: C.source.file, name: $('#clone-file').value.trim(), experiment_name: $('#clone-name').value.trim(),
-    output_dir: $('#clone-infer').checked ? null : $('#clone-outdir').value.trim(),
+    output_dir: C.out.mode==='infer' ? null : $('#clone-outdir').value.trim(),
     description: $('#clone-desc').value === (C.source.description || '') ? null : $('#clone-desc').value,   // null = leave the source's line alone
     overwrite: $('#clone-overwrite').checked};
   try {
@@ -1502,12 +1595,38 @@ async function startFlow(){
   add('cells', `${v.cells.length}: ${v.cells.join(', ')}${v.sweep ? ' (--sweep)' : ' (single run — tokenizer.type)'}`); add('tasks', (v.resolved.sweep?.tasks||[]).map(t=>t.type).join(', ') || 'none');
   for (const w of (v.warnings||[])) add('⚠ warning', h('span', {style:'color:var(--warn)'}, w));
   add('phases', ['embedding_alignment','warmup','sft'].filter(p=>v.resolved.training.phases[p].enabled).join(' → ') || 'none (eval only)');
+  for (const t of (v.resolved.sweep?.tasks||[])) add(`params · ${t.type}`, taskResolvedSummary(t));
+  const overwrite = !v.sweep && v.results.exists;
   if (v.results.cells_done.length) add('will skip', `${v.results.cells_done.join(', ')} (all_metrics.json exists)`);
-  else if (v.results.exists) add('note', 'output_dir already has all_metrics.json — it will be overwritten');
+  if (overwrite) add(h('span', {class:'start-warn'}, '⚠ results exist'), h('span', {class:'start-warn'}, `${v.resolved.output_dir}/all_metrics.json exists — the run will overwrite it (move the folder to _superseded/ first if it is a reference cell)`));
+  const cellDirs = v.results.cell_dirs_with_results || [];
+  if (!v.sweep && cellDirs.length) add('⚠ layout', h('span', {style:'color:var(--warn)'}, `${v.resolved.output_dir} already holds cell folders with results (${cellDirs.join(', ')}) — a single run writes its results at the root of that folder, beside them`));
+  $('#start-overwrite-row').style.display = overwrite ? '' : 'none'; $('#start-overwrite').checked = false; $('#start-go').disabled = overwrite;
   $('#start-sweep').value = 'auto'; $('#start-device').value=''; $('#start-seed').value=''; $('#start-force').checked=false;
   const g = (S.gpu || [])[0]; const gpuBusy = g && !active.length && g.memory_used_mib > 0.5 * g.memory_total_mib;
   $('#start-hint').style.color=''; $('#start-hint').textContent = (active.length ? `⚠ ${active[0].run_id} is ${active[0].status} — a second full-FT run will not fit the GPU; tick "run concurrently" only if you know it fits. ` : '') + (gpuBusy ? `⚠ the GPU already holds ${(g.memory_used_mib/1024).toFixed(0)} GB with no console run active (a hand-started assistant / vLLM server?) — a training run will not fit beside it. ` : '') + (S.env.hf_token_set ? '' : '⚠ HF_TOKEN is not set in the server environment (needed for gated meta-llama checkpoints).');
   openModal('#start-modal');
+}
+/* the parameters a task will actually run with: the spec defaults overlaid by the file's params; a key present in
+   the file is marked (● = set / pinned), the rest is the code default */
+function taskResolvedSummary(t){
+  const spec = taskSpec(t.type), params = t.params || {};
+  const el = h('div', {class:'tp-sum'});
+  if (!spec){ el.textContent = Object.keys(params).length ? fmtFlat(params).replace(/\n/g, ', ') : 'no declared params · none set'; return el; }
+  const declared = new Set(spec.map(sp => sp.name));
+  spec.forEach((sp, k) => {
+    const present = Object.prototype.hasOwnProperty.call(params, sp.name);
+    const dflt = tpDefault(sp);
+    const v = present ? params[sp.name] : dflt;
+    let shown = tpShow(sp, v);
+    if (sp.type==='path' && typeof v==='string') shown = v.split('/').pop();
+    if (k) el.append(', ');
+    el.append(present ? h('b', {title: tpSame(v, dflt) ? 'pinned in the file at its default' : 'set in the file'}, `● ${sp.name} ${shown}`)
+                      : h('span', {title: tpInjected(sp) ? 'injected from evaluation.num_fewshot' : 'code default'}, `${sp.name} ${shown}${tpInjected(sp) ? ' (evaluation.num_fewshot)' : ''}`));
+  });
+  const unknown = Object.keys(params).filter(k => !declared.has(k));
+  if (unknown.length) el.append(' ', h('span', {style:'color:var(--warn)'}, `⚠ ignored: ${unknown.join(', ')}`));
+  return el;
 }
 async function doStart(){
   const body = {sweep: $('#start-sweep').value==='auto' ? null : $('#start-sweep').value==='true', device: $('#start-device').value.trim() || null,
@@ -1519,6 +1638,107 @@ async function doStart(){
     await pollRuns(); selectRun(rec.run_id); setView('runs');
   } catch(e){ $('#start-hint').textContent = e.message; $('#start-hint').style.color='var(--bad)'; }
 }
+/* re-eval: an eval-only config from a finished cell's checkpoint. The server (`reeval_config`) builds it from the
+   source file + the cell's config.json; it opens UNSAVED in the form (Save… / Start as usual). */
+const RE = {opts:null, out:{mode:'cell', exp:null}, widget:null, descTouched:false, nameTouched:false};
+function reCell(){ return (RE.opts?.cells||[]).find(c => c.cell===$('#re-cell').value) || null; }
+async function reevalFlow(file){
+  const c = S.configs.find(x => x.file === file);
+  if (!c){ status('bad', `${file} is not in the list — refresh`); return; }
+  if (!c.valid){ status('bad', `${file} does not validate`); return; }
+  let opts;
+  try { opts = await api('GET', `/api/configs/reeval/options?path=${encodeURIComponent(file)}`); } catch(e){ status('bad', e.message); return; }
+  if (!opts.cells.length){ status('warn', `${file}: no phase checkpoint under ${opts.output_dir} (training/{sft,warmup,embedding_alignment}) — nothing to re-evaluate`); return; }
+  RE.opts = opts; RE.descTouched = false; RE.nameTouched = false;
+  $('#re-source').value = opts.source;
+  const cell = $('#re-cell'); cell.innerHTML = '';
+  opts.cells.forEach(x => cell.append(h('option', {value:x.cell, title:x.dir}, `${x.cell} · ${x.tokenizer}${x.results?'':' · no all_metrics.json'}`)));
+  const tasks = $('#re-tasks'); tasks.innerHTML = '';
+  const known = Array.from(new Set([...(opts.tasks||[]), ...S.reg.tasks]));
+  known.forEach(t => { const cb = h('input', {type:'checkbox', onchange: reSync}); cb.value = t; cb.checked = (opts.tasks||[]).includes(t); tasks.append(h('label', {title: (opts.tasks||[]).includes(t) ? 'a task of the source config (its params are copied)' : 'not in the source config — default params'}, cb, t)); });
+  RE.out.mode = 'cell'; RE.out.exp = null;
+  const box = $('#re-outmode'); box.innerHTML = ''; RE.widget = outModeWidget(RE.out, reSync); box.append(RE.widget.el);
+  reCellChanged(); openModal('#reeval-modal');
+}
+function reCellChanged(){
+  const c = reCell(); if (!c) return;
+  const ck = $('#re-ck'); ck.innerHTML = '';
+  c.checkpoints.forEach((k, i) => ck.append(h('option', {value:k.phase, selected:i===0, title:k.dir}, `training/${k.phase}${k.has_config?'':' (no config.json)'}`)));
+  // the experiment folder = the cell's parent when it is a cell (outputs/experiments/<exp>/<cell>), else the run itself
+  const rest = c.dir.startsWith(OUT_PREFIX) ? c.dir.slice(OUT_PREFIX.length).split('/') : [c.dir];
+  RE.out.mode = 'cell'; RE.out.exp = rest.length >= 2 ? rest[rest.length-2] : rest[0];
+  if (RE.widget) RE.widget.sync();
+  if (!RE.nameTouched) $('#re-name').value = `${c.cell}_reeval`;
+  reSync();
+}
+function reSync(){
+  const c = reCell(); if (!c) return;
+  const name = $('#re-name').value.trim(), ticked = $$('#re-tasks input:checked').map(x => x.value), ck = $('#re-ck').value;
+  const od = $('#re-outdir'), locked = RE.out.mode!=='custom'; od.readOnly = locked; od.classList.toggle('inferred', locked);
+  if (locked) od.value = outDirFor(RE.out.mode, RE.out.exp, name, od.value);
+  if (!RE.descTouched) $('#re-desc').value = `eval-only re-run of ${RE.opts.source.split('/').pop()} · cell ${c.cell} · checkpoint training/${ck} · tasks ${ticked.join(', ')}`;
+  const notes = [];
+  if (!ticked.length) notes.push('⚠ tick at least one task');
+  if (c.non_standard_embedding) notes.push(`⚠ ${c.tokenizer} replaces the embedding / output head with custom modules: from_pretrained on the checkpoint leaves them randomly initialised — this re-eval will not reproduce the cell (see scripts/dump_eval_rows.py)`);
+  const missing = ticked.filter(t => c.tasks_done.length && !c.tasks_done.includes(t));
+  if (missing.length) notes.push(`note: ${c.cell} has no eval_rows dump for ${missing.join(', ')} (it ran ${c.tasks_done.join(', ')})`);
+  const sharing = S.configs.filter(x => x.valid && x.output_dir === od.value.trim());
+  if (sharing.length) notes.push(`⚠ ${od.value.trim()} is already the output_dir of ${sharing.map(x => x.file).join(', ')}`);
+  const hint = $('#re-hint'); hint.style.color = notes.some(n => n.startsWith('⚠')) ? 'var(--warn)' : '';
+  hint.textContent = notes.length ? notes.join(' · ') : 'The new config is the source with model.name_or_path = the checkpoint, every phase disabled and only the ticked tasks; it opens UNSAVED in the form — Save… and ▶ Start as usual.';
+  $('#re-go').disabled = !ticked.length;
+}
+async function doReeval(){
+  const c = reCell(); if (!c) return;
+  const body = {source: RE.opts.source.split('/').pop(), cell: c.cell, checkpoint: $('#re-ck').value, tasks: $$('#re-tasks input:checked').map(x => x.value),
+    name: $('#re-name').value.trim() || null, output_dir: $('#re-outdir').value.trim() || null, description: $('#re-desc').value};
+  try {
+    const d = await api('POST', '/api/configs/reeval', body);
+    if (S.dirty && !confirm('Discard unsaved changes?')) return;
+    closeModals(); clearStatus();
+    S.file = null; S.cfg = d.config; S.errors = d.errors || []; S.paramWarnings = d.param_warnings || []; S.dirty = true; S.yamlDirty = false;
+    syncOutMode(); $('#dirty-chip').style.display = '';
+    $('#editor-title').textContent = `re-eval of ${d.cell} (unsaved)`; $('#yaml').value = d.yaml || '';
+    renderConfigList(); renderForm(); setEtab('form');
+    $('#etab-results').innerHTML = '<div class="empty">no results yet</div>';
+    const notes = [...(d.notes||[]), ...(d.warnings||[])];
+    if (!d.ok) status('bad', 'the re-eval config does not validate', d.errors);
+    else status(notes.length ? 'warn' : 'good', `built ${d.name} from ${d.checkpoint} — review, then Save… and ▶ Start`, notes.length ? notes.map(n => '⚠ ' + n) : undefined);
+  } catch(e){ $('#re-hint').textContent = e.message; $('#re-hint').style.color='var(--bad)'; }
+}
+
+/* compare: every resolved value that differs between the working config and a saved one */
+function compareFlow(){
+  if (!S.cfg) return;
+  const sel = $('#cmp-other'); sel.innerHTML = ''; sel.append(h('option', {value:''}, '— pick a saved config —'));
+  S.configs.filter(c => c.valid && c.file !== S.file).forEach(c => sel.append(h('option', {value:c.file}, c.file)));
+  $('#cmp-this').textContent = S.file ? `(${S.file}${S.dirty?', edited':''})` : '(unsaved form)';
+  $('#cmp-body').innerHTML = '<div class="empty">pick a config</div>';
+  openModal('#cmp-modal');
+}
+const cmpFmt = v => v === '<absent>' ? h('span', {class:'abs'}, 'absent') : (t => h('span', {title: t}, t.length > 120 ? t.slice(0, 117) + '…' : t))(typeof v === 'string' ? v : JSON.stringify(v));
+async function runCompare(){
+  const other = $('#cmp-other').value; if (!other) return;
+  const body = $('#cmp-body'); body.innerHTML = '<div class="empty">comparing…</div>';
+  let rows;
+  try { rows = (await api('POST', '/api/configs/diff', {config: S.cfg, other})).rows; } catch(e){ body.innerHTML = `<div class="empty">${esc(e.message)}</div>`; return; }
+  if (!rows.length){ body.innerHTML = '<div class="empty">identical (resolved values; provenance ignored)</div>'; return; }
+  const table = h('table', {}, h('thead', {}, h('tr', {}, h('th', {}, 'path'), h('th', {}, 'this'), h('th', {}, other.replace(/\.yaml$/, '')), h('th', {}, ''))));
+  const tb = h('tbody'); let sec = null;
+  for (const r of rows){
+    const head = EXP_KEYS.includes(r.path.split('.')[0]) ? 'experiment' : r.path.split('.')[0];
+    if (head !== sec){ sec = head; tb.append(h('tr', {class:'sec'}, h('td', {colspan:4}, sec))); }
+    const copy = h('button', {class:'btn sm', title:`set ${r.path} to the other config's value in the form`, onclick: () => {
+      if (r.b === '<absent>'){ const ks = splitPath(r.path); const parent = getPath(S.cfg, ks.slice(0,-1).join('.')); if (parent && typeof parent==='object') delete parent[ks[ks.length-1]]; }
+      else setPath(S.cfg, r.path, deep(r.b));
+      markDirty(); renderForm(); runCompare();
+    }}, '←');
+    tb.append(h('tr', {}, h('td', {class:'p'}, r.path), h('td', {class:'v'}, cmpFmt(r.a)), h('td', {class:'v'}, cmpFmt(r.b)), h('td', {}, copy)));
+  }
+  table.append(tb); body.innerHTML = ''; body.append(table);
+  $('#cmp-hint').textContent = `${rows.length} difference${rows.length===1?'':'s'} · resolved values (each merged over base.yaml); lists of scalars compare whole, lists of mappings element by element · ← copies the other value into the form`;
+}
+
 async function loadResultsTab(){
   const box = $('#etab-results'); box.innerHTML = '<div class="empty">loading…</div>';
   if (!S.file){ box.innerHTML = '<div class="empty">save the config first</div>'; return; }
@@ -2919,10 +3139,19 @@ document.addEventListener('DOMContentLoaded', async () => {
   $('#clone-go').onclick = doClone;
   $('#clone-file').addEventListener('input', cloneSync);
   $('#clone-name').addEventListener('input', () => { C.nameTouched = true; cloneSync(); });
-  $('#clone-infer').addEventListener('change', cloneSync);
   $('#clone-outdir').addEventListener('input', cloneSync);
   for (const id of ['#clone-file', '#clone-name', '#clone-outdir', '#clone-desc']) $(id).addEventListener('keydown', e => { if (e.key === 'Enter') doClone(); });
   $('#btn-start').onclick = startFlow; $('#start-go').onclick = doStart;
+  $('#start-overwrite').addEventListener('change', e => { $('#start-go').disabled = !e.target.checked; });
+  $('#btn-reeval').onclick = () => { if (!S.cfg) return; if (!S.file){ status('warn', 'save the config first — re-eval reads the finished cells of a saved config'); return; } reevalFlow(S.file); };
+  $('#re-go').onclick = doReeval;
+  $('#re-cell').addEventListener('change', reCellChanged);
+  $('#re-ck').addEventListener('change', reSync);
+  $('#re-name').addEventListener('input', () => { RE.nameTouched = true; reSync(); });
+  $('#re-outdir').addEventListener('input', reSync);
+  $('#re-desc').addEventListener('input', () => { RE.descTouched = true; });
+  $('#btn-compare').onclick = compareFlow;
+  $('#cmp-other').addEventListener('change', runCompare);
   $('#btn-cancel').onclick = cancelRun;
   $('#btn-steps').onclick = () => toggleSteps();
   $('#sp-close').onclick = () => toggleSteps(false);
@@ -2953,7 +3182,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     S.schema = b.schema; S.base = b.base; S.reg = b.registries; S.presets = b.presets; S.env = b.env; HINTS = b.hints || {}; S.taskParams = b.task_params || {};
     const env = $('#env-chip'); env.textContent = `${b.env.python.replace(/^.*\//,'')} · ${b.env.hf_token_set?'HF_TOKEN set':'no HF_TOKEN'}`; env.className = 'chip ' + (b.env.hf_token_set?'good':'warn');
     env.title = `${b.env.python} ${b.env.script}`;
-    await loadConfigs();
+    await loadConfigs(); await loadExperiments();
     const want = new URLSearchParams(location.search).get('config'); if (want) openConfig(want);
   } catch(e){ status('bad', `server error: ${e.message}`); }
   await pollRuns();

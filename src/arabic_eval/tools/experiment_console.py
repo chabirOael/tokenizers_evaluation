@@ -596,6 +596,224 @@ def clone_config(paths: ConsolePaths, source: str, new_file: str, *, name: Optio
 
 
 # ---------------------------------------------------------------------------
+# Re-eval from a checkpoint, experiment folders, compare
+# ---------------------------------------------------------------------------
+
+PHASE_ORDER = ("embedding_alignment", "warmup", "sft")
+CHECKPOINT_FILES = ("model.safetensors", "model.pt", "pytorch_model.bin", "model.safetensors.index.json")
+# Their adapters *replace* embed_tokens / lm_head with custom modules; ``from_pretrained``
+# on a checkpoint directory rebuilds the vanilla architecture and leaves those modules
+# randomly initialised (the reason scripts/dump_eval_rows.py loads the state dict itself),
+# so pointing model.name_or_path at such a checkpoint does not re-evaluate the trained model.
+NON_STANDARD_EMBEDDING_TOKENIZERS = frozenset({"character_bert", "farasa_character_bert", "char_jaber", "charformer"})
+NATIVE_TOKENIZERS = frozenset({"native_llama", "native_qwen3"})      # train() is a no-op: load_path stays null
+
+
+def experiment_dirs(paths: ConsolePaths) -> List[str]:
+    """Names of the experiment folders under ``outputs/experiments`` (a folder that
+    holds cells, or is itself a finished single run), plus the parent folders every
+    saved config's ``output_dir`` names — for the *cell of experiment…* output_dir mode.
+    ``_superseded`` is skipped."""
+    base = paths.repo_root / "outputs" / "experiments"
+    names = set()
+    if base.is_dir():
+        for d in sorted(base.iterdir()):
+            if d.is_dir() and d.name != SUPERSEDED_DIR and not d.name.startswith("."):
+                names.add(d.name)
+    prefix = "outputs/experiments/"
+    for od in _other_output_dirs(paths, None):
+        if od.startswith(prefix):
+            parts = od[len(prefix):].split("/")
+            if len(parts) >= 2 and parts[0]:
+                names.add(parts[0])
+    return sorted(names)
+
+
+def _checkpoints_of(cell_dir: Path) -> List[dict]:
+    """The phase checkpoints a cell directory holds, last phase first."""
+    out = []
+    for phase in reversed(PHASE_ORDER):
+        d = cell_dir / "training" / phase
+        if d.is_dir() and any((d / f).exists() for f in CHECKPOINT_FILES):
+            out.append({"phase": phase, "dir": str(d), "has_config": (d / "config.json").exists()})
+    return out
+
+
+def reeval_options(paths: ConsolePaths, source: str) -> dict:
+    """What the *Re-eval…* dialog offers for a saved config: the finished cells under
+    its ``output_dir`` (the sweep cells, or the directory itself for a single run —
+    discovered from disk like the Results tab, ``_superseded`` skipped) with their
+    checkpoints and tokenizer, the tasks of the source config, the experiment folder."""
+    src = read_config(paths, source)
+    if not src["valid"]:
+        raise ConsoleError("the source does not validate — fix it before building a re-eval: "
+                           + "; ".join(f"{e['loc']}: {e['msg']}" for e in src["errors"]))
+    cfg = ExperimentConfig(**src["resolved"])
+    out_dir = paths.repo_root / cfg.output_dir
+    candidates: List[Path] = []
+    if out_dir.is_dir():
+        candidates.append(out_dir)
+        candidates += sorted(d for d in out_dir.iterdir() if d.is_dir() and d.name != SUPERSEDED_DIR and d.name != "training")
+    cells = []
+    for d in candidates:
+        cks = _checkpoints_of(d)
+        if not cks:
+            continue
+        cell_cfg = {}
+        if (d / "config.json").exists():
+            try:
+                cell_cfg = json.loads((d / "config.json").read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                cell_cfg = {}
+        tok = (cell_cfg.get("tokenizer") or {}) if isinstance(cell_cfg, dict) else {}
+        rel = paths.rel(d)
+        cells.append({
+            "cell": d.name, "dir": rel, "is_output_dir": d == out_dir,
+            "checkpoints": [{**c, "dir": paths.rel(Path(c["dir"]))} for c in cks],
+            "tokenizer": tok.get("type") or cfg.tokenizer.type,
+            "tokenizer_config": tok or None,
+            "results": (d / "all_metrics.json").exists(),
+            "tasks_done": sorted(p.stem for p in (d / "eval_rows").glob("*.parquet")) if (d / "eval_rows").is_dir() else [],
+            "non_standard_embedding": (tok.get("type") or cfg.tokenizer.type) in NON_STANDARD_EMBEDDING_TOKENIZERS,
+        })
+    exp_rel = cfg.output_dir.rstrip("/")
+    experiment = exp_rel[len("outputs/experiments/"):].split("/")[0] if exp_rel.startswith("outputs/experiments/") else None
+    return {
+        "source": src["path"], "output_dir": cfg.output_dir, "experiment": experiment, "sweep": is_sweep(cfg),
+        "cells": cells, "tasks": [t.type for t in cfg.sweep.tasks] if cfg.sweep else [],
+        "task_params": {t.type: t.params for t in cfg.sweep.tasks} if cfg.sweep else {},
+        "phases_enabled": [ph for ph in PHASE_ORDER if getattr(cfg.training.phases, ph).enabled],
+    }
+
+
+def reeval_config(paths: ConsolePaths, source: str, cell: str, checkpoint: str, tasks: Sequence[str], *,
+                  name: Optional[str] = None, output_dir: Optional[str] = None,
+                  description: Optional[str] = None) -> dict:
+    """Build (never save) an eval-only config from a finished cell of *source*:
+    ``model.name_or_path`` = the checkpoint directory, every phase ``enabled: false``,
+    ``sweep.tasks`` = the ticked tasks with the source's params for them, the tokenizer
+    block = the cell's (from its ``config.json``; ``load_path`` = its saved tokenizer for a
+    from-scratch type, so nothing is retrained), ``name`` = ``<cell>_reeval``,
+    ``output_dir`` = a cell folder under the same experiment directory, fresh
+    provenance. Returns the flat config, its delta YAML and validation."""
+    opts = reeval_options(paths, source)
+    cells = {c["cell"]: c for c in opts["cells"]}
+    if cell not in cells:
+        raise ConsoleError(f"{cell!r} is not a finished cell of {opts['source']} "
+                           f"(cells with a checkpoint: {', '.join(cells) or 'none'})")
+    c = cells[cell]
+    ck = next((k for k in c["checkpoints"] if k["phase"] == checkpoint or k["dir"] == checkpoint), None)
+    if ck is None:
+        raise ConsoleError(f"{cell} has no checkpoint {checkpoint!r} (available: "
+                           f"{', '.join(k['phase'] for k in c['checkpoints'])})")
+    tasks = [t for t in tasks if t]
+    if not tasks:
+        raise ConsoleError("tick at least one task")
+    unknown = [t for t in tasks if t not in task_specs() and task_specs()]
+    if unknown:
+        raise ConsoleError(f"unknown task type(s): {', '.join(unknown)}")
+    src = read_config(paths, source)
+    resolved = copy.deepcopy(src["resolved"])
+    name = (name or "").strip() or f"{cell}_reeval"
+    if not _NAME_RE.match(name):
+        raise ConsoleError(f"invalid experiment name {name!r}")
+    # The re-eval is a cell folder under the same experiment directory: for a sweep cell or
+    # a campaign cell (outputs/experiments/<exp>/<cell>) that is the cell's parent — the
+    # layout the Free-form tab, the judge and compare_results.py read as one experiment;
+    # a plain single run (outputs/experiments/<run>) gets a cell folder under itself.
+    cell_dir = paths.repo_root / c["dir"]
+    try:
+        depth = len(cell_dir.relative_to(paths.repo_root / "outputs" / "experiments").parts)
+    except ValueError:
+        depth = 1
+    exp_dir = cell_dir.parent if depth >= 2 else cell_dir
+    output_dir = (output_dir or "").strip() or f"{paths.rel(exp_dir)}/{name}"
+    tok = dict(c["tokenizer_config"] or resolved["tokenizer"])
+    tok.setdefault("params", {})
+    if tok.get("type") not in NATIVE_TOKENIZERS and tok.get("save_path") \
+            and (paths.repo_root / tok["save_path"]).is_dir():
+        tok["load_path"] = tok["save_path"]           # the tokenizer this checkpoint was trained with — do not retrain
+    for ph in PHASE_ORDER:
+        resolved["training"]["phases"][ph]["enabled"] = False
+    resolved.update({
+        "name": name, "output_dir": output_dir, "created_at": None, "runs": [],
+        "description": description if description is not None else
+        f"eval-only re-run of {opts['source'].split('/')[-1]} · cell {cell} · checkpoint training/{ck['phase']} · tasks {', '.join(tasks)}",
+    })
+    resolved["model"]["name_or_path"] = ck["dir"]
+    resolved["tokenizer"] = {k: tok.get(k) for k in ("type", "vocab_size", "params", "save_path", "load_path")}
+    src_tasks = {t["type"]: t for t in (resolved.get("sweep") or {}).get("tasks", [])}
+    resolved["sweep"] = {
+        "tokenizers": [{"type": tok["type"], "vocab_sizes": [tok.get("vocab_size")], "params": copy.deepcopy(tok.get("params") or {})}],
+        "tasks": [copy.deepcopy(src_tasks[t]) if t in src_tasks else {"type": t, "params": {}} for t in tasks],
+    }
+    v = validate_config(paths, resolved)
+    notes = []
+    if c["non_standard_embedding"]:
+        notes.append(f"{tok['type']} replaces the embedding / output head with custom modules: from_pretrained on the "
+                     f"checkpoint rebuilds a vanilla architecture and leaves them randomly initialised — a re-eval through "
+                     f"model.name_or_path does not reproduce this cell (see scripts/dump_eval_rows.py)")
+    if not ck.get("has_config"):
+        notes.append(f"{ck['dir']} has no config.json — not a save_pretrained directory; from_pretrained will fail")
+    for t in tasks:
+        if t not in c["tasks_done"] and c["tasks_done"]:
+            notes.append(f"{cell} has no eval_rows dump for {t} (it ran: {', '.join(c['tasks_done'])})")
+    return {
+        "config": v["resolved"] if v["ok"] else resolved, "ok": v["ok"], "errors": v["errors"],
+        "warnings": v.get("warnings", []), "param_warnings": v.get("param_warnings", []),
+        "yaml": render_yaml(paths, resolved, "delta") if v["ok"] else None,
+        "name": name, "output_dir": output_dir, "checkpoint": ck["dir"], "cell": cell, "tasks": tasks,
+        "source": opts["source"], "notes": notes,
+    }
+
+
+def _flat_diff(a: Any, b: Any, prefix: str, out: List[dict]) -> None:
+    if isinstance(a, dict) and isinstance(b, dict):
+        for k in list(a) + [k for k in b if k not in a]:
+            path = f"{prefix}.{k}" if prefix else str(k)
+            if k not in b:
+                out.append({"path": path, "a": a[k], "b": _ABSENT})
+            elif k not in a:
+                out.append({"path": path, "a": _ABSENT, "b": b[k]})
+            else:
+                _flat_diff(a[k], b[k], path, out)
+        return
+    # lists of mappings of equal length (sweep.tasks, sweep.tokenizers, the mix sources)
+    # are compared element by element so a differing task param gets its own row;
+    # every other list is atomic, like _deep_diff
+    if isinstance(a, list) and isinstance(b, list) and a and len(a) == len(b) \
+            and all(isinstance(x, dict) for x in a) and all(isinstance(x, dict) for x in b):
+        for i, (x, y) in enumerate(zip(a, b)):
+            _flat_diff(x, y, f"{prefix}.{i}", out)
+        return
+    if a != b:
+        out.append({"path": prefix, "a": a, "b": b})
+
+
+_ABSENT = "<absent>"
+
+
+def diff_configs(paths: ConsolePaths, a_dict: dict, b_rel: str) -> List[dict]:
+    """Every config path whose *resolved* value differs between the working
+    config *a_dict* (a form dict; merged over base.yaml like ``validate_config``)
+    and the saved file *b_rel*: ``[{path, a, b}]`` in the schema's order, lists
+    atomic (the same rule as ``_deep_diff``), ``"<absent>"`` on one side when a
+    key exists only on the other. Provenance (``created_at`` / ``runs``) is left
+    out — two files always differ there."""
+    va = validate_config(paths, a_dict)
+    if va["ok"]:
+        a = va["resolved"]
+    else:
+        a = flatten_experiment(load_yaml(paths.base_yaml))
+        _deep_merge(a, flatten_experiment(a_dict or {}))
+    rb = read_config(paths, b_rel)
+    b = rb["resolved"]
+    out: List[dict] = []
+    _flat_diff(a, b, "", out)
+    return [r for r in out if r["path"] not in ("created_at", "runs") and not r["path"].startswith("runs.")]
+
+
+# ---------------------------------------------------------------------------
 # Progress parser
 # ---------------------------------------------------------------------------
 

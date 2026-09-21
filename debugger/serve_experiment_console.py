@@ -25,6 +25,13 @@ Routes
                                     → {"path", "comments_kept", …}: a copy of the source file with only the
                                     experiment name / output_dir / description rewritten (comments intact)
     GET  /api/configs/results?path= per-cell metrics summary of a config's output_dir
+    GET  /api/configs/reeval/options?path=   the finished cells (checkpoints, tokenizer, tasks done) of a config's
+                                    output_dir, for the Re-eval dialog
+    POST /api/configs/reeval        {"source", "cell", "checkpoint", "tasks", "name", "output_dir", "description"}
+                                    → an eval-only config (phases off, model = the checkpoint) as a dict + delta
+                                    YAML + validation; nothing is saved — it opens in the form
+    POST /api/configs/diff          {"config": {...}, "other": "<file>"} → [{path, a, b}] every resolved value that differs
+    GET  /api/experiments           the experiment folders under outputs/experiments (the "cell of experiment…" mode)
     GET  /api/runs                  every run (status reconciled from disk)
     GET  /api/runs/<id>             record + parsed progress + log tail + results
     GET  /api/runs/<id>/log?offset= incremental console.log chunk
@@ -85,10 +92,14 @@ from arabic_eval.tools.experiment_console import (  # noqa: E402
     RunManager,
     clone_config,
     config_results,
+    diff_configs,
+    experiment_dirs,
     gpu_snapshot,
     list_configs,
     parse_yaml,
     read_config,
+    reeval_config,
+    reeval_options,
     render_yaml,
     save_config,
     schema_bundle,
@@ -225,6 +236,10 @@ class Handler(SimpleHTTPRequestHandler):
             self._send_json(read_config(PATHS, q.get("path", "")))
         elif route == "/api/configs/results":
             self._send_json(config_results(PATHS, q.get("path", "")))
+        elif route == "/api/configs/reeval/options":
+            self._send_json(reeval_options(PATHS, q.get("path", "")))
+        elif route == "/api/experiments":
+            self._send_json({"experiments": experiment_dirs(PATHS)})
         elif route == "/api/runs":
             self._send_json({"runs": RUNS.list(), "gpu": gpu_snapshot()})
         elif route.startswith("/api/runs/") and route.endswith("/log"):
@@ -284,6 +299,14 @@ class Handler(SimpleHTTPRequestHandler):
                 name=(str(req["experiment_name"]) if req.get("experiment_name") else None),
                 output_dir=(str(req["output_dir"]) if req.get("output_dir") else None),
                 description=(str(desc) if desc is not None else None), overwrite=bool(req.get("overwrite"))))
+        elif route == "/api/configs/reeval":
+            self._send_json(reeval_config(
+                PATHS, str(req.get("source") or ""), str(req.get("cell") or ""), str(req.get("checkpoint") or ""),
+                [str(t) for t in (req.get("tasks") or [])], name=_opt_str(req, "name"),
+                output_dir=_opt_str(req, "output_dir"),
+                description=(str(req["description"]) if req.get("description") is not None else None)))
+        elif route == "/api/configs/diff":
+            self._send_json({"rows": diff_configs(PATHS, req.get("config") or {}, str(req.get("other") or ""))})
         elif route == "/api/runs/start":
             seed = req.get("seed")
             rec = RUNS.start(

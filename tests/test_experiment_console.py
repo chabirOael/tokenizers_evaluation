@@ -697,3 +697,186 @@ def test_single_cell_reports_the_tokenizer_that_runs_and_warns_on_mismatch(tmp_r
     raw["sweep"]["tokenizers"].append({"type": "araroopat", "vocab_sizes": [None]})
     v = validate_config(tmp_repo, raw, file="mini.yaml")
     assert v["sweep"] is True and v["cells"] == ["bpe_32k", "araroopat"] and v["warnings"] == []
+
+
+# ---------------------------------------------------------------------------
+# Re-eval from a checkpoint, output-dir modes, overwrite guard, compare
+# ---------------------------------------------------------------------------
+
+SWEEP_YAML = """\
+experiment:
+  name: "camp"
+  output_dir: "outputs/experiments/camp"
+tokenizer:
+  type: "bpe"
+  vocab_size: 32000
+sweep:
+  tokenizers:
+    - type: "bpe"
+      vocab_sizes: [32000]
+      params: {min_frequency: 2}
+    - type: "native_llama"
+      vocab_sizes: [null]
+  tasks:
+    - type: "acva"
+      params: {num_fewshot: 0, max_length: 1024}
+    - type: "freeform_cidar"
+      params: {max_output_chars: 2400}
+"""
+
+
+def _finished_cell(root: Path, rel: str, tokenizer: dict, phases=("sft",), tasks=("acva",)) -> Path:
+    d = root / rel
+    (d / "eval_rows").mkdir(parents=True)
+    (d / "all_metrics.json").write_text("{}")
+    (d / "config.json").write_text(json.dumps({"name": d.name, "tokenizer": tokenizer}), encoding="utf-8")
+    for ph in phases:
+        (d / "training" / ph).mkdir(parents=True)
+        (d / "training" / ph / "model.safetensors").write_bytes(b"0")
+        (d / "training" / ph / "config.json").write_text("{}")
+    for t in tasks:
+        (d / "eval_rows" / f"{t}.parquet").write_bytes(b"0")
+    return d
+
+
+def test_reeval_options_and_config_on_a_fixture_sweep(tmp_repo: ConsolePaths):
+    from arabic_eval.config import ExperimentConfig
+    from arabic_eval.tools.experiment_console import reeval_config, reeval_options
+    (tmp_repo.configs_dir / "camp.yaml").write_text(SWEEP_YAML, encoding="utf-8")
+    root = tmp_repo.repo_root
+    tok = {"type": "bpe", "vocab_size": 32000, "params": {"min_frequency": 2}, "save_path": "outputs/tokenizers/bpe_32k", "load_path": None}
+    _finished_cell(root, "outputs/experiments/camp/bpe_32k", tok, phases=("embedding_alignment", "warmup", "sft"), tasks=("acva", "freeform_cidar"))
+    (root / "outputs/tokenizers/bpe_32k").mkdir(parents=True)
+    _finished_cell(root, "outputs/experiments/camp/_superseded/old", tok)          # skipped
+    (root / "outputs/experiments/camp/native_llama").mkdir()                         # no checkpoint → not offered
+    o = reeval_options(tmp_repo, "camp.yaml")
+    assert o["sweep"] is True and o["experiment"] == "camp" and o["tasks"] == ["acva", "freeform_cidar"]
+    assert [c["cell"] for c in o["cells"]] == ["bpe_32k"]
+    c = o["cells"][0]
+    assert [k["phase"] for k in c["checkpoints"]] == ["sft", "warmup", "embedding_alignment"]      # last phase first
+    assert c["tokenizer"] == "bpe" and c["non_standard_embedding"] is False and c["tasks_done"] == ["acva", "freeform_cidar"]
+
+    r = reeval_config(tmp_repo, "camp.yaml", "bpe_32k", "sft", ["freeform_cidar"])
+    assert r["ok"], r["errors"]
+    cfg = ExperimentConfig(**r["config"])
+    assert cfg.model.name_or_path == "outputs/experiments/camp/bpe_32k/training/sft"
+    assert not any(getattr(cfg.training.phases, ph).enabled for ph in ("embedding_alignment", "warmup", "sft"))
+    assert [t.type for t in cfg.sweep.tasks] == ["freeform_cidar"]
+    assert cfg.sweep.tasks[0].params == {"max_output_chars": 2400}                  # the source's params for that task
+    assert cfg.name == "bpe_32k_reeval" and cfg.output_dir == "outputs/experiments/camp/bpe_32k_reeval"   # a cell of the same experiment
+    assert cfg.tokenizer.type == "bpe" and cfg.tokenizer.vocab_size == 32000
+    assert cfg.tokenizer.load_path == "outputs/tokenizers/bpe_32k"                 # the trained tokenizer, not retrained
+    assert cfg.created_at is None and cfg.runs == [] and "checkpoint training/sft" in cfg.description
+    assert cell_names(cfg) == ["bpe_32k"] and r["warnings"] == [] and r["notes"] == []
+    assert r["yaml"].startswith("experiment:\n  name: bpe_32k_reeval\n") and "name_or_path: outputs/experiments/camp/bpe_32k/training/sft" in r["yaml"]
+    v = validate_config(tmp_repo, parse_yaml(r["yaml"]))
+    assert v["ok"] and v["resolved"] == r["config"]
+    # choices honoured; an earlier checkpoint, several tasks, an explicit name / output_dir
+    r2 = reeval_config(tmp_repo, "camp.yaml", "bpe_32k", "warmup", ["acva", "alghafa"], name="w", output_dir="outputs/experiments/camp/w2")
+    assert r2["config"]["model"]["name_or_path"].endswith("training/warmup") and r2["name"] == "w" and r2["output_dir"] == "outputs/experiments/camp/w2"
+    assert [t["type"] for t in r2["config"]["sweep"]["tasks"]] == ["acva", "alghafa"] and r2["config"]["sweep"]["tasks"][1]["params"] == {}
+    assert any("no eval_rows dump for alghafa" in n for n in r2["notes"])
+    with pytest.raises(ConsoleError):
+        reeval_config(tmp_repo, "camp.yaml", "native_llama", "sft", ["acva"])
+    with pytest.raises(ConsoleError):
+        reeval_config(tmp_repo, "camp.yaml", "bpe_32k", "nope", ["acva"])
+    with pytest.raises(ConsoleError):
+        reeval_config(tmp_repo, "camp.yaml", "bpe_32k", "sft", [])
+
+
+def test_reeval_single_run_native_and_non_standard_note(tmp_repo: ConsolePaths):
+    from arabic_eval.tools.experiment_console import reeval_config, reeval_options
+    root = tmp_repo.repo_root
+    # a single run whose output_dir is a campaign cell (the qwen layout): the re-eval is a sibling cell
+    _finished_cell(root, "outputs/experiments/mini", {"type": "native_llama", "vocab_size": None, "params": {}, "save_path": "outputs/tokenizers/native_llama", "load_path": None})
+    (root / "outputs/tokenizers/native_llama").mkdir(parents=True)
+    o = reeval_options(tmp_repo, "mini.yaml")
+    assert o["sweep"] is False and [c["cell"] for c in o["cells"]] == ["mini"] and o["cells"][0]["is_output_dir"]
+    r = reeval_config(tmp_repo, "mini.yaml", "mini", "sft", ["acva"])
+    assert r["ok"] and r["output_dir"] == "outputs/experiments/mini/mini_reeval"       # a cell folder under the run itself
+    assert r["config"]["tokenizer"]["load_path"] is None                                # native: train() is a no-op
+    # a charformer cell: offered, with the note that from_pretrained will not restore its modules
+    (tmp_repo.configs_dir / "cf.yaml").write_text(MINIMAL_YAML.replace('"mini"', '"cf"').replace("experiments/mini", "experiments/exp/cf")
+                                                  .replace("native_llama", "charformer"), encoding="utf-8")
+    _finished_cell(root, "outputs/experiments/exp/cf", {"type": "charformer", "vocab_size": None, "params": {}, "save_path": "outputs/tokenizers/cf", "load_path": None})
+    r = reeval_config(tmp_repo, "cf.yaml", "cf", "sft", ["acva"])
+    assert r["ok"] and r["output_dir"] == "outputs/experiments/exp/cf_reeval"
+    assert any("randomly initialised" in n for n in r["notes"])
+
+
+@pytest.mark.skipif(not (REPO / "outputs/experiments/qwen_native_vs_araroopat/native_qwen3_sft/training/sft").is_dir(),
+                    reason="the reference SFT checkpoint is not on this machine")
+def test_reeval_of_the_reference_cell_matches_the_hand_written_config():
+    """Building a re-eval of qwen_native_vs_araroopat/native_qwen3_sft + freeform_cidar gives the
+    hand-written qwen_native_sft_reeval.yaml's model path, phases and tasks (params may differ:
+    the hand-written file pins max_output_chars: 2400, the source's freeform params are {})."""
+    from arabic_eval.tools.experiment_console import reeval_config
+    r = reeval_config(REAL, "qwen_native_sft_only.yaml", "native_qwen3_sft", "sft", ["freeform_cidar"])
+    hand = read_config(REAL, "qwen_native_sft_reeval.yaml")["resolved"]
+    assert r["ok"]
+    assert r["config"]["model"]["name_or_path"] == hand["model"]["name_or_path"]
+    for ph in ("embedding_alignment", "warmup", "sft"):
+        assert r["config"]["training"]["phases"][ph]["enabled"] is False == hand["training"]["phases"][ph]["enabled"]
+    assert [t["type"] for t in r["config"]["sweep"]["tasks"]] == [t["type"] for t in hand["sweep"]["tasks"]] == ["freeform_cidar"]
+    assert r["config"]["tokenizer"]["type"] == hand["tokenizer"]["type"] == "native_qwen3"
+    assert r["output_dir"].startswith("outputs/experiments/qwen_native_vs_araroopat/")
+
+
+def test_experiment_dirs_and_results_summary_cell_dirs(tmp_repo: ConsolePaths):
+    from arabic_eval.config import ExperimentConfig
+    from arabic_eval.tools.experiment_console import experiment_dirs, results_summary
+    root = tmp_repo.repo_root
+    assert experiment_dirs(tmp_repo) == []
+    (root / "outputs/experiments/alpha/cell_a").mkdir(parents=True)
+    (root / "outputs/experiments/_superseded").mkdir()
+    (root / "outputs/experiments/beta").mkdir()
+    (tmp_repo.configs_dir / "c.yaml").write_text(MINIMAL_YAML.replace("experiments/mini", "experiments/gamma/cell"), encoding="utf-8")
+    assert experiment_dirs(tmp_repo) == ["alpha", "beta", "gamma"]         # folders + parents named by configs, no _superseded
+    # a single run whose output_dir already holds cell folders with results
+    (root / "outputs/experiments/mini/old_cell").mkdir(parents=True)
+    (root / "outputs/experiments/mini/old_cell/all_metrics.json").write_text("{}")
+    (root / "outputs/experiments/mini/_superseded/x").mkdir(parents=True)
+    (root / "outputs/experiments/mini/_superseded/x/all_metrics.json").write_text("{}")
+    cfg = ExperimentConfig(**read_config(tmp_repo, "mini.yaml")["resolved"])
+    rs = results_summary(tmp_repo, cfg)
+    assert rs["exists"] is False and rs["cell_dirs_with_results"] == ["old_cell"]
+    (root / "outputs/experiments/mini/all_metrics.json").write_text("{}")
+    assert results_summary(tmp_repo, cfg)["exists"] is True
+
+
+def test_diff_configs_lists_every_differing_path(tmp_repo: ConsolePaths):
+    from arabic_eval.tools.experiment_console import diff_configs
+    (tmp_repo.configs_dir / "camp.yaml").write_text(SWEEP_YAML, encoding="utf-8")
+    a = parse_yaml(MINIMAL_YAML)
+    rows = diff_configs(tmp_repo, a, "camp.yaml")
+    by = {r["path"]: r for r in rows}
+    assert by["name"] == {"path": "name", "a": "mini", "b": "camp"}
+    assert by["tokenizer.type"]["b"] == "bpe" and by["tokenizer.vocab_size"] == {"path": "tokenizer.vocab_size", "a": None, "b": 32000}
+    assert by["sweep.tokenizers"]["a"][0]["type"] == "native_llama"                  # different lengths → atomic
+    assert "sweep.tasks" in by and isinstance(by["sweep.tasks"]["b"], list)
+    assert not any(p in by for p in ("created_at", "runs"))
+    # equal-length lists of mappings diff element-wise
+    a["sweep"]["tokenizers"] = [{"type": "bpe", "vocab_sizes": [16000]}, {"type": "native_llama", "vocab_sizes": [None]}]
+    a["sweep"]["tasks"] = [{"type": "acva", "params": {"num_fewshot": 0}}, {"type": "freeform_cidar", "params": {}}]
+    by = {r["path"]: r for r in diff_configs(tmp_repo, a, "camp.yaml")}
+    assert by["sweep.tokenizers.0.vocab_sizes"] == {"path": "sweep.tokenizers.0.vocab_sizes", "a": [16000], "b": [32000]}
+    assert by["sweep.tokenizers.0.params.min_frequency"] == {"path": "sweep.tokenizers.0.params.min_frequency", "a": "<absent>", "b": 2}
+    assert by["sweep.tasks.0.params.max_length"]["a"] == "<absent>" and by["sweep.tasks.1.params.max_output_chars"]["b"] == 2400
+    assert "sweep.tokenizers.1.type" not in by
+    # identical → empty; an invalid working dict still diffs on its merged values
+    assert diff_configs(tmp_repo, parse_yaml(SWEEP_YAML), "camp.yaml") == []
+    bad = parse_yaml(MINIMAL_YAML); bad["training"] = {"phases": {"sft": {"steps": -5}}}
+    assert any(r["path"] == "training.phases.sft.steps" for r in diff_configs(tmp_repo, bad, "camp.yaml"))
+
+
+def test_compare_the_two_qwen_arms():
+    """qwen_native_sft_only vs qwen_araroopat_3phase: the tokenizer, Phases 1–2 and the
+    tokenizer params differ as the headers say — and so do three Phase 3 knobs and the
+    task list, which the headers claim identical (the finding the Compare flow exists for)."""
+    from arabic_eval.tools.experiment_console import diff_configs
+    a = read_config(REAL, "qwen_native_sft_only.yaml")["resolved"]
+    paths = {r["path"] for r in diff_configs(REAL, a, "qwen_araroopat_3phase.yaml")}
+    assert {"tokenizer.type", "training.phases.embedding_alignment.enabled", "training.phases.warmup.enabled",
+            "training.phases.warmup.qa_blend", "training.phases.sft.learning_rate", "training.phases.sft.warmup_steps",
+            "training.phases.sft.mixture.drop_truncated_answers", "sweep.tasks"} <= paths
+    assert not any(p.startswith("model.") or p.startswith("evaluation.") for p in paths)
