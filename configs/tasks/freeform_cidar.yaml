@@ -1,3 +1,7 @@
+# Console preset for the free-form task (loaded by the experiment console's form only).
+# The pipeline reads `sweep.tasks[].params` of the experiment YAML — this file is never
+# merged into a run — so every value here equals the code default (`DecodingConfig` in
+# src/arabic_eval/tasks/freeform/generation.py); tests/test_freeform_task.py pins the equality.
 task:
   type: "freeform_cidar"
   params:
@@ -7,16 +11,30 @@ task:
     # Fixed decoding across every tokenizer: greedy, no repetition penalty, budget in
     # CHARACTERS of decoded text. The per-tokenizer token cap is derived from the
     # tokenizer's measured chars/token on the references (× margin), then clamped.
-    max_output_chars: 1200
+    max_output_chars: 2400
     max_prompt_tokens: 512
     batch_size: 16
     token_cap_margin: 1.15
     token_cap_floor: 32
     token_cap_ceiling: 4096
-    stop_markers: ["\nالسؤال:", "\nالسياق:", "\nالإجابة:", "\n###", "\nفيما يلي"]   # a new block / section / header restart
+    # The model starting a new prompt block, in the templates' exact words: the flat v1
+    # block labels, the five `### ` section labels of the v2 templates, a v2 header restart.
+    # Derived from data/finetune_corpora.py in the code; a bare `\n###` cut the model's own
+    # markdown sub-headers (5/5 marker stops of the untrained control, 2026-09-21).
+    stop_markers:
+      - "\nالسؤال:"
+      - "\nالسياق:"
+      - "\nالإجابة:"
+      - "\n### التعليمات:"
+      - "\n### المدخل:"
+      - "\n### السياق:"
+      - "\n### السؤال:"
+      - "\n### الإجابة:"
+      - "\nفيما يلي تعليمات"
+      - "\nفيما يلي نص"
     marker_check_every: 16
     # Text-level repetition-loop stop (the rules of metrics.detect_loop, on decoded text —
-    # tokenizer-agnostic, unlike a token repetition penalty). Cut before the second copy.
+    # tokenizer-agnostic, unlike a token repetition penalty). Cut right after the first copy.
     loop_stop: true
     seed: 42
     # BERTScore (in-house implementation, tasks/freeform/bertscore.py). null = skip.

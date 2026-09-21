@@ -1,19 +1,21 @@
-# Reference control cell (2026-09-21): the untouched Qwen3-4B-Base with its native tokenizer,
-# no training at all (every phase disabled), free-form eval only under the current decoding rules —
-# stop markers v2 (the templates' exact section labels; a bare `\n###` cut the model's own
-# sub-headers) and the 2400-character budget, both pinned in `sweep.tasks[].params` (the only
-# place the pipeline reads them from). Re-running this file reproduces the reference cell
-# byte for byte (greedy decoding); the earlier rule sets live in `_superseded/` next to it,
-# `native_qwen3` (pre-fix, 2026-09-18) and `native_qwen3_base` stay as documented cells.
+# Budget ablation arm, superseded 2026-09-21: 2400 became the default (rule: at 2400 six of the
+# control's 12 cap rows end in EOS, none loops, the wall grows ×1.4), so the cell this file produced
+# now sits in `outputs/experiments/qwen_native_vs_araroopat/_superseded/`. Re-running it writes a
+# fresh 1200-budget cell next to the reference cells.
+# Control under the 2026-09-21 decoding rules: the untouched Qwen3-4B-Base with its native
+# tokenizer, no training at all (every phase disabled), free-form eval only, stop markers v2
+# (the templates' exact section labels — a bare `\n###` cut the model's own sub-headers) at a
+# 1200-character budget (`sweep.tasks[].params`, the only place the pipeline reads it from).
+# Cell folder under the qwen_native_vs_araroopat experiment dir, next to the older rule sets.
 experiment:
-  name: native_qwen3_base_m2_c2400
-  description: "Qwen3-4B-Base + native tokenizer, untrained control (no phases), free-form eval only — stop markers v2 (exact template labels), 2400-char budget"
-  output_dir: outputs/experiments/qwen_native_vs_araroopat/native_qwen3_base_m2_c2400
+  name: native_qwen3_base_m2_c1200
+  description: "Qwen3-4B-Base + native tokenizer, untrained control (no phases), free-form eval only — stop markers v2 (exact template labels), 1200-char budget"
+  output_dir: outputs/experiments/qwen_native_vs_araroopat/native_qwen3_base_m2_c1200
   created_at: "2026-09-21T09:05:24+00:00"
   seed: 42
   deterministic: true
   runs:
-    - {started_at: "2026-09-21T09:14:58+00:00", run_id: "20260921-091458_qwen_native_base_m2_c2400", source: console}
+    - {started_at: "2026-09-21T09:06:38+00:00", run_id: "20260921-090638_qwen_native_base_m2_c1200", source: console}
 data:
   dataset_name: Jr23xd23/ArabicText-Large
   dataset_config: null
@@ -254,4 +256,4 @@ sweep:
       model_name_or_path: Qwen/Qwen3-4B-Base
   tasks:
   - type: freeform_cidar
-    params: {max_output_chars: 2400}
+    params: {max_output_chars: 1200}

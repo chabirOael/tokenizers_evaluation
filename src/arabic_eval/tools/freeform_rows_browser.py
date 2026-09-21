@@ -18,6 +18,8 @@ from collections import OrderedDict
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
+from arabic_eval.evaluation.eval_rows import is_superseded
+
 TASK = "freeform_cidar"
 GENERATIONS_REL = Path("eval_rows") / f"{TASK}.parquet"
 JUDGE_DIR = "freeform_judge"
@@ -118,7 +120,7 @@ def _cell_summary(cell_dir: Path) -> Dict[str, Any]:
     task = ((am.get("downstream") or {}).get(TASK)) or {}
     tok = cfg.get("tokenizer") or {}
     keep = ("chrf", "bertscore_f1", "degenerate_rate", "empty_rate", "latin_rate", "hit_cap_rate", "loop_stop_rate",
-            "reference_roundtrip_chrf", "gen_chars_per_sec", "mean_gen_chars", "token_cap", "num_samples")
+            "reference_roundtrip_chrf", "gen_chars_per_sec", "mean_gen_chars", "token_cap", "max_output_chars", "num_samples")
     return {
         "tokenizer": tok.get("type"), "vocab_size": tok.get("vocab_size"),
         "model": (cfg.get("model") or {}).get("name_or_path"),
@@ -137,9 +139,10 @@ def discover(repo_root: Path) -> Dict[str, Any]:
     experiments: "OrderedDict[str, Dict[str, Any]]" = OrderedDict()
     if not base.is_dir():
         return {"experiments": []}
-    cells: List[Path] = set()
-    cells = {p.parent.parent for p in base.glob(f"**/eval_rows/{TASK}.parquet")}
+    cells = {p.parent.parent for p in base.glob(f"**/eval_rows/{TASK}.parquet") if not is_superseded(p, base)}
     for am in base.glob("**/all_metrics.json"):           # unsupported cells (no dump) still listed
+        if is_superseded(am, base):
+            continue
         d = _read_json(am) or {}
         if ((d.get("downstream") or {}).get(TASK) or {}).get("status") == "generation_unsupported":
             cells.add(am.parent)

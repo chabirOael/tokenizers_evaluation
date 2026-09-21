@@ -135,6 +135,11 @@ class TestPromptAndBudget:
         assert derive_token_cap(cfg, 1.0) == 1388           # char-level: ~4x the BPE cap
         assert derive_token_cap(cfg, 100.0) == cfg.token_cap_floor
         assert derive_token_cap(cfg, 0.01) == cfg.token_cap_ceiling
+        # the default budget (2400 since 2026-09-21) still fits char-JABER under the 4096 ceiling
+        default = DecodingConfig()
+        assert default.max_output_chars == 2400
+        assert derive_token_cap(default, 2.299) == 1209     # native Qwen3 on the references (2.299 chars/token): the measured cap
+        assert derive_token_cap(default, 1.0) == 2768 < default.token_cap_ceiling
 
     def test_chars_per_token_measured_on_the_tokenizer(self, tokenizer):
         cpt = measure_chars_per_token(tokenizer, ["الكتاب على الطاولة"])   # 18 chars / (3 words + BOS + EOS)
@@ -146,12 +151,54 @@ class TestPromptAndBudget:
         assert strip_trailing_eos([1, 5, 6, 2], None) == [1, 5, 6, 2]
         assert truncate_at_marker("جواب\nالسؤال: آخر", ("\nالسؤال:",)) == ("جواب", True)
         assert truncate_at_marker("جواب طويل", ("\nالسؤال:",)) == ("جواب طويل", False)
-        assert truncate_at_marker("أ\n###ب\nالسؤال:ج", ("\nالسؤال:", "\n###")) == ("أ", True)
-        # v2 header restart is a stop marker by default; a "فيما يلي" mid-line is not.
-        from arabic_eval.tasks.freeform.generation import DEFAULT_STOP_MARKERS
-        assert "\nفيما يلي" in DEFAULT_STOP_MARKERS
-        assert truncate_at_marker("جواب.\nفيما يلي تعليمات تصف مهمة.", DEFAULT_STOP_MARKERS) == ("جواب.", True)
-        assert truncate_at_marker("جواب فيما يلي أمثلة", DEFAULT_STOP_MARKERS) == ("جواب فيما يلي أمثلة", False)
+        assert truncate_at_marker("أ\n### الإجابة:\nب\nالسؤال:ج", ("\nالسؤال:", "\n### الإجابة:")) == ("أ", True)
+
+    def test_default_markers_are_the_templates_exact_labels(self):
+        """A stop marker is the model starting a new prompt block in the templates'
+        exact words. A bare ``\\n###`` cut every markdown sub-header the model opened
+        inside its answer (5 of the 5 marker stops of the untrained Qwen3-4B control were
+        ``### ملاحظات:``-style headings, 2026-09-21) and ``\\nفيما يلي`` would cut a
+        ``فيما يلي قائمة …`` line, so neither is a marker any more."""
+        markers = G.DEFAULT_STOP_MARKERS
+        assert "\n###" not in markers and "\nفيما يلي" not in markers
+        for label in (fc.INSTRUCTION_LABEL, fc.INPUT_LABEL, fc.CONTEXT_LABEL, fc.QUESTION_LABEL, fc.ANSWER_LABEL):
+            assert "\n" + label in markers, label
+        for header in (fc.INSTRUCTION_HEADER, fc.INSTRUCTION_HEADER_WITH_INPUT, fc.QA_HEADER):
+            assert G.header_restart_marker(header) in markers, header
+        assert set(G.HEADER_STOP_MARKERS) == {"\nفيما يلي تعليمات", "\nفيما يلي نص"}
+        assert markers[:3] == ("\nالسؤال:", "\nالسياق:", "\nالإجابة:")          # the flat v1 blocks stay
+        assert len(markers) == len(set(markers)) == 10
+        # a section label or a header restart stops …
+        assert truncate_at_marker("جواب.\n### الإجابة:\nآخر", markers) == ("جواب.", True)
+        assert truncate_at_marker("جواب.\n### التعليمات:\nآخر", markers) == ("جواب.", True)
+        assert truncate_at_marker("جواب.\nفيما يلي تعليمات تصف مهمة.", markers) == ("جواب.", True)
+        assert truncate_at_marker("جواب.\nفيما يلي نص وسؤال عنه.", markers) == ("جواب.", True)
+        # … the model's own markdown sub-header or list intro does not
+        for text in ("النقطة الأولى.\n### مثال متكامل:\nمثال", "شرح.\n### ملاحظات:\nملاحظة",
+                     "جواب.\nفيما يلي قائمة بالمتطلبات:\n- أ", "جواب فيما يلي أمثلة", "أ\n#### عنوان\nب"):
+            assert truncate_at_marker(text, markers) == (text, False), text
+        assert DecodingConfig().stop_markers == markers
+
+    def test_console_preset_equals_the_code_defaults(self):
+        """``configs/tasks/freeform_cidar.yaml`` is a console preset — the pipeline reads
+        only ``sweep.tasks[].params`` of the experiment YAML, so the preset must equal
+        the ``DecodingConfig`` defaults or the two drift silently (the preset said 2400
+        while every run decoded 1200, 2026-09-21)."""
+        import yaml
+        from arabic_eval.tasks.freeform.cidar import DEFAULT_HELDOUT_PATH
+        preset = yaml.safe_load((Path(__file__).resolve().parents[1] / "configs" / "tasks" / "freeform_cidar.yaml")
+                                .read_text(encoding="utf-8"))
+        assert preset["task"]["type"] == "freeform_cidar"
+        params = preset["task"]["params"]
+        defaults = DecodingConfig()
+        assert params["heldout_path"] == DEFAULT_HELDOUT_PATH
+        for key in ("max_output_chars", "max_prompt_tokens", "batch_size", "token_cap_margin", "token_cap_floor",
+                    "token_cap_ceiling", "marker_check_every", "loop_stop", "seed"):
+            assert key in params and params[key] == getattr(defaults, key), key
+        assert tuple(params["stop_markers"]) == defaults.stop_markers
+        task = FreeformCidarTask(params)                       # the preset builds the same decoding config …
+        assert task.decoding == defaults
+        assert FreeformCidarTask({}).decoding == defaults        # … as an empty params dict does
 
     def test_generation_support_by_embedding_family(self):
         for et in (EmbeddingType.STANDARD, EmbeddingType.CHAR_JABER):
@@ -380,7 +427,7 @@ class TestEvaluate:
         out = task.evaluate(adapter, tokenizer, max_samples=5, row_dump_dir=tmp_path / "eval_rows")
         assert out["status"] == "ok" and out["num_samples"] == 5
         assert set(METRIC_NAMES) <= set(out) and out["bertscore_f1"] is None
-        assert out["token_cap"] == 12 and out["generation_wall_sec"] > 0
+        assert out["token_cap"] == 12 and out["max_output_chars"] == 60 and out["generation_wall_sec"] > 0
         assert 0.0 <= out["degenerate_rate"] <= 1.0 and out["reference_roundtrip_chrf"] == pytest.approx(100.0)
         import pyarrow.parquet as pq
         t = pq.read_table(tmp_path / "eval_rows" / "freeform_cidar.parquet")

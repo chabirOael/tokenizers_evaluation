@@ -1,17 +1,19 @@
-# SFT arm, evaluated again after the 2026-09-20 loop-stop fix (periodic-tail rule, cut after the
-# first copy): the Phase 3 checkpoint of `native_qwen3_sft` (a full save_pretrained directory) is
-# loaded as the model, every phase is disabled, and only the free-form eval runs — same weights,
-# same greedy decoding, so generations equal the old `generation_raw` up to the stop. Own cell
-# folder next to `native_qwen3_sft` (the pre-fix numbers) under the same experiment dir.
+# Reference SFT cell (2026-09-21): the Phase 3 checkpoint of `native_qwen3_sft` (a full
+# save_pretrained directory) loaded as the model, every phase disabled, free-form eval only under
+# the current decoding rules — stop markers v2 (the templates' exact section labels) and the
+# 2400-character budget, both pinned in `sweep.tasks[].params` (the only place the pipeline reads
+# them from). Re-running this file reproduces the reference cell byte for byte (greedy decoding);
+# the earlier rule sets live in `_superseded/` next to it, `native_qwen3_sft` (the training run,
+# pre-fix eval) stays as a documented cell.
 experiment:
-  name: native_qwen3_sft_reeval
-  description: Qwen3-4B-Base SFT checkpoint (native_qwen3_sft, LR 2e-5, mixture 40/30/30) + native tokenizer, eval only — free-form after the loop-stop fix
-  output_dir: outputs/experiments/qwen_native_vs_araroopat/native_qwen3_sft_reeval
-  created_at: "2026-09-20T11:50:00+00:00"
+  name: native_qwen3_sft_m2_c2400
+  description: "Qwen3-4B-Base SFT checkpoint (native_qwen3_sft, LR 2e-5, mixture 40/30/30) + native tokenizer, eval only — stop markers v2 (exact template labels), 2400-char budget"
+  output_dir: outputs/experiments/qwen_native_vs_araroopat/native_qwen3_sft_m2_c2400
+  created_at: "2026-09-21T09:05:24+00:00"
   seed: 42
   deterministic: true
   runs:
-    - {started_at: "2026-09-20T12:01:18+00:00", run_id: "20260920-120118_qwen_native_sft_reeval", source: console}
+    - {started_at: "2026-09-21T09:31:20+00:00", run_id: "20260921-093120_qwen_native_sft_m2_c2400", source: console}
 data:
   dataset_name: Jr23xd23/ArabicText-Large
   dataset_config: null
@@ -252,4 +254,4 @@ sweep:
       model_name_or_path: Qwen/Qwen3-4B-Base
   tasks:
   - type: freeform_cidar
-    params: {}
+    params: {max_output_chars: 2400}

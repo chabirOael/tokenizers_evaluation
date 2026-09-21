@@ -82,6 +82,17 @@ class TestBrowser:
         assert nl["n_rows"] == 12 and nl["tokenizer"] == "native_llama" and nl["token_cap"] == 300
         assert sw["judges"] == [] and nl["judges"] == []       # judges from all_metrics (merged by the judge stage), none here
 
+    def test_superseded_cells_are_skipped(self, repo):
+        """``<experiment>/_superseded/<cell>`` keeps every file of a superseded cell
+        (moved, never deleted) but is neither a cell of the experiment nor an
+        experiment of its own; the cross-variant view does not see it either."""
+        _cell(repo, "sweep/_superseded", "native_llama_old_rules", "native_llama", judges=[("ja", 1, 0)])
+        d = B.discover(repo)
+        exps = {e["experiment"]: e for e in d["experiments"]}
+        assert set(exps) == {"sweep", "single_exp"}
+        assert [c["cell"] for c in exps["sweep"]["cells"]] == ["bpe_32k", "native_llama", "charformer"]
+        assert [a["cell"] for a in B.row(repo, "outputs/experiments/sweep/native_llama", "cidar-3")["across"]] == ["bpe_32k"]
+
     def test_query_joins_judges_and_filters(self, repo):
         cell = "outputs/experiments/sweep/native_llama"
         d = B.query(repo, cell, {})

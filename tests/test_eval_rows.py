@@ -457,6 +457,20 @@ class TestDiscovery:
     def test_empty_tree(self, tmp_path: Path):
         assert browser.discover(tmp_path / "nothing")["experiments"] == []
 
+    def test_superseded_cells_are_not_listed(self, tmp_path: Path):
+        """A cell moved into ``<experiment>/_superseded/`` keeps its dump but is not a
+        live cell: the recursive discovery skips the folder instead of listing it as
+        a ``sweep_demo/_superseded`` experiment."""
+        from arabic_eval.evaluation.eval_rows import SUPERSEDED_DIR, is_superseded
+        repo = _sweep_tree(tmp_path)
+        base = repo / "outputs" / "experiments"
+        _make_dump(base / "sweep_demo" / SUPERSEDED_DIR / "bpe_32k_old", n=4)
+        found = browser.discover(repo)["experiments"]
+        assert [e["experiment"] for e in found] == ["solo_run", "sweep_demo"]
+        assert [c["cell"] for c in next(e for e in found if e["experiment"] == "sweep_demo")["cells"]] == ["bpe_32k", "charformer"]
+        assert is_superseded(base / "sweep_demo" / SUPERSEDED_DIR / "x" / "eval_rows", base)
+        assert not is_superseded(base / "sweep_demo" / "bpe_32k" / "eval_rows", base)
+
 
 class TestQuery:
     def _repo_and_path(self, tmp_path: Path):

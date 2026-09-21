@@ -62,6 +62,12 @@ DEFAULT_ROW_GROUP_SIZE = 2000
 PROGRESS_EVERY = 500
 PARQUET_COMPRESSION = "zstd"
 METADATA_KEY = b"arabic_eval"
+# Superseded cells are *moved*, never deleted, into ``<experiment>/_superseded/`` (a
+# README there names the rule set and budget of each). The console browsers walk
+# ``outputs/experiments`` recursively and skip anything under such a folder, so a
+# superseded cell is not listed as a live one; the one-level cell discoveries (the
+# judge, the rating tab, ``compare_results.py``) never see it in the first place.
+SUPERSEDED_DIR = "_superseded"
 
 #: What one unit of ``prompt_units`` means, per embedding family. Recorded in
 #: the file metadata so a reader can label the column honestly: a "token" is a
@@ -390,6 +396,15 @@ class EvalRowWriter:
 # --------------------------------------------------------------------------
 # Reader
 # --------------------------------------------------------------------------
+
+def is_superseded(path: str | Path, base: str | Path) -> bool:
+    """True when ``path`` lies under a ``SUPERSEDED_DIR`` folder below ``base``."""
+    try:
+        parts = Path(path).resolve().relative_to(Path(base).resolve()).parts
+    except ValueError:
+        parts = Path(path).parts
+    return SUPERSEDED_DIR in parts
+
 
 def read_progress(path: str | Path) -> Optional[Dict[str, Any]]:
     """Read the ``<stem>.progress.json`` of an in-flight dump, if any.

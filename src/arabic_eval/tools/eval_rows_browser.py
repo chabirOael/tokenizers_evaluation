@@ -30,7 +30,7 @@ from collections import OrderedDict
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
-from arabic_eval.evaluation.eval_rows import EvalRowFile, read_progress
+from arabic_eval.evaluation.eval_rows import EvalRowFile, is_superseded, read_progress
 
 logger = logging.getLogger("arabic_eval.tools.eval_rows_browser")
 
@@ -157,7 +157,7 @@ def discover(repo_root: Path) -> Dict[str, Any]:
         return {"experiments": []}
 
     for rows_dir in sorted(base.glob("**/eval_rows")):
-        if not rows_dir.is_dir():
+        if not rows_dir.is_dir() or is_superseded(rows_dir, base):
             continue
         cell_dir = rows_dir.parent
         rel_parts = cell_dir.relative_to(base).parts

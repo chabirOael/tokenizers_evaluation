@@ -12,8 +12,9 @@ nature) and would be a confound. Repetition loops are left for the metrics
 and the judge to penalize.
 
 Stops: the tokenizer's EOS; a stop marker in the decoded text (the model
-starting a new ``### `` section or a header line is the common failure of a
-small SFT'd model); a **repetition loop** in the decoded text —
+starting a new prompt block — a template section label or a header line, in
+the templates' exact words, is the common failure of a small SFT'd model); a
+**repetition loop** in the decoded text —
 ``metrics.detect_loop``: the text *ends* in enough contiguous copies of one
 unit of up to ``LOOP_MAX_PERIOD`` words (a periodic tail; 5 copies of a
 single word, 4 of a unit of ≤ 3 words, 3 beyond, a trailing partial copy
@@ -44,6 +45,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, List, NamedTuple, Optional, Sequence, Tuple
 
+from arabic_eval.data import finetune_corpora as templates
 from arabic_eval.models.base import BaseModelAdapter
 from arabic_eval.tasks.freeform.metrics import Loop, detect_loop
 from arabic_eval.tokenizers.base import BaseTokenizer, EmbeddingType
@@ -52,15 +54,40 @@ logger = logging.getLogger(__name__)
 
 STOP_REASONS: Tuple[str, ...] = ("eos", "marker", "loop", "cap")
 
-# A new block of the flat v1 template, a new ``### `` section of the sectioned
-# v2 templates, or the model restarting a prompt with a header line
-# ("فيما يلي …" opens every v2 header).
-DEFAULT_STOP_MARKERS: Tuple[str, ...] = ("\nالسؤال:", "\nالسياق:", "\nالإجابة:", "\n###", "\nفيما يلي")
+# Stop markers = the model starting a new prompt block, in the exact words of the
+# templates: the three block labels of the flat v1 template, the five ``### ``
+# section labels of the sectioned v2 templates, and a header restart (the first
+# three words of each v2 header — ``فيما يلي تعليمات`` / ``فيما يلي نص``). Derived
+# from the constants of ``data.finetune_corpora`` so a template change moves the
+# markers with it. Nothing looser: under the v2 template ``### `` is both the
+# prompt's section syntax and ordinary markdown, and a bare ``\n###`` cut every
+# sub-header the model opened inside its own answer (``### ملاحظات:``,
+# ``### مثال متكامل:`` — 5 of the 5 marker stops of the untrained Qwen3-4B
+# control, 2026-09-21); ``\nفيما يلي`` alone would cut a ``فيما يلي قائمة …``
+# line. A marker is looked for anywhere in the decoded text (line start = the
+# leading newline).
+V1_STOP_MARKERS: Tuple[str, ...] = ("\nالسؤال:", "\nالسياق:", "\nالإجابة:")
+HEADER_MARKER_WORDS = 3
+
+
+def header_restart_marker(header: str) -> str:
+    """``"\n"`` + the first ``HEADER_MARKER_WORDS`` words of a template header."""
+    return "\n" + " ".join(header.split()[:HEADER_MARKER_WORDS])
+
+
+LABEL_STOP_MARKERS: Tuple[str, ...] = tuple("\n" + label for label in (
+    templates.INSTRUCTION_LABEL, templates.INPUT_LABEL, templates.CONTEXT_LABEL, templates.QUESTION_LABEL,
+    templates.ANSWER_LABEL,
+))
+HEADER_STOP_MARKERS: Tuple[str, ...] = tuple(dict.fromkeys(header_restart_marker(h) for h in (
+    templates.INSTRUCTION_HEADER, templates.INSTRUCTION_HEADER_WITH_INPUT, templates.QA_HEADER,
+)))
+DEFAULT_STOP_MARKERS: Tuple[str, ...] = V1_STOP_MARKERS + LABEL_STOP_MARKERS + HEADER_STOP_MARKERS
 
 
 @dataclass
 class DecodingConfig:
-    max_output_chars: int = 1200
+    max_output_chars: int = 2400     # 1200 until 2026-09-21: it cut 11 finished answers and capped 12 of the control's 250
     max_prompt_tokens: int = 512
     batch_size: int = 16
     token_cap_margin: float = 1.15

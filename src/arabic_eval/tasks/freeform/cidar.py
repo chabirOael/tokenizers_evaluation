@@ -59,7 +59,7 @@ METRIC_NAMES = [
     "empty_rate", "degenerate_rate", "latin_rate", "arabic_letter_ratio",
     "hit_cap_rate", "loop_stop_rate", "marker_stop_rate", "eos_rate", "char_truncated_rate",
     "mean_gen_chars", "mean_gen_tokens", "mean_ref_chars", "gen_chars_per_sec", "gen_tokens_per_sec",
-    "generation_wall_sec", "reference_roundtrip_chrf", "chars_per_token", "token_cap", "num_samples",
+    "generation_wall_sec", "reference_roundtrip_chrf", "chars_per_token", "token_cap", "max_output_chars", "num_samples",
 ]
 
 
@@ -89,7 +89,7 @@ class FreeformCidarTask(BaseTask):
     ``num_fewshot`` are ignored):
 
     ``heldout_path`` — the JSONL (default the committed v1 set);
-    ``max_output_chars`` 1200, ``max_prompt_tokens`` 512, ``batch_size`` 16,
+    ``max_output_chars`` (``DecodingConfig`` default), ``max_prompt_tokens`` 512, ``batch_size`` 16,
     ``token_cap_margin`` 1.15, ``token_cap_floor`` 32, ``token_cap_ceiling``
     4096, ``stop_markers``, ``marker_check_every`` 16, ``seed`` 42 — see
     ``DecodingConfig``; ``bertscore_model`` (``null`` skips BERTScore),
@@ -99,8 +99,12 @@ class FreeformCidarTask(BaseTask):
     def __init__(self, config: Dict[str, Any]) -> None:
         cfg = dict(config or {})
         self.heldout_path = resolve_heldout_path(cfg.get("heldout_path") or DEFAULT_HELDOUT_PATH)
+        # The pipeline hands a task only ``sweep.tasks[].params`` of the experiment YAML;
+        # ``configs/tasks/freeform_cidar.yaml`` is a console preset (a test pins it to these
+        # defaults), so an absent key means the ``DecodingConfig`` default, not the preset.
+        defaults = DecodingConfig()
         self.decoding = DecodingConfig(
-            max_output_chars=int(cfg.get("max_output_chars", 1200)),
+            max_output_chars=int(cfg.get("max_output_chars", defaults.max_output_chars)),
             max_prompt_tokens=int(cfg.get("max_prompt_tokens", 512)),
             batch_size=int(cfg.get("batch_size", 16)),
             token_cap_margin=float(cfg.get("token_cap_margin", 1.15)),
@@ -164,6 +168,7 @@ class FreeformCidarTask(BaseTask):
         prompts = [self.build_prompt(r) for r in rows]
         references = [r["reference"] for r in rows]
 
+        logger.info("%s: decoding config %s", TASK_NAME, self.decoding.to_json())
         cpt = measure_chars_per_token(tokenizer, references)
         token_cap = derive_token_cap(self.decoding, cpt)
         logger.info("%s: %d prompts, %.2f chars/token → token cap %d for %d chars (batch %d)",
@@ -216,7 +221,8 @@ class FreeformCidarTask(BaseTask):
                 logger.warning("%s: BERTScore failed (%s: %s); reported as None", TASK_NAME, type(e).__name__, e)
 
         metrics = M.summarize(records, gen_wall)
-        metrics.update({"chars_per_token": round(cpt, 4), "token_cap": token_cap, "status": "ok"})
+        metrics.update({"chars_per_token": round(cpt, 4), "token_cap": token_cap,
+                        "max_output_chars": self.decoding.max_output_chars, "status": "ok"})
 
         if row_dump_dir is not None:
             path = Path(row_dump_dir) / f"{TASK_NAME}.parquet"
