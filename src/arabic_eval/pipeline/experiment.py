@@ -33,6 +33,7 @@ from arabic_eval.data.loader import extract_texts, load_arabic_dataset
 from arabic_eval.evaluation.evaluator import Evaluator
 from arabic_eval.evaluation.metrics import compute_mei
 from arabic_eval.evaluation.reporter import generate_report
+from arabic_eval.params_spec import specs_by_name, validate_params
 from arabic_eval.registry import model_registry, task_registry, tokenizer_registry
 from arabic_eval.tasks.lighteval import LightEvalBenchmarkTask
 from arabic_eval.tokenizers.provenance import write_training_provenance
@@ -316,6 +317,39 @@ def _run_all_phases(
 # Single experiment (one tokenizer, multiple tasks)
 # --------------------------------------------------------------------------
 
+def _task_params(task_cls: type, params: Dict[str, Any], config: ExperimentConfig) -> Dict[str, Any]:
+    """The params a task is constructed with: the YAML's ``sweep.tasks[].params``
+    plus the global ``evaluation.num_fewshot`` — injected **only when the task's
+    ``param_spec`` declares ``num_fewshot``** (the LightEval MCQ tasks) and the
+    YAML did not set it. It used to go into every task; the free-form task
+    ignored it and the console flagged it as an undeclared key."""
+    task_params = dict(params)
+    declared = specs_by_name(task_cls.param_spec())
+    if "num_fewshot" in declared:
+        task_params.setdefault("num_fewshot", config.evaluation.num_fewshot)
+    return task_params
+
+
+def _warn_task_params(config: ExperimentConfig) -> List[str]:
+    """Advisory check of every ``sweep.tasks[].params`` against the task's
+    ``param_spec`` at run start — before hours of training, not at Step 6.
+    Each finding is one WARNING line; nothing is fatal (an old YAML with a key a
+    task no longer reads keeps running exactly as before, the key is ignored).
+    Returns the findings (for tests)."""
+    findings: List[str] = []
+    for i, task_cfg in enumerate(config.sweep.tasks if config.sweep else []):
+        try:
+            task_cls = task_registry.get(task_cfg.type)
+        except KeyError as e:
+            findings.append(f"sweep.tasks[{i}]: {e}")
+            continue
+        for msg in validate_params(task_cls.param_spec(), task_cfg.params, owner=task_cfg.type):
+            findings.append(f"sweep.tasks[{i}].params: {msg}")
+    for f in findings:
+        logger.warning("task params: %s", f)
+    return findings
+
+
 def run_experiment(config: ExperimentConfig) -> Dict[str, Any]:
     """Run one experiment: train tokenizer → intrinsic → 3 phases → eval all tasks.
 
@@ -338,6 +372,7 @@ def run_experiment(config: ExperimentConfig) -> Dict[str, Any]:
     logger.info("Model: %s", config.model.name_or_path)
     logger.info("Eval tasks: %s", [t.type for t in config.sweep.tasks])
     logger.info("=" * 60)
+    _warn_task_params(config)
 
     save_json(config.model_dump(), output_dir / "config.json")
 
@@ -436,12 +471,7 @@ def run_experiment(config: ExperimentConfig) -> Dict[str, Any]:
         for task_cfg in config.sweep.tasks:
             task_type = task_cfg.type
             task_cls = task_registry.get(task_type)
-            # Inject the global ``num_fewshot`` setting into per-task params
-            # unless the YAML overrode it explicitly. LightEval MCQ tasks
-            # honor this; non-LightEval tasks ignore it (no harm).
-            task_params = dict(task_cfg.params)
-            task_params.setdefault("num_fewshot", config.evaluation.num_fewshot)
-            task = task_cls(task_params)
+            task = task_cls(_task_params(task_cls, task_cfg.params, config))
 
             eval_kwargs: Dict[str, Any] = {
                 "split": "test",

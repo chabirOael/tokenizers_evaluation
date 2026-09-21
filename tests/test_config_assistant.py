@@ -294,6 +294,16 @@ def test_field_reference_lists_every_hint():
     assert "### training" in ref and "\n" not in ref.split("- data.preprocessing — ")[1].split("\n")[0][:-1]
 
 
+def test_reference_contains_the_declared_task_params():
+    """The model must set task params by their declared names: the registries section renders
+    every task's ``param_spec()`` (name, type, default, help)."""
+    text = ca._presets_text(schema_bundle(REAL))
+    assert "### task params" in text
+    assert "- freeform_cidar:" in text and "max_output_chars (int, default 2400)" in text
+    assert "- acva:" in text and "num_fewshot (int, default 0)" in text
+    assert "max_output_chars" in ca.ContextBuilder(REAL).system_prompt()
+
+
 def test_system_prompt_on_the_real_repo_and_caching(tmp_repo: ConsolePaths):
     b = ca.ContextBuilder(REAL)
     s = b.system_prompt()

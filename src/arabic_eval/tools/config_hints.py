@@ -277,8 +277,8 @@ FIELD_HINTS: Dict[str, Tuple[str, str]] = {
                                        '16000, 32000, 50000 → bpe_16k, bpe_32k, bpe_50k · null → charformer'),
     'sweep.tokenizers.*.params': ('Tokenizer knobs for this cell, one key per line (overrides tokenizer.params).',
                                   'min_frequency: 2'),
-    'sweep.tasks.*.params': ('Per-task overrides, one key per line. Empty = the defaults.',
-                             'num_fewshot: 0\nclean_latin_rows: true\nmax_length: 512\ndataset_name: OALL/ACVA'),
+    'sweep.tasks.*.params': ('The task\'s parameters, one typed row per key the task declares (its param_spec(); hover a row for its meaning). Only a value that differs from the code default is written to the file — pin a row to keep it explicit at its default. Keys the task does not declare are ignored at run time and flagged. This block is the ONLY place a run reads task params from; configs/tasks/<type>.yaml is generated documentation.',
+                             'num_fewshot: 0\nmax_length: 1024          (acva)\nmax_output_chars: 2400   (freeform_cidar, pinned)'),
     'params': ('Free key: value lines (numbers, true/false, null, quoted strings, [lists]).',
                'min_frequency: 2'),
 }

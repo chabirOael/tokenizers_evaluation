@@ -169,7 +169,19 @@ details.sec.sub{background:var(--sunken)}
 .row .rowhead .sw.inl input{width:26px;height:14px}
 .row .rowhead .sw.inl input::after{width:10px;height:10px}
 .row .rowhead .sw.inl input:checked::after{left:14px}
-.row input.inferred{color:var(--ink-3);background:var(--sunken);font-style:italic}
+.row input.inferred,.row textarea.inferred,.row select.inferred{color:var(--ink-3);background:var(--sunken);font-style:italic}
+/* typed task cards: one row per declared param, the default greyed (.inferred) when the key is absent */
+.row.warn input,.row.warn select,.row.warn textarea{border-color:var(--warn);background:var(--warn-soft)}
+.row .wmsg{color:var(--warn);font-size:11.5px}
+.tp-group{grid-column:1/-1;font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:var(--ink-3);margin-top:6px;border-bottom:1px solid var(--line);padding-bottom:2px}
+.tp-group.warn{color:var(--warn);border-color:var(--warn)}
+.row .pin{margin-left:auto;font-size:11px;color:var(--ink-3);display:inline-flex;align-items:center;gap:3px;cursor:pointer;opacity:.55;font-weight:400}
+.row .pin.on{opacity:1;color:var(--accent)}
+.row .pin.fixed{cursor:default}
+.row .pin input{position:absolute;opacity:0;width:0;height:0}
+.task-card .card-h .chip{padding:1px 7px;font-size:11px;cursor:pointer}
+.task-card .card-h .chip input{margin:0}
+.task-card .tp-more{margin-top:6px}
 .row .prov{display:flex;flex-wrap:wrap;gap:4px 14px;align-items:baseline;font-size:12.5px;color:var(--ink-2);padding:4px 0}
 .row .prov .mono{font-size:12px}
 .row .prov .runs{display:flex;flex-wrap:wrap;gap:3px 10px}
@@ -703,8 +715,8 @@ table.ev-ch tr.pred td{outline:1px solid var(--accent);outline-offset:-1px}
    state + helpers
    ========================================================================= */
 const S = {
-  schema:null, base:null, reg:null, presets:null, env:null,
-  configs:[], file:null, cfg:null, dirty:false, errors:[], yamlDirty:false, inferOut:true,
+  schema:null, base:null, reg:null, presets:null, env:null, taskParams:{},
+  configs:[], file:null, cfg:null, dirty:false, errors:[], paramWarnings:[], yamlDirty:false, inferOut:true,
   open:new Set(['', 'sweep', 'training', 'tokenizer', 'model']),
   runs:[], run:null, runDetail:null, runSort:{key:'started', desc:true}, logOffset:0, logRows:[], logCur:'', logTb:false, logFilter:'', logHideProg:false, logBig:false, runsOpen:true, pollT:null, view:'configs', etab:'form',
 };
@@ -834,7 +846,14 @@ const SECTION_ORDER = ['experiment','sweep','tokenizer','model','training','eval
    a bare key (no dots) is the fallback for any path ending in it. ---- */
 let HINTS = {};
 const normPath = p => p.replace(/\.\d+(?=\.|$)/g, '.*').replace(/^training\.phases\.(embedding_alignment|warmup|sft)/, 'training.phases.*');
+const TP_PATH_RE = /^sweep\.tasks\.(\d+)\.params\.(.+)$/;
 function hintFor(path){
+  const m = TP_PATH_RE.exec(path);                      // a typed task-param row: the spec's help is the hint
+  if (m && S.cfg && S.cfg.sweep){
+    const t = (S.cfg.sweep.tasks||[])[Number(m[1])];
+    const sp = t && (taskSpec(t.type)||[]).find(x => x.name===m[2]);
+    if (sp) return {key: `${t.type} · ${sp.name} (${sp.type}${sp.nullable?' | null':''})`, text: sp.help, example: `default ${tpShow(sp, sp.default)}`};
+  }
   const n = normPath(path);
   const hit = HINTS[n] || HINTS[n.split('.').pop()];
   return hit ? {key: path, text: hit[0], example: hit[1]} : null;
@@ -1034,17 +1053,155 @@ function sweepSection(){
   const checks = h('div', {class:'checks'});
   known.forEach(t => { const cb = h('input', {type:'checkbox', onchange: e => { if (e.target.checked) sw.tasks.push({type:t, params:{}}); else sw.tasks = sw.tasks.filter(x=>x.type!==t); markDirty(); renderForm(); }}); cb.checked = enabled.has(t); checks.append(h('label', {}, cb, t)); });
   tasks.append(checks);
-  (sw.tasks||[]).forEach((t, i) => {
-    const card = h('div', {class:'card'});
-    card.append(h('div', {class:'card-h'}, h('span', {class:'t'}, t.type), attachHint(h('label', {class:'hint'}, 'params'), `sweep.tasks.${i}.params`), h('span', {class:'x'},
-      h('button', {class:'btn sm', title:'fill from configs/tasks', onclick: () => { const pr = S.presets.tasks[t.type]; if (pr && pr.params){ t.params = deep(pr.params); markDirty(); renderForm(); } }}, 'preset'))));
-    const row = h('div', {class:'row wide'});
-    const ta = h('textarea', {placeholder:'key: value  (e.g. num_fewshot: 0, clean_latin_rows: true)', onchange: e => { try { t.params = parseFlat(e.target.value); markDirty(); row.classList.remove('err'); } catch(err){ row.classList.add('err'); } }});
-    ta.value = fmtFlat(t.params||{}); row.append(ta); card.append(row); tasks.append(card);
-  });
+  (sw.tasks||[]).forEach((t, i) => tasks.append(taskCard(t, i)));
   body.append(section('sweep.tasks', 'eval tasks', tasks, {sub:true, badge: `${(sw.tasks||[]).length} task${(sw.tasks||[]).length===1?'':'s'}`}));
   const nullBtn = h('button', {class:'btn sm', style:'margin-left:auto', onclick: e => { e.preventDefault(); if (confirm('Remove the sweep block? The run would then have no eval tasks.')) { S.cfg.sweep = null; markDirty(); renderForm(); } }}, 'remove block');
   return section('sweep', 'sweep — tokenizer cells × eval tasks', body, {help: 'Training happens once per (tokenizer, vocab_size) cell; every cell is evaluated on every task.', extra: nullBtn});
+}
+
+/* ---- typed task cards. One row per parameter the task declares (`param_spec()`, served as
+   /api/schema → task_params); the value shown greyed (.inferred) is the code default when the key is
+   absent from params. Only non-default values are written: setting a field back to its default removes
+   the key, so the YAML stays minimal and the code default rules — unless the row is PINNED, which keeps
+   the key explicit at its default (how `max_output_chars: 2400` is frozen in the reeval configs). Keys
+   the task does not declare are listed under "not declared" with a warning and can be deleted, never
+   silently dropped. `raw` shows the same params as flat key: value text; both views edit one object. ---- */
+const TP = { raw: new Set(), more: new Set() };            // per task type: raw view on / advanced rows shown
+function taskSpec(type){ const sp = S.taskParams && S.taskParams[type]; return Array.isArray(sp) && sp.length ? sp : null; }
+const tpSame = (a, b) => JSON.stringify(a===undefined?null:a) === JSON.stringify(b===undefined?null:b);
+function tpShow(sp, v){                                     // compact display form of a param value
+  if (v===null || v===undefined) return 'null';
+  if (Array.isArray(v)) return sp && sp.type==='list[str]' ? `${v.length} item${v.length===1?'':'s'}` : `[${v.join(', ')}]`;
+  if (typeof v==='boolean') return v ? 'true' : 'false';
+  return String(v);
+}
+const tpEscLine = s => String(s).replace(/\\/g, '\\\\').replace(/\n/g, '\\n');          // one list item per textarea line
+const tpUnescLine = s => s.replace(/\\(\\|n)/g, (m, c) => c==='n' ? '\n' : '\\');
+function tpNumber(text, sp){
+  const t = text.trim();
+  if (t==='' ) return {v: undefined};
+  if (t==='null' || t==='~') return sp.nullable ? {v: null} : {err: 'not nullable'};
+  const n = Number(t); if (Number.isNaN(n)) return {err: `not a number: ${t}`};
+  if (sp.type==='int' && !Number.isInteger(n)) return {err: `not an integer: ${t}`};
+  if (sp.min!=null && n < sp.min) return {err: `must be ≥ ${sp.min}`};
+  if (sp.max!=null && n > sp.max) return {err: `must be ≤ ${sp.max}`};
+  return {v: n};
+}
+function taskParamWarnings(i){ return (S.paramWarnings||[]).filter(w => w.loc===`sweep.tasks.${i}.params`); }
+
+function taskCard(t, i){
+  const spec = taskSpec(t.type);
+  const p = `sweep.tasks.${i}.params`;
+  if (!t.params || typeof t.params !== 'object' || Array.isArray(t.params)) t.params = {};
+  const keys = Object.keys(t.params);
+  const card = h('div', {class:'card task-card', 'data-row': p});
+  const head = h('div', {class:'card-h'}, h('span', {class:'t'}, t.type), attachHint(h('label', {class:'hint'}, 'params'), p),
+    h('span', {class:'badge', title: keys.length ? `in the file: ${keys.join(', ')}` : 'no key in the file — every parameter at its code default'}, keys.length ? `${keys.length} in file` : 'all defaults'));
+  const x = h('span', {class:'x'});
+  if (spec){
+    const cb = h('input', {type:'checkbox', onchange: () => { TP.raw.has(t.type) ? TP.raw.delete(t.type) : TP.raw.add(t.type); renderForm(); }}); cb.checked = TP.raw.has(t.type);
+    x.append(h('label', {class:'chip', title:'edit the same params as flat key: value text (power users; the typed rows and this box edit one object)'}, cb, 'raw'), ' ',
+      h('button', {class:'btn sm', title:'remove every key — the task then runs on the code defaults of its param_spec() (the old "preset" button copied configs/tasks/<type>.yaml, which a run never reads)',
+        onclick: () => { if (!keys.length || confirm(`Remove every param of ${t.type}? The task then uses the code defaults.`)){ t.params = {}; markDirty(); renderForm(); } }}, 'defaults'));
+  }
+  head.append(x); card.append(head);
+  if (!spec || TP.raw.has(t.type)){
+    card.append(taskRawRow(t, i));
+    if (!spec) card.append(h('div', {class:'hint'}, `${t.type} declares no parameters (no param_spec) — keys are passed through unchecked.`));
+    return card;
+  }
+  const warns = taskParamWarnings(i), byKey = {};
+  for (const w of warns) (byKey[w.key||''] = byKey[w.key||''] || []).push(w.msg);
+  const rows = h('div', {class:'rows'});
+  const groups = [];
+  for (const sp of spec){ const g = sp.group || ''; let grp = groups.find(z => z.g===g); if (!grp){ grp = {g, items:[]}; groups.push(grp); } grp.items.push(sp); }
+  const showAdv = TP.more.has(t.type);
+  const hidden = spec.filter(sp => sp.advanced && !(sp.name in t.params) && !byKey[sp.name]).length;
+  for (const grp of groups){
+    const items = grp.items.filter(sp => showAdv || !sp.advanced || (sp.name in t.params) || byKey[sp.name]);
+    if (!items.length) continue;
+    if (grp.g) rows.append(h('div', {class:'tp-group'}, grp.g));
+    for (const sp of items) rows.append(taskParamRow(t, i, sp, byKey[sp.name]));
+  }
+  const declared = new Set(spec.map(sp => sp.name));
+  const unknown = keys.filter(k => !declared.has(k));
+  if (unknown.length){
+    rows.append(h('div', {class:'tp-group warn', title:'a run passes these keys to the task, which reads only the declared ones — they change nothing (the trap of 2026-09-21: an edited preset file that no run reads)'}, `⚠ not declared by ${t.type} — ignored at run time`));
+    for (const k of unknown) rows.append(taskUnknownRow(t, i, k, byKey[k]));
+  }
+  for (const msg of (byKey[''] || [])) rows.append(h('div', {class:'row wide wmsg'}, '⚠ ' + msg));
+  card.append(rows);
+  if (hidden || showAdv) card.append(h('button', {class:'btn sm tp-more', onclick: () => { showAdv ? TP.more.delete(t.type) : TP.more.add(t.type); renderForm(); }}, showAdv ? 'fewer' : `more… (${hidden} advanced)`));
+  return card;
+}
+function taskRawRow(t, i){
+  const row = h('div', {class:'row wide', 'data-row': `sweep.tasks.${i}.params`});
+  const ta = h('textarea', {placeholder:'key: value  (e.g. num_fewshot: 0, clean_latin_rows: true)', onchange: e => { try { t.params = parseFlat(e.target.value); markDirty(); row.classList.remove('err'); $$('.emsg', row).forEach(x=>x.remove()); renderForm(); } catch(err){ row.classList.add('err'); row.append(h('div', {class:'emsg'}, err.message)); } }});
+  ta.value = fmtFlat(t.params||{}); row.append(ta);
+  for (const w of taskParamWarnings(i)) row.append(h('div', {class:'wmsg'}, '⚠ ' + w.msg));
+  return row;
+}
+function taskParamRow(t, i, sp, msgs){
+  const path = `sweep.tasks.${i}.params.${sp.name}`;
+  const present = Object.prototype.hasOwnProperty.call(t.params, sp.name);
+  const value = present ? t.params[sp.name] : sp.default;
+  const isDefault = tpSame(value, sp.default);
+  const pinned = present && isDefault;                    // an explicit key at its default: the user's choice to freeze it
+  const list = sp.type==='list[str]';
+  const row = h('div', {class:'row tp' + (list?' wide':'') + (msgs?' warn':''), 'data-row': path});
+  const label = attachHint(h('label', {}, h('span', {class:'k'}, sp.name)), path);
+  const pinCb = h('input', {type:'checkbox'}); pinCb.checked = present; pinCb.disabled = present && !isDefault;
+  pinCb.onchange = () => { if (pinCb.checked) t.params[sp.name] = deep(value); else delete t.params[sp.name]; markDirty(); renderForm(); };
+  const pin = h('label', {class:'pin' + (present?' on':'') + (present && !isDefault?' fixed':''),
+    title: present && !isDefault ? 'written to the file because it differs from the default (type the default to drop it)'
+         : pinned ? 'pinned: written to the file although it equals the default — unpin to drop the key' : 'pin: write the key at its default so the value is frozen in the file'}, pinCb, '📌', present ? (isDefault ? 'pinned' : 'set') : '');
+  row.append(h('div', {class:'rowhead'}, label, pin));  // the pin beside the caption, not inside it (a label toggles its first checkbox)
+  const set = v => {                                     // v === undefined → back to the default
+    if (v===undefined || (tpSame(v, sp.default) && !pinned)) delete t.params[sp.name]; else t.params[sp.name] = v;
+    markDirty(); renderForm();
+  };
+  const fail = (input, msg) => { row.classList.add('err'); $$('.emsg', row).forEach(x=>x.remove()); row.append(h('div', {class:'emsg'}, msg)); };
+  let input;
+  if (sp.type==='bool'){
+    input = h('input', {type:'checkbox', onchange: e => set(e.target.checked)}); input.checked = !!value;
+    row.append(h('label', {class:'sw'}, input, h('span', {class:'hint' + (present?'':' inferred')}, (value ? 'on' : 'off') + (present ? '' : ' (default)'))));
+  } else if (sp.choices){
+    input = h('select', {class: present?'':'inferred', onchange: e => set(e.target.value===' null' ? null : sp.choices[Number(e.target.value)])});
+    if (sp.nullable) input.append(h('option', {value:' null'}, 'null'));
+    sp.choices.forEach((c, k) => input.append(h('option', {value:String(k), selected: tpSame(c, value)}, String(c))));
+    if (value===null && sp.nullable) input.value = ' null';
+    row.append(input);
+  } else if (sp.type==='int' || sp.type==='float'){
+    input = h('input', {type:'text', class:'mono' + (present?'':' inferred'), value: value===null ? 'null' : String(value), title: `default ${tpShow(sp, sp.default)}` + (sp.min!=null?` · min ${sp.min}`:'') + (sp.max!=null?` · max ${sp.max}`:''),
+      onchange: e => { const r = tpNumber(e.target.value, sp); if (r.err) fail(input, r.err); else set(r.v); }});
+    row.append(input);
+  } else if (list){
+    input = h('textarea', {class:'mono' + (present?'':' inferred'), spellcheck:'false', title:'one item per line; a newline inside an item is written \\n, a backslash \\\\',
+      onchange: e => { const items = e.target.value.split('\n').filter(l => l!=='').map(tpUnescLine); set(items.length ? items : (sp.default.length ? undefined : [])); }});
+    input.value = (Array.isArray(value) ? value : []).map(tpEscLine).join('\n');
+    input.style.minHeight = `${Math.min(220, 20 + 18 * Math.max(3, (value||[]).length))}px`;
+    row.append(input);
+  } else if (sp.type==='list[int]'){
+    input = h('input', {type:'text', class:'mono' + (present?'':' inferred'), value: (value||[]).join(', '), placeholder:'comma separated',
+      onchange: e => { try { const v = parseList(e.target.value, 'int'); set(v.length ? v : undefined); } catch(err){ fail(input, err.message); } }});
+    row.append(input);
+  } else {                                                   // str | path
+    input = h('input', {type:'text', class: (sp.type==='path'?'mono':'') + (present?'':' inferred'), value: value===null ? '' : String(value), placeholder: sp.nullable ? 'null' : `default ${sp.default}`,
+      onchange: e => { const v = e.target.value; set(v==='' ? (sp.nullable && sp.default!==null ? null : undefined) : v==='null' && sp.nullable ? null : v); }});
+    row.append(input);
+  }
+  for (const m of (msgs||[])) row.append(h('div', {class:'wmsg'}, '⚠ ' + m));
+  return row;
+}
+function taskUnknownRow(t, i, key, msgs){
+  const path = `sweep.tasks.${i}.params.${key}`;
+  const row = h('div', {class:'row tp warn', 'data-row': path});
+  const label = h('label', {title: (msgs||[]).join(' · ') || `${t.type} does not declare ${key}`}, h('span', {class:'k'}, '⚠ ' + key));
+  const del = h('button', {class:'btn sm', style:'margin-left:auto', title:'remove this key from params', onclick: () => { delete t.params[key]; markDirty(); renderForm(); }}, '✕');
+  row.append(h('div', {class:'rowhead'}, label, del));
+  const input = h('input', {type:'text', class:'mono', value: fmtScalar(t.params[key]), onchange: e => { t.params[key] = parseScalar(e.target.value); markDirty(); }});
+  row.append(input);
+  return row;
 }
 
 function tokenizerSection(){
@@ -1224,7 +1381,7 @@ async function openConfig(file){
   clearStatus();
   const d = await api('GET', `/api/configs/get?path=${encodeURIComponent(file)}`);
   S.file = file; S.cfg = d.resolved; S.dirty = false; S.yamlDirty = false; $('#dirty-chip').style.display='none';
-  S.errors = d.errors || []; syncInferOut();
+  S.errors = d.errors || []; S.paramWarnings = d.param_warnings || []; syncInferOut();
   $('#editor-title').textContent = file;
   $('#yaml').value = d.yaml;
   renderConfigList(); renderForm();
@@ -1238,15 +1395,15 @@ function newConfig(){
   cfg.name = 'new_experiment'; cfg.output_dir = 'outputs/experiments/new_experiment'; cfg.description = '';
   cfg.sweep = {tokenizers:[{type:'bpe', vocab_sizes:[32000], params:{min_frequency:2}}], tasks:[{type:'acva',params:{num_fewshot:0}},{type:'alghafa',params:{}},{type:'arabic_exam',params:{}}]};
   cfg.evaluation.score_normalization = 'char+pmi'; cfg.evaluation.num_eval_samples = null; cfg.evaluation.failure_reports = true;
-  S.file = null; S.cfg = cfg; S.errors = []; S.dirty = true; S.inferOut = true; $('#dirty-chip').style.display='';
+  S.file = null; S.cfg = cfg; S.errors = []; S.paramWarnings = []; S.dirty = true; S.inferOut = true; $('#dirty-chip').style.display='';
   $('#editor-title').textContent = 'new config (unsaved)'; $('#yaml').value = '';
   renderConfigList(); renderForm(); setEtab('form');
   $('#etab-results').innerHTML = '<div class="empty">no results yet</div>';
 }
 async function validate(quiet){
   if (!S.cfg) return null;
-  const v = await api('POST', '/api/config/validate', {config: S.cfg});
-  S.errors = v.errors || [];
+  const v = await api('POST', '/api/config/validate', {config: S.cfg, file: S.file});
+  S.errors = v.errors || []; S.paramWarnings = v.param_warnings || [];
   if (v.ok){ S.cfg = v.resolved; renderForm(); if (!quiet){ const warn = (v.warnings||[]); status(warn.length ? 'warn' : 'good', `valid — ${v.cells.length} cell${v.cells.length===1?'':'s'} (${v.cells.join(', ')})${v.sweep?' · will run with --sweep':' · single run, no --sweep'}` + (v.results.cells_done.length?` · results exist for ${v.results.cells_done.join(', ')} (skipped by run_sweep)`:v.results.exists?' · results exist in output_dir':''), warn.length ? warn.map(w => '⚠ ' + w) : undefined); } }
   else { renderForm(); status('bad', `${S.errors.length} validation error${S.errors.length===1?'':'s'}`, S.errors); }
   return v;
@@ -1259,8 +1416,8 @@ async function formToYaml(){
 }
 async function yamlToForm(){
   try {
-    const d = await api('POST', '/api/config/parse', {yaml: $('#yaml').value});
-    S.errors = d.errors || [];
+    const d = await api('POST', '/api/config/parse', {yaml: $('#yaml').value, file: S.file});
+    S.errors = d.errors || []; S.paramWarnings = d.param_warnings || [];
     S.cfg = d.ok ? d.resolved : deepMerge(deep(S.base), d.config);
     syncInferOut(); S.yamlDirty = false; markDirty(); renderForm(); setEtab('form');
     if (d.ok) status('good', 'YAML applied to the form'); else status('bad', 'YAML parsed but does not validate', d.errors);
@@ -2793,7 +2950,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   try {
     const b = await api('GET', '/api/schema');
-    S.schema = b.schema; S.base = b.base; S.reg = b.registries; S.presets = b.presets; S.env = b.env; HINTS = b.hints || {};
+    S.schema = b.schema; S.base = b.base; S.reg = b.registries; S.presets = b.presets; S.env = b.env; HINTS = b.hints || {}; S.taskParams = b.task_params || {};
     const env = $('#env-chip'); env.textContent = `${b.env.python.replace(/^.*\//,'')} · ${b.env.hf_token_set?'HF_TOKEN set':'no HF_TOKEN'}`; env.className = 'chip ' + (b.env.hf_token_set?'good':'warn');
     env.title = `${b.env.python} ${b.env.script}`;
     await loadConfigs();

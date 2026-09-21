@@ -179,26 +179,12 @@ class TestPromptAndBudget:
             assert truncate_at_marker(text, markers) == (text, False), text
         assert DecodingConfig().stop_markers == markers
 
-    def test_console_preset_equals_the_code_defaults(self):
-        """``configs/tasks/freeform_cidar.yaml`` is a console preset — the pipeline reads
-        only ``sweep.tasks[].params`` of the experiment YAML, so the preset must equal
-        the ``DecodingConfig`` defaults or the two drift silently (the preset said 2400
-        while every run decoded 1200, 2026-09-21)."""
-        import yaml
-        from arabic_eval.tasks.freeform.cidar import DEFAULT_HELDOUT_PATH
-        preset = yaml.safe_load((Path(__file__).resolve().parents[1] / "configs" / "tasks" / "freeform_cidar.yaml")
-                                .read_text(encoding="utf-8"))
-        assert preset["task"]["type"] == "freeform_cidar"
-        params = preset["task"]["params"]
-        defaults = DecodingConfig()
-        assert params["heldout_path"] == DEFAULT_HELDOUT_PATH
-        for key in ("max_output_chars", "max_prompt_tokens", "batch_size", "token_cap_margin", "token_cap_floor",
-                    "token_cap_ceiling", "marker_check_every", "loop_stop", "seed"):
-            assert key in params and params[key] == getattr(defaults, key), key
-        assert tuple(params["stop_markers"]) == defaults.stop_markers
-        task = FreeformCidarTask(params)                       # the preset builds the same decoding config …
-        assert task.decoding == defaults
-        assert FreeformCidarTask({}).decoding == defaults        # … as an empty params dict does
+    def test_empty_params_build_the_dataclass_defaults(self):
+        """An absent key means the ``DecodingConfig`` default (the pipeline hands a task only
+        ``sweep.tasks[].params``). ``configs/tasks/freeform_cidar.yaml`` is now generated from
+        ``param_spec()`` and pinned by ``tests/test_task_param_specs.py``."""
+        assert FreeformCidarTask({}).decoding == DecodingConfig()
+        assert FreeformCidarTask({"max_output_chars": 1200}).decoding.max_output_chars == 1200
 
     def test_generation_support_by_embedding_family(self):
         for et in (EmbeddingType.STANDARD, EmbeddingType.CHAR_JABER):

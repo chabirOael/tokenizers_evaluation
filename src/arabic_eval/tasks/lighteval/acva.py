@@ -13,8 +13,10 @@ SFT formatting matches: training examples end with the full word, not a letter.
 """
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Any, Dict, List, Optional
 
+from arabic_eval.params_spec import ParamSpec
 from arabic_eval.registry import task_registry
 from arabic_eval.tasks.lighteval.base import LightEvalBenchmarkTask
 from arabic_eval.tasks.lighteval.utils import (
@@ -38,8 +40,21 @@ class ACVATask(LightEvalBenchmarkTask):
     def name(self) -> str:
         return "acva"
 
-    def _default_dataset_name(self) -> str:
+    @classmethod
+    def _default_dataset_name(cls) -> str:
         return "OALL/ACVA"
+
+    @classmethod
+    def param_spec(cls) -> List[ParamSpec]:
+        # Same seven parameters as every LightEval task; only the ``num_fewshot`` help
+        # differs. There is no code rule forcing 0 — the reference configs set
+        # ``{num_fewshot: 0}`` by convention because the task is word-scored
+        # true/false (a demonstration adds little signal and lengthens every prompt).
+        spec = super().param_spec()
+        return [replace(s, help="In-context demonstrations prepended to each prompt. ACVA is word-scored "
+                                "true/false: the reference configs pin 0 here (a demonstration adds little and "
+                                "lengthens the prompt); absent = the pipeline injects evaluation.num_fewshot.")
+                if s.name == "num_fewshot" else s for s in spec]
 
     def _parse_example(self, raw: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         question = str(raw.get("question", "")).strip()

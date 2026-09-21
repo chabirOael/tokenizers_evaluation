@@ -5,6 +5,7 @@ from abc import ABC, abstractmethod
 from typing import Any, Dict, List, Optional
 
 from arabic_eval.models.base import BaseModelAdapter
+from arabic_eval.params_spec import ParamSpec
 from arabic_eval.tokenizers.base import BaseTokenizer
 
 
@@ -20,6 +21,20 @@ class BaseTask(ABC):
     @abstractmethod
     def __init__(self, config: Dict[str, Any]) -> None:
         ...
+
+    @classmethod
+    def param_spec(cls) -> List[ParamSpec]:
+        """The parameters this task reads from ``sweep.tasks[].params``, with
+        their type, default and one-line help (see ``arabic_eval.params_spec``).
+
+        The single source of truth for the console's typed task card, the
+        ``?`` tooltips, the assistant's field reference, the generated
+        ``configs/tasks/<type>.yaml`` and the advisory warnings at validation
+        and run start (an unknown key is *warned about*, never fatal — the
+        Pydantic field stays ``Dict[str, Any]``). Default: no declared
+        parameters, which turns the checks off for this task.
+        """
+        return []
 
     @abstractmethod
     def evaluate(

@@ -268,7 +268,7 @@ PRIMER = """You are the configuration assistant of the experiment console of the
 - sweep.tokenizers lists the tokenizer *cells*: one cell per (type, vocab size). Cells are named `<type>_<size/1000>k` (bpe_32k) or just `<type>` when the vocab size is null. More than one cell → the run is a sweep (a sub-folder of output_dir per cell + a comparison report). With ONE cell the run is NOT a sweep: run_experiment.py then trains the top-level tokenizer.* block and ignores sweep.tokenizers entirely — so for a single-cell config tokenizer.type / vocab_size / params MUST equal that cell (the console warns on a mismatch). In a sweep the top-level block is overridden per cell; keep tokenizer.type equal to the first cell's type. A new config must set sweep.tokenizers and sweep.tasks (base.yaml has no sweep block).
 - Tokenizer types and their vocab size: bpe / wordpiece / morpho_bpe take one (16000, 32000, 50000 are the studied sizes); character_bert, farasa_character_bert, char_jaber, charformer, araroopat, native_llama, native_qwen3 take [null] (fixed or derived vocab). Families: subword (bpe, wordpiece, morpho_bpe, araroopat — standard embeddings); word/morpheme + CharCNN (character_bert, farasa_character_bert); character (char_jaber — sequences 4–6× longer, use max_length 2048 in every phase); byte (charformer — ~2× char_jaber, max_length 2048). morpho_bpe and farasa_character_bert need Java (Farasa); araroopat needs the CAMeL bridge (.venv-camel). native_llama wraps Llama's own tokenizer (model.type llama), native_qwen3 wraps Qwen3's (model.type qwen3 + Qwen/Qwen3-4B-Base); the phase `enabled` flags are config-wide, not per cell: in a config whose cells are ALL native_* set training.phases.embedding_alignment.enabled false (Phase 1 only damages pretrained embeddings), but in a sweep that mixes native_* with from-scratch tokenizers keep Phase 1 on — the from-scratch cells need it and the native cell pays some embedding drift (that is what all_tokenizers_sweep.yaml does); never claim Phase 1 is off for one cell only. character_bert, farasa_character_bert and charformer cannot generate: the freeform_cidar task reports generation_unsupported for them (not an error).
 - Models: llama = meta-llama/Llama-3.2-1B (default) or meta-llama/Llama-3.2-3B; qwen3 = Qwen/Qwen3-4B-Base (~3× the per-step cost). Gated meta-llama repos need HF_TOKEN in the environment.
-- Eval tasks (sweep.tasks, each `{type, params}`): acva (True/False cultural claims, label-noisy), alghafa (9 sub-configs), arabic_exam (MBZUAI ArabicMMLU), culture_arabic_mmlu (OALL Arabic_MMLU) — all log-likelihood MCQ scored by accuracy; freeform_cidar = greedy generation on 250 held-out CIDAR instructions (chrF, BERTScore, later an LLM judge) — only meaningful when Phase 3 trained on free-form corpora. Common task params: num_fewshot (acva is normally given {num_fewshot: 0}), clean_latin_rows, max_length, dataset_name. Default task list of the reference configs: acva, alghafa, arabic_exam (+ culture_arabic_mmlu in the full sweeps).
+- Eval tasks (sweep.tasks, each `{type, params}`): acva (True/False cultural claims, label-noisy), alghafa (9 sub-configs), arabic_exam (MBZUAI ArabicMMLU), culture_arabic_mmlu (OALL Arabic_MMLU) — all log-likelihood MCQ scored by accuracy; freeform_cidar = greedy generation on 250 held-out CIDAR instructions (chrF, BERTScore, later an LLM judge) — only meaningful when Phase 3 trained on free-form corpora. Each task DECLARES its parameters (the "task params" list under Registries and presets: name, type, default, meaning). `params` is the ONLY place a run reads task parameters from (configs/tasks/<type>.yaml is generated documentation, never read by a run); write only keys whose value differs from the declared default — an undeclared key is ignored at run time and flagged. Conventions: acva gets {num_fewshot: 0} (word-scored true/false); the MCQ tasks get {max_length: 1024} under long-sequence tokenizers; an eval-only re-run pins the decoding rule it must reproduce (freeform_cidar {max_output_chars: 2400}). Default task list of the reference configs: acva, alghafa, arabic_exam (+ culture_arabic_mmlu in the full sweeps).
 - Phases: Phase 1 trains embed_tokens + lm_head only on arabic_squad, full-sequence loss, constant LR; Phase 2 trains everything on arabic_squad, answer-only loss; Phase 3 trains everything on tydiqa_arabic + arcd + arabic_squad_mcq, answer-only, with early stopping on the dev slices. Dataset categories: extractive = arabic_squad, tydiqa_arabic, arcd; mcq = arabic_squad_mcq; free_form = cidar, bactrian_x_ar, aya_ar; raw text = pretraining_mix (packed 70 % FineWeb-2 / 20 % Wikipedia / 10 % ArabicWeb24 mix for Phases 1/2).
 
 ## Rules the validator enforces — get them right the first time
@@ -356,8 +356,35 @@ def _presets_text(bundle: dict) -> str:
     for name, p in bundle["presets"]["models"].items():
         lines.append(f"- {name}: name_or_path {p.get('name_or_path')}, dtype {p.get('dtype')} ({p.get('file')})")
     lines.append("### task types (registry): " + ", ".join(bundle["registries"]["tasks"]))
+    lines.append(_task_params_text(bundle))
     lines.append("### dataset names (training.phases.*.datasets): "
                  + ", ".join(f"{d} ({CORPUS_CATEGORY.get(d, 'raw text')})" for d in bundle["registries"]["datasets"]))
+    return "\n".join(lines)
+
+
+def _task_params_text(bundle: dict) -> str:
+    """The declared parameters of every task (``param_spec()``, served as
+    ``task_params``): name, type, default and help, so the model sets
+    ``max_output_chars`` or ``num_fewshot`` with the right key and type and
+    never invents one. Only a value that differs from the default belongs in
+    ``sweep.tasks[].params``."""
+    lines = ["### task params (sweep.tasks[].params) — write ONLY keys whose value differs from the default shown; "
+             "any other key is ignored at run time and flagged as undeclared"]
+    for task, spec in (bundle.get("task_params") or {}).items():
+        if not spec:
+            lines.append(f"- {task}: declares no parameters")
+            continue
+        lines.append(f"- {task}:")
+        for s in spec:
+            default = s["default"]
+            if isinstance(default, list) and len(default) > 3:
+                shown = f"a list of {len(default)} strings (the templates' block labels)"
+            else:
+                shown = json.dumps(default, ensure_ascii=False)
+            meta = s["type"] + (" | null" if s.get("nullable") else "")
+            if s.get("choices"):
+                meta += "; one of " + ", ".join(json.dumps(c, ensure_ascii=False) for c in s["choices"])
+            lines.append(f"  - {s['name']} ({meta}, default {shown}): {s['help']}")
     return "\n".join(lines)
 
 
@@ -425,7 +452,7 @@ class ContextBuilder:
         base = base_resolved(self.paths)
         diff = _deep_diff(cfg, base)
         delta = {} if diff is _SAME else dict(diff)
-        v = validate_config(self.paths, cfg)
+        v = validate_config(self.paths, cfg, file=file)
         if from_base:
             head = "## Working config: a NEW config starting from base.yaml (no file yet). The user wants to create it."
         elif file:
@@ -637,7 +664,7 @@ def chat_turn(paths: ConsolePaths, builder: ContextBuilder, acfg: AssistantConfi
         if parsed.error is None and parsed.edits is not None:
             try:
                 new_cfg, changes = apply_edits(working, parsed.edits)
-                v = validate_config(paths, new_cfg)
+                v = validate_config(paths, new_cfg, file=file)
                 applied = {"config": v["resolved"] if v["ok"] else new_cfg, "ok": v["ok"], "errors": v["errors"],
                            "changes": changes, "cells": v.get("cells") or [], "sweep": bool(v.get("sweep")),
                            "edits": parsed.edits}

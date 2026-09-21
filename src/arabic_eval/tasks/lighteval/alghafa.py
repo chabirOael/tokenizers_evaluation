@@ -38,7 +38,8 @@ class AlghafaTask(LightEvalBenchmarkTask):
     def name(self) -> str:
         return "alghafa"
 
-    def _default_dataset_name(self) -> str:
+    @classmethod
+    def _default_dataset_name(cls) -> str:
         return "OALL/AlGhafa-Arabic-LLM-Benchmark-Native"
 
     def _parse_example(self, raw: Dict[str, Any]) -> Optional[Dict[str, Any]]:

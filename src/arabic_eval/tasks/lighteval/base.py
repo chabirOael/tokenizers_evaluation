@@ -47,6 +47,7 @@ from arabic_eval.evaluation.unk_reports import (
     scan_text,
 )
 from arabic_eval.models.base import BaseModelAdapter
+from arabic_eval.params_spec import ParamSpec
 from arabic_eval.tasks.base import BaseTask
 from arabic_eval.tasks.lighteval.utils import (
     ARABIC_CHOICE_LETTERS,
@@ -465,30 +466,74 @@ class LightEvalBenchmarkTask(BaseTask):
     list (after the optional Latin-script filter).
     """
 
+    # Defaults of the parameters every LightEval MCQ task reads from
+    # ``sweep.tasks[].params`` (``param_spec`` declares them; ``__init__`` reads them).
+    DEFAULT_CACHE_DIR = "outputs/data_cache"
+    DEFAULT_MAX_LENGTH = 512
+    DEFAULT_SEED = 42
+    DEFAULT_CLEAN_LATIN_ROWS = False
+    DEFAULT_NUM_FEWSHOT = 0
+
     def __init__(self, config: Dict[str, Any]) -> None:
         self.config = config
-        self.dataset_name: str = config.get("dataset_name", self._default_dataset_name())
+        default_ds = config.get("dataset_name")
+        self.dataset_name: str = default_ds if default_ds is not None else self._default_dataset_name()
         self.dataset_config: Optional[str] = config.get("dataset_config", None)
-        self.cache_dir: str = config.get("cache_dir", "outputs/data_cache")
-        self.max_length: int = config.get("max_length", 512)
-        self.seed: int = config.get("seed", 42)
-        self.clean_latin_rows: bool = bool(config.get("clean_latin_rows", False))
+        self.cache_dir: str = config.get("cache_dir", self.DEFAULT_CACHE_DIR)
+        self.max_length: int = config.get("max_length", self.DEFAULT_MAX_LENGTH)
+        self.seed: int = config.get("seed", self.DEFAULT_SEED)
+        self.clean_latin_rows: bool = bool(config.get("clean_latin_rows", self.DEFAULT_CLEAN_LATIN_ROWS))
         # Number of few-shot demonstrations to prepend (per-row) to each eval
         # prompt. Demos are sampled deterministically from the same
         # ``_source_config`` as the eval row, with the eval row excluded.
         # 0 = pure zero-shot (existing default).
-        self.num_fewshot: int = int(config.get("num_fewshot", 0))
+        self.num_fewshot: int = int(config.get("num_fewshot", self.DEFAULT_NUM_FEWSHOT))
         self._cached_examples: Optional[List[Dict]] = None
         # Sub-config -> list of indices, populated lazily on first few-shot use.
         self._fewshot_pool_by_config: Optional[Dict[str, List[int]]] = None
+
+    @classmethod
+    def param_spec(cls) -> List[ParamSpec]:
+        """The seven parameters every LightEval MCQ task accepts. ``dataset_name``
+        defaults to the class's ``_default_dataset_name()``; ``num_fewshot`` is
+        the one the pipeline fills from ``evaluation.num_fewshot`` when the YAML
+        does not set it. Subclasses inherit the list and may re-word an entry
+        (ACVA does for ``num_fewshot``)."""
+        try:
+            default_ds: Optional[str] = cls._default_dataset_name()
+        except TypeError:           # a subclass (a test stub) still defining it as an instance method
+            default_ds = None
+        return [
+            ParamSpec("dataset_name", "str", default_ds, nullable=default_ds is None,
+                      help="HuggingFace dataset path of the benchmark; override only if it moves on the Hub."),
+            ParamSpec("dataset_config", "str", None, nullable=True,
+                      help="One sub-config of the dataset (a topic / subject) instead of every config merged; null = all."),
+            ParamSpec("cache_dir", "path", cls.DEFAULT_CACHE_DIR, advanced=True,
+                      help="Where the HuggingFace datasets cache of this benchmark lives on disk."),
+            ParamSpec("max_length", "int", cls.DEFAULT_MAX_LENGTH, min=16,
+                      help="Token cap of prompt + continuation at scoring time; a row whose continuation the cap "
+                           "eats scores the sentinel for every choice (all_sentinel in the row dump). 1024 for "
+                           "3-shot prompts under long-sequence tokenizers."),
+            ParamSpec("seed", "int", cls.DEFAULT_SEED, min=0, advanced=True,
+                      help="Seed of the few-shot demonstration sampling (deterministic per row and sub-config)."),
+            ParamSpec("clean_latin_rows", "bool", cls.DEFAULT_CLEAN_LATIN_ROWS,
+                      help="Drop rows whose question / choices / context contain Latin letters before scoring "
+                           "(logs the count, warns on a wiped sub-config)."),
+            ParamSpec("num_fewshot", "int", cls.DEFAULT_NUM_FEWSHOT, min=0,
+                      help="In-context demonstrations prepended to each prompt, sampled from the same sub-config "
+                           "with the row itself excluded. Absent = the pipeline injects evaluation.num_fewshot "
+                           "(3 in the reference configs); set it here to override for this task only."),
+        ]
 
     # ------------------------------------------------------------------
     # Abstract hooks (every subclass MUST implement)
     # ------------------------------------------------------------------
 
+    @classmethod
     @abstractmethod
-    def _default_dataset_name(self) -> str:
-        """Default HuggingFace dataset identifier."""
+    def _default_dataset_name(cls) -> str:
+        """Default HuggingFace dataset identifier. A classmethod so the default
+        is readable without an instance (``param_spec``, the console)."""
         ...
 
     @abstractmethod

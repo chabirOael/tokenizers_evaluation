@@ -285,6 +285,11 @@ def test_schema_bundle_has_registries_and_presets():
     assert "pretraining_mix" in b["registries"]["datasets"]
     assert b["presets"]["tokenizers"]["charformer"]["params"]["max_block_size"] == 4
     assert b["base"]["training"]["phases"]["sft"]["steps"] > 0
+    # task params come from the tasks' param_spec(), not from configs/tasks/*.yaml (generated documentation)
+    assert "tasks" not in b["presets"]
+    names = [s["name"] for s in b["task_params"]["acva"]]
+    assert names == ["dataset_name", "dataset_config", "cache_dir", "max_length", "seed", "clean_latin_rows", "num_fewshot"]
+    assert {s["name"] for s in b["task_params"]["freeform_cidar"]} >= {"max_output_chars", "stop_markers", "loop_stop", "heldout_path"}
 
 
 # ---------------------------------------------------------------------------
@@ -674,18 +679,21 @@ def test_single_cell_reports_the_tokenizer_that_runs_and_warns_on_mismatch(tmp_r
     raw["tokenizer"] = {"type": "native_qwen3", "vocab_size": None,
                         "params": {"model_name_or_path": "Qwen/Qwen3-4B-Base"}}
     raw["sweep"] = {"tokenizers": [{"type": "araroopat", "vocab_sizes": [None]}], "tasks": [{"type": "acva"}]}
-    v = validate_config(tmp_repo, raw)
+    v = validate_config(tmp_repo, raw, file="mini.yaml")      # the dict IS mini.yaml: its output_dir is not "shared"
     assert v["ok"] and v["sweep"] is False
     assert v["cells"] == ["native_qwen3"]
     assert len(v["warnings"]) == 1 and "araroopat" in v["warnings"][0] and "native_qwen3" in v["warnings"][0]
+    # without the file the same dict is a second config writing mini.yaml's output_dir → one more warning
+    v = validate_config(tmp_repo, raw)
+    assert len(v["warnings"]) == 2 and "also the output_dir of mini.yaml" in v["warnings"][1]
     # the two blocks agree → no warning; vocab-sized cells are named like run_sweep names them
     raw["tokenizer"] = {"type": "bpe", "vocab_size": 32000}
     raw["sweep"]["tokenizers"] = [{"type": "bpe", "vocab_sizes": [32000]}]
-    v = validate_config(tmp_repo, raw)
+    v = validate_config(tmp_repo, raw, file="mini.yaml")
     assert v["cells"] == ["bpe_32k"] and v["warnings"] == []
     from arabic_eval.config import ExperimentConfig
     assert config_warnings(ExperimentConfig(**v["resolved"])) == []
     # two cells → a sweep: the list is what runs, whatever the top-level block says
     raw["sweep"]["tokenizers"].append({"type": "araroopat", "vocab_sizes": [None]})
-    v = validate_config(tmp_repo, raw)
+    v = validate_config(tmp_repo, raw, file="mini.yaml")
     assert v["sweep"] is True and v["cells"] == ["bpe_32k", "araroopat"] and v["warnings"] == []

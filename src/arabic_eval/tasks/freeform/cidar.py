@@ -32,6 +32,7 @@ from typing import Any, Dict, List, Optional
 from arabic_eval.data.finetune_corpora import QARecord, _format_qa_prompt
 from arabic_eval.data.freeform_heldout import load_freeform_heldout
 from arabic_eval.models.base import BaseModelAdapter
+from arabic_eval.params_spec import ParamSpec
 from arabic_eval.registry import task_registry
 from arabic_eval.tasks.base import BaseTask
 from arabic_eval.tasks.freeform import metrics as M
@@ -47,6 +48,11 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_HELDOUT_PATH = "configs/contamination/freeform_cidar_heldout_v1.jsonl"
 TASK_NAME = "freeform_cidar"
+# BERTScore knobs (``tasks/freeform/bertscore.py``): xlm-roberta-large layer 17, the layer the
+# reference implementation uses for that model; ``None`` skips BERTScore altogether.
+DEFAULT_BERTSCORE_MODEL: Optional[str] = "xlm-roberta-large"
+DEFAULT_BERTSCORE_LAYER = 17
+DEFAULT_BERTSCORE_BATCH_SIZE = 32
 ROW_FIELDS = [
     "id", "stratum", "instruction", "context", "prompt_text", "reference", "generation", "generation_raw",
     "prompt_tokens", "gen_tokens", "gen_chars", "ref_chars", "stop_reason", "hit_cap", "hit_loop", "loop_rule",
@@ -85,40 +91,81 @@ def _sha256(path: Path) -> str:
 
 @task_registry.register(TASK_NAME)
 class FreeformCidarTask(BaseTask):
-    """Params (``sweep.tasks[].params``; unknown keys such as the injected
-    ``num_fewshot`` are ignored):
-
-    ``heldout_path`` — the JSONL (default the committed v1 set);
-    ``max_output_chars`` (``DecodingConfig`` default), ``max_prompt_tokens`` 512, ``batch_size`` 16,
-    ``token_cap_margin`` 1.15, ``token_cap_floor`` 32, ``token_cap_ceiling``
-    4096, ``stop_markers``, ``marker_check_every`` 16, ``seed`` 42 — see
-    ``DecodingConfig``; ``bertscore_model`` (``null`` skips BERTScore),
-    ``bertscore_layer`` 17, ``bertscore_batch_size`` 32.
+    """Params (``sweep.tasks[].params``): exactly the entries of :meth:`param_spec` —
+    the ``DecodingConfig`` fields (budget / stops / misc), ``heldout_path`` and the
+    three BERTScore knobs. An absent key means the code default (the pipeline hands a
+    task only the experiment YAML's params; ``configs/tasks/freeform_cidar.yaml`` is
+    generated *from* the spec and never read by a run). Unknown keys are ignored
+    here and warned about at validation and run start.
     """
 
     def __init__(self, config: Dict[str, Any]) -> None:
         cfg = dict(config or {})
         self.heldout_path = resolve_heldout_path(cfg.get("heldout_path") or DEFAULT_HELDOUT_PATH)
-        # The pipeline hands a task only ``sweep.tasks[].params`` of the experiment YAML;
-        # ``configs/tasks/freeform_cidar.yaml`` is a console preset (a test pins it to these
-        # defaults), so an absent key means the ``DecodingConfig`` default, not the preset.
-        defaults = DecodingConfig()
+        # Every default is the ``DecodingConfig`` field default — never retyped here, so the
+        # dataclass, this constructor and ``param_spec`` cannot drift (a test pins all three).
+        d = DecodingConfig()
         self.decoding = DecodingConfig(
-            max_output_chars=int(cfg.get("max_output_chars", defaults.max_output_chars)),
-            max_prompt_tokens=int(cfg.get("max_prompt_tokens", 512)),
-            batch_size=int(cfg.get("batch_size", 16)),
-            token_cap_margin=float(cfg.get("token_cap_margin", 1.15)),
-            token_cap_floor=int(cfg.get("token_cap_floor", 32)),
-            token_cap_ceiling=int(cfg.get("token_cap_ceiling", 4096)),
-            stop_markers=tuple(cfg.get("stop_markers") or DEFAULT_STOP_MARKERS),
-            marker_check_every=int(cfg.get("marker_check_every", 16)),
-            loop_stop=bool(cfg.get("loop_stop", True)),
-            seed=int(cfg.get("seed", 42)),
+            max_output_chars=int(cfg.get("max_output_chars", d.max_output_chars)),
+            max_prompt_tokens=int(cfg.get("max_prompt_tokens", d.max_prompt_tokens)),
+            batch_size=int(cfg.get("batch_size", d.batch_size)),
+            token_cap_margin=float(cfg.get("token_cap_margin", d.token_cap_margin)),
+            token_cap_floor=int(cfg.get("token_cap_floor", d.token_cap_floor)),
+            token_cap_ceiling=int(cfg.get("token_cap_ceiling", d.token_cap_ceiling)),
+            stop_markers=tuple(cfg.get("stop_markers") or d.stop_markers),
+            marker_check_every=int(cfg.get("marker_check_every", d.marker_check_every)),
+            loop_stop=bool(cfg.get("loop_stop", d.loop_stop)),
+            seed=int(cfg.get("seed", d.seed)),
         )
-        self.bertscore_model: Optional[str] = cfg.get("bertscore_model", "xlm-roberta-large")
-        self.bertscore_layer = int(cfg.get("bertscore_layer", 17))
-        self.bertscore_batch_size = int(cfg.get("bertscore_batch_size", 32))
+        self.bertscore_model: Optional[str] = cfg.get("bertscore_model", DEFAULT_BERTSCORE_MODEL)
+        self.bertscore_layer = int(cfg.get("bertscore_layer", DEFAULT_BERTSCORE_LAYER))
+        self.bertscore_batch_size = int(cfg.get("bertscore_batch_size", DEFAULT_BERTSCORE_BATCH_SIZE))
         self._rows: Optional[List[Dict[str, Any]]] = None
+
+    @classmethod
+    def param_spec(cls) -> List[ParamSpec]:
+        """Every parameter the task reads, defaults taken from ``DecodingConfig()`` and the
+        module constants (never retyped). Groups: *budget* (the character budget and how
+        it becomes a per-tokenizer token cap), *stops* (markers / loop stop), *scoring*
+        (BERTScore), *misc*."""
+        d = DecodingConfig()
+        return [
+            ParamSpec("max_output_chars", "int", d.max_output_chars, min=32, group="budget",
+                      help="Budget of decoded text per answer, in CHARACTERS — the same amount of text for every "
+                           "tokenizer; it becomes a per-tokenizer max_new_tokens from the measured chars/token "
+                           "(2400 since 2026-09-21; 1200 capped 12 of the control's 250 answers)."),
+            ParamSpec("token_cap_margin", "float", d.token_cap_margin, min=1.0, advanced=True, group="budget",
+                      help="Safety factor on the derived token cap: max_new_tokens = max_output_chars / chars_per_token "
+                           "× margin + 8, before clamping."),
+            ParamSpec("token_cap_floor", "int", d.token_cap_floor, min=1, advanced=True, group="budget",
+                      help="Lower clamp of the derived token cap (a tokenizer with huge chars/token still gets this many tokens)."),
+            ParamSpec("token_cap_ceiling", "int", d.token_cap_ceiling, min=1, advanced=True, group="budget",
+                      help="Upper clamp of the derived token cap (char-JABER lands near 2 800, well under it)."),
+            ParamSpec("max_prompt_tokens", "int", d.max_prompt_tokens, min=16, group="budget",
+                      help="Longest prompt encoding kept (tokenizer truncation beyond it) before generation."),
+            ParamSpec("stop_markers", "list[str]", list(d.stop_markers), group="stops",
+                      help="Decoded-text stop strings: the model starting a new prompt block, in the templates' exact "
+                           "words (derived from finetune_corpora.py; never a bare \\n### — that cut the model's own "
+                           "markdown sub-headers). One marker per line in the form."),
+            ParamSpec("marker_check_every", "int", d.marker_check_every, min=1, advanced=True, group="stops",
+                      help="Decode the unfinished sequences and look for a marker / loop every this many generation steps."),
+            ParamSpec("loop_stop", "bool", d.loop_stop, group="stops",
+                      help="Stop a sequence whose decoded text ends in a repetition loop (periodic tail or a letter ×20), "
+                           "cut right after the first copy; tokenizer-agnostic, unlike a token repetition penalty."),
+            ParamSpec("bertscore_model", "str", DEFAULT_BERTSCORE_MODEL, nullable=True, group="scoring",
+                      help="Encoder of the in-house BERTScore (tasks/freeform/bertscore.py); null skips BERTScore."),
+            ParamSpec("bertscore_layer", "int", DEFAULT_BERTSCORE_LAYER, min=0, advanced=True, group="scoring",
+                      help="Hidden layer of the encoder whose token vectors BERTScore matches (17 for xlm-roberta-large)."),
+            ParamSpec("bertscore_batch_size", "int", DEFAULT_BERTSCORE_BATCH_SIZE, min=1, advanced=True, group="scoring",
+                      help="Sentence pairs per BERTScore forward pass."),
+            ParamSpec("batch_size", "int", d.batch_size, min=1, group="misc",
+                      help="Prompts generated per batch (left-padded); memory only, the greedy output does not depend on it."),
+            ParamSpec("seed", "int", d.seed, min=0, group="misc",
+                      help="Recorded in the row dump; greedy decoding itself is deterministic."),
+            ParamSpec("heldout_path", "path", DEFAULT_HELDOUT_PATH, group="misc",
+                      help="The held-out JSONL of prompts (id, prompt, reference, stratum); the committed v1 set of 250 "
+                           "CIDAR rows, also the freeform_prompts held-out set of the contamination check."),
+        ]
 
     # ---- BaseTask ---------------------------------------------------------
     @property

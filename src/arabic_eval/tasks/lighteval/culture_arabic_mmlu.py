@@ -26,7 +26,8 @@ class CultureArabicMMLUTask(LightEvalBenchmarkTask):
     def name(self) -> str:
         return "culture_arabic_mmlu"
 
-    def _default_dataset_name(self) -> str:
+    @classmethod
+    def _default_dataset_name(cls) -> str:
         return "OALL/Arabic_MMLU"
 
     def _parse_example(self, raw: Dict[str, Any]) -> Optional[Dict[str, Any]]:

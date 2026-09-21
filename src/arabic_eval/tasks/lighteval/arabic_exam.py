@@ -38,7 +38,8 @@ class ArabicExamTask(LightEvalBenchmarkTask):
     def name(self) -> str:
         return "arabic_exam"
 
-    def _default_dataset_name(self) -> str:
+    @classmethod
+    def _default_dataset_name(cls) -> str:
         return "MBZUAI/ArabicMMLU"
 
     def _parse_example(self, raw: Dict[str, Any]) -> Optional[Dict[str, Any]]:

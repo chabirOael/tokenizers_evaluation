@@ -268,12 +268,12 @@ class Handler(SimpleHTTPRequestHandler):
 
     def _post(self, route: str, req: dict) -> None:
         if route == "/api/config/validate":
-            self._send_json(validate_config(PATHS, req.get("config") or {}))
+            self._send_json(validate_config(PATHS, req.get("config") or {}, file=_opt_str(req, "file")))
         elif route == "/api/config/render":
             self._send_json({"yaml": render_yaml(PATHS, req.get("config") or {}, req.get("mode") or "full")})
         elif route == "/api/config/parse":
             cfg = parse_yaml(req.get("yaml") or "")
-            self._send_json({"config": cfg, **validate_config(PATHS, cfg)})
+            self._send_json({"config": cfg, **validate_config(PATHS, cfg, file=_opt_str(req, "file"))})
         elif route == "/api/configs/save":
             self._send_json(save_config(PATHS, str(req.get("name") or ""), str(req.get("yaml") or ""),
                                         bool(req.get("overwrite"))))
@@ -329,6 +329,11 @@ class Handler(SimpleHTTPRequestHandler):
             self._send_json(rec)
         else:
             self._send_json({"error": "not found"}, HTTPStatus.NOT_FOUND)
+
+
+def _opt_str(req: dict, key: str):
+    v = req.get(key)
+    return str(v) if v not in (None, "") else None
 
 
 def _assistant_request(req: dict):

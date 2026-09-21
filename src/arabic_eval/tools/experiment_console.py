@@ -48,6 +48,8 @@ from arabic_eval.config_edit import (
     default_output_dir, get_created_at, now_iso, record_run_start, rewrite_experiment_keys,
     stamp_created_at, strip_runs,
 )
+from arabic_eval.evaluation.eval_rows import SUPERSEDED_DIR
+from arabic_eval.params_spec import ParamSpec, task_param_specs, validate_params
 from arabic_eval.tools.config_hints import FIELD_HINTS
 
 # ---------------------------------------------------------------------------
@@ -227,23 +229,39 @@ def _load_presets(directory: Path, section: str) -> Dict[str, dict]:
     return out
 
 
+def task_specs() -> Dict[str, List[ParamSpec]]:
+    """``{task_type: ParamSpec list}`` for every registered task (cached per process:
+    the registry is import-time state and the specs are class constants)."""
+    global _TASK_SPECS
+    if _TASK_SPECS is None:
+        _TASK_SPECS = task_param_specs()
+    return _TASK_SPECS
+
+
+_TASK_SPECS: Optional[Dict[str, List[ParamSpec]]] = None
+
+
 def schema_bundle(paths: ConsolePaths) -> dict:
     keys = _registry_keys()
     presets = {
         "tokenizers": _load_presets(paths.tokenizers_dir, "tokenizer"),
         "models": _load_presets(paths.models_dir, "model"),
-        "tasks": _load_presets(paths.tasks_dir, "task"),
     }
     # Registry keys win; preset files fill in when the registries are empty
-    # (e.g. torch missing) so the dropdowns are never blank.
-    for k in ("tokenizers", "models", "tasks"):
+    # (e.g. torch missing) so the dropdowns are never blank. Task presets are
+    # no longer loaded (``configs/tasks/*.yaml`` are generated *from* the specs
+    # served as ``task_params``); their file names stand in for the task list.
+    for k in ("tokenizers", "models"):
         if not keys[k]:
             keys[k] = sorted(presets[k].keys())
+    if not keys["tasks"]:
+        keys["tasks"] = sorted(p.stem for p in paths.tasks_dir.glob("*.yaml")) if paths.tasks_dir.exists() else []
     return {
         "schema": ExperimentConfig.model_json_schema(),
         "base": base_resolved(paths),
         "registries": {**keys, "datasets": list(get_args(DatasetName))},
         "presets": presets,
+        "task_params": {t: [s.to_dict() for s in spec] for t, spec in task_specs().items()},
         "hints": {k: list(v) for k, v in FIELD_HINTS.items()},
         "env": {
             "hf_token_set": bool(os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN")),
@@ -278,11 +296,63 @@ def is_sweep(cfg: ExperimentConfig) -> bool:
     return cfg.sweep is not None and len(cfg.sweep.tokenizers) > 1
 
 
-def config_warnings(cfg: ExperimentConfig) -> List[str]:
+def param_warnings(cfg: ExperimentConfig) -> List[Dict[str, str]]:
+    """Every ``sweep.tasks[i].params`` checked against the task's declared
+    ``param_spec`` (unknown key, wrong type, out of range) — advisory, the run
+    would proceed. Each finding carries the ``loc`` of the params dict so the
+    form can paint the row, plus the task type and the offending key."""
+    out: List[Dict[str, str]] = []
+    specs = task_specs()
+    if not specs or cfg.sweep is None:
+        return out
+    for i, t in enumerate(cfg.sweep.tasks):
+        loc = f"sweep.tasks.{i}.params"
+        if t.type not in specs:
+            out.append({"loc": f"sweep.tasks.{i}.type", "task": t.type, "key": "",
+                        "msg": f"task type {t.type!r} is not in the registry ({', '.join(sorted(specs))})"})
+            continue
+        for msg in validate_params(specs[t.type], t.params, owner=t.type):
+            key = ""
+            head = msg.split(" ", 1)[0]
+            if head.startswith(t.type + "."):
+                key = head[len(t.type) + 1:]
+            elif "does not declare a parameter '" in msg:
+                key = msg.split("does not declare a parameter '", 1)[1].split("'", 1)[0]
+            out.append({"loc": loc, "task": t.type, "key": key, "msg": msg})
+    return out
+
+
+def _other_output_dirs(paths: ConsolePaths, exclude_file: Optional[str]) -> Dict[str, List[str]]:
+    """``{output_dir: [file, …]}`` of every other saved config (raw YAML read, no
+    Pydantic — this runs on every Validate). Only the ``output_dir`` a file
+    states itself; one that inherits base.yaml's is not a clash worth flagging."""
+    out: Dict[str, List[str]] = {}
+    if not paths.configs_dir.exists():
+        return out
+    skip = Path(exclude_file).name if exclude_file else None
+    for p in sorted(paths.configs_dir.glob("*.yaml")):
+        if p.name == skip:
+            continue
+        try:
+            raw = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
+        except Exception:  # noqa: BLE001
+            continue
+        od = (raw.get("experiment") or {}).get("output_dir") if isinstance(raw.get("experiment"), dict) else None
+        od = od or raw.get("output_dir")
+        if isinstance(od, str) and od:
+            out.setdefault(od.rstrip("/"), []).append(p.name)
+    return out
+
+
+def config_warnings(cfg: ExperimentConfig, paths: Optional[ConsolePaths] = None,
+                    exclude_file: Optional[str] = None) -> List[str]:
     """Things a valid config can still get wrong at launch time. The one that
     bit a real run: a single ``sweep.tokenizers`` cell that is not the top-level
     ``tokenizer`` — the run is not a sweep, so ``tokenizer.type`` is what trains
-    and the sweep cell is silently ignored."""
+    and the sweep cell is silently ignored. Also: task params a task does not
+    declare (ignored at run time — the way a preset edit never reached a run),
+    and an ``output_dir`` another saved config already writes to (*paths* given;
+    *exclude_file* = the file this config is, so it does not clash with itself)."""
     out: List[str] = []
     if cfg.sweep is not None and not is_sweep(cfg) and cfg.sweep.tokenizers:
         listed = [_cell_name(t.type, vs) for t in cfg.sweep.tokenizers for vs in t.vocab_sizes]
@@ -293,6 +363,14 @@ def config_warnings(cfg: ExperimentConfig) -> List[str]:
                 f"({', '.join(listed)}) is only read with --sweep, which needs more than one cell. "
                 f"Set tokenizer.type to {listed[0].split('_')[0] if listed else '…'} to run that cell, "
                 f"or add {actual} to sweep.tokenizers for a 2-cell sweep.")
+    for w in param_warnings(cfg):
+        out.append(f"{w['loc']}: {w['msg']}")
+    if paths is not None:
+        sharing = _other_output_dirs(paths, exclude_file).get(cfg.output_dir.rstrip("/"), [])
+        if sharing:
+            out.append(f"output_dir {cfg.output_dir} is also the output_dir of {', '.join(sharing)} — two configs "
+                       f"writing one directory share (and overwrite) results, and run_sweep skips cells whose "
+                       f"all_metrics.json exists")
     return out
 
 
@@ -308,10 +386,16 @@ def results_summary(paths: ConsolePaths, cfg: ExperimentConfig) -> dict:
             "cells_done": done, "cells_pending": [c for c in cells if c not in done],
             "exists": bool(done), "report": (out_dir / "comparison_report.txt").exists(),
         }
+    # A single run writes all_metrics.json at the root of output_dir; cell
+    # folders already there (a campaign dir picked by mistake) would end up
+    # beside it — reported so the Start dialog can say so.
+    cell_dirs = sorted(d.name for d in out_dir.iterdir()
+                       if d.is_dir() and d.name != SUPERSEDED_DIR and (d / "all_metrics.json").exists()) if out_dir.is_dir() else []
     return {
         "output_dir": cfg.output_dir, "sweep": False, "cells": [],
         "cells_done": [], "cells_pending": [],
         "exists": (out_dir / "all_metrics.json").exists(), "report": False,
+        "cell_dirs_with_results": cell_dirs,
     }
 
 
@@ -365,17 +449,23 @@ def read_config(paths: ConsolePaths, rel: str) -> dict:
     try:
         cfg = ExperimentConfig(**merged)
         result.update({"valid": True, "errors": [], "resolved": cfg.model_dump(mode="json"),
-                       "results": results_summary(paths, cfg), "sweep": is_sweep(cfg)})
+                       "results": results_summary(paths, cfg), "sweep": is_sweep(cfg),
+                       "warnings": config_warnings(cfg, paths, exclude_file=path.name),
+                       "param_warnings": param_warnings(cfg)})
     except ValidationError as e:
         result.update({"valid": False, "errors": _errors_of(e), "resolved": merged, "results": None,
-                       "sweep": None})
+                       "sweep": None, "warnings": [], "param_warnings": []})
     return result
 
 
-def validate_config(paths: ConsolePaths, cfg_dict: dict) -> dict:
+def validate_config(paths: ConsolePaths, cfg_dict: dict, *, file: Optional[str] = None) -> dict:
     """Validate a (possibly partial) config dict the way the CLI would: merged
     over ``base.yaml``, then through Pydantic. Returns the resolved dump on
-    success or ``loc``-tagged errors on failure."""
+    success or ``loc``-tagged errors on failure; on success also ``warnings``
+    (sentences: the launch-time traps, undeclared / mistyped task params, a
+    shared output_dir) and ``param_warnings`` (the task-param findings with
+    their ``loc`` for the form). *file* = the saved file this dict is, so its
+    own output_dir is not reported as shared with itself."""
     merged = flatten_experiment(load_yaml(paths.base_yaml))
     _deep_merge(merged, flatten_experiment(cfg_dict or {}))
     try:
@@ -385,7 +475,8 @@ def validate_config(paths: ConsolePaths, cfg_dict: dict) -> dict:
     return {
         "ok": True, "errors": [], "resolved": cfg.model_dump(mode="json"),
         "sweep": is_sweep(cfg), "cells": cell_names(cfg), "results": results_summary(paths, cfg),
-        "warnings": config_warnings(cfg),
+        "warnings": config_warnings(cfg, paths, exclude_file=file),
+        "param_warnings": param_warnings(cfg),
     }
 
 
@@ -434,7 +525,7 @@ def save_config(paths: ConsolePaths, name: str, text: str, overwrite: bool = Fal
     path = paths.config_path(name)
     if path.exists() and not overwrite:
         raise ConsoleError(f"{paths.rel(path)} exists — tick overwrite to replace it")
-    v = validate_config(paths, parse_yaml(text))
+    v = validate_config(paths, parse_yaml(text), file=path.name)
     if not v["ok"]:
         raise ConsoleError("refusing to save an invalid config: "
                            + "; ".join(f"{e['loc']}: {e['msg']}" for e in v["errors"]))
@@ -444,7 +535,7 @@ def save_config(paths: ConsolePaths, name: str, text: str, overwrite: bool = Fal
             resolved = dict(v["resolved"]); resolved["created_at"] = created_at or now_iso()
             stamped = render_yaml(paths, resolved, "delta")
         text = stamped
-        v = validate_config(paths, parse_yaml(text))
+        v = validate_config(paths, parse_yaml(text), file=path.name)
     paths.configs_dir.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(".yaml.tmp")
     tmp.write_text(text if text.endswith("\n") else text + "\n", encoding="utf-8")
@@ -984,7 +1075,7 @@ class RunManager:
         else:
             label = re.sub(r"[^A-Za-z0-9_.-]", "_", str(config or "unsaved")) or "unsaved"
             config_ref = None
-        v = validate_config(self.paths, parse_yaml(yaml_text))
+        v = validate_config(self.paths, parse_yaml(yaml_text), file=config_ref)
         if not v["ok"]:
             raise ConsoleError("config is invalid: " + "; ".join(f"{e['loc']}: {e['msg']}" for e in v["errors"]))
         cfg = ExperimentConfig(**v["resolved"])
