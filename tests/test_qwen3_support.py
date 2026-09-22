@@ -340,6 +340,20 @@ def test_from_scratch_vocab_keeps_first_rows_and_tie(tiny_qwen3_path):
     assert m.config.vocab_size == small
     out = adapter.forward(_std_batch(_std_tok(small), ARABIC_TEXTS[:2]))
     assert torch.isfinite(out["loss"])
+    # model.embedding_init (2026-09-22): the default `legacy` is exactly this resize —
+    # byte-identical rows, same tie, no report — and `mean` overwrites the rows in place.
+    legacy = Qwen3Adapter(str(tiny_qwen3_path), device="cpu", dtype="float32",
+                          embedding_init={"method": "legacy"})
+    legacy.adapt_to_tokenizer(_std_tok(small))
+    assert torch.equal(legacy.model.model.embed_tokens.weight.detach(), emb.detach())
+    assert legacy.embedding_init_report is None
+    informed = Qwen3Adapter(str(tiny_qwen3_path), device="cpu", dtype="float32",
+                            embedding_init={"method": "mean"})
+    informed.adapt_to_tokenizer(_std_tok(small))
+    w = informed.model.model.embed_tokens.weight
+    assert torch.allclose(w.detach(), before.mean(0).expand(small, -1), atol=1e-6)
+    assert informed.model.lm_head.weight.data_ptr() == w.data_ptr(), "tie must survive the init"
+    assert informed.embedding_init_report.method == "mean"
 
 
 # --------------------------------------------------------------------------

@@ -456,6 +456,7 @@ def run_experiment(config: ExperimentConfig) -> Dict[str, Any]:
         model_name_or_path=config.model.name_or_path,
         device=config.model.device,
         dtype=config.model.dtype,
+        embedding_init=config.model.embedding_init,
         **config.model.params,
     )
     adapter.adapt_to_tokenizer(tokenizer)
@@ -469,6 +470,9 @@ def run_experiment(config: ExperimentConfig) -> Dict[str, Any]:
         tokenizer_type=config.tokenizer.type,
         data_dir=output_dir / "data" / "pretraining_mix",
     )
+    init_report = getattr(adapter, "embedding_init_report", None)
+    if init_report is not None:
+        results["training"]["embedding_init"] = init_report.to_json()
 
     # 6+7) Evaluate on each benchmark + compute MEI
     if config.evaluation.downstream_metrics:

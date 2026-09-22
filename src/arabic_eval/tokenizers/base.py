@@ -4,7 +4,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from arabic_eval.params_spec import ParamSpec
 
@@ -109,3 +109,30 @@ class BaseTokenizer(ABC):
     def get_embedding_config(self) -> Dict[str, Any]:
         """Extra config for the embedding layer. Override for char-level tokenizers."""
         return {}
+
+    def token_surfaces(self) -> Dict[int, List[Tuple[str, float]]]:
+        """The surface strings each token id stands for, with weights — the input of
+        the ``surface_avg`` embedding initialiser (``model.embedding_init``).
+
+        Default for a standard tokenizer: every id maps to its own decoded string
+        with weight 1 (a ByteLevel BPE piece keeps its leading space, a WordPiece
+        piece loses its ``##``, both through ``decode``); the special tokens, any
+        id that decodes to whitespace and a ByteLevel piece that is a partial
+        UTF-8 sequence (decodes to U+FFFD — a lone byte of an Arabic letter, no
+        text of its own) map to an empty list, which the initialiser fills with
+        the base matrix's global mean. Tokenizers whose ids are not surface
+        pieces (AraRooPat's ``[ROOT_*]`` / ``[PAT_*]``) override this with the
+        words the token participates in.
+        """
+        specials = set((self.special_tokens or {}).values())
+        out: Dict[int, List[Tuple[str, float]]] = {}
+        for tid in range(self.vocab_size):
+            if tid in specials:
+                out[tid] = []
+                continue
+            try:
+                text = self.decode([tid])
+            except Exception:  # noqa: BLE001 — an undecodable id has no surface
+                text = ""
+            out[tid] = [(text, 1.0)] if text and text.strip() and "\ufffd" not in text else []
+        return out

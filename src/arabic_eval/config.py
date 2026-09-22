@@ -69,12 +69,38 @@ class TokenizerConfig(BaseModel):
     load_path: Optional[str] = None
 
 
+class EmbeddingInitConfig(BaseModel):
+    """How the rows of a *swapped* vocabulary's embedding matrix start (standard tokenizers).
+
+    ``legacy`` is what every run did before 2026-09-22: ``resize_token_embeddings``
+    keeps the base model's first N pretrained rows, so from-scratch token id 5
+    inherits whatever the base tokenizer's id 5 meant (ASCII, bytes, English
+    pieces) — an arbitrary mapping the literature treats as random init.
+    ``random`` is N(0, 0.02²); ``mean`` puts the base matrix's global mean in
+    every row; ``surface_avg`` builds each row from the surface strings the
+    token stands for (``BaseTokenizer.token_surfaces``): every surface is
+    tokenized with the *base* HF tokenizer and its pieces' pretrained rows are
+    averaged (``weighting`` uniform or by character length), then averaged
+    over the token's surfaces by their weights; a token with no surface gets
+    the global mean. ``norm: base_mean`` rescales each new row to the mean L2
+    norm of the base rows. A native tokenizer (no resize) is never touched.
+    Measured on Qwen3-4B-Base + AraRooPat-17K (2026-09-22): see CLAUDE.md
+    *Reinitialization behavior*.
+    """
+    method: Literal["legacy", "random", "mean", "surface_avg"] = "legacy"
+    base_tokenizer: Optional[str] = None          # HF name/path of the base tokenizer; null = model.name_or_path
+    weighting: Literal["uniform", "char_len"] = "uniform"
+    norm: Literal["none", "base_mean"] = "none"
+    seed: int = 42
+
+
 class ModelConfig(BaseModel):
     type: str = "llama"
     name_or_path: str = "meta-llama/Llama-3.2-1B"
     dtype: str = "bfloat16"
     device: str = "auto"
     params: Dict[str, Any] = Field(default_factory=dict)
+    embedding_init: EmbeddingInitConfig = Field(default_factory=EmbeddingInitConfig)
 
 
 class TaskConfig(BaseModel):

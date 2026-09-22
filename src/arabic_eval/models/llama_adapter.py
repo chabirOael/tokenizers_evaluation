@@ -11,6 +11,11 @@ import torch.nn as nn
 from transformers import AutoModelForCausalLM, AutoConfig
 
 from arabic_eval.models.base import BaseModelAdapter
+from arabic_eval.models.embeddings.init_from_surfaces import (
+    EmbeddingInitReport,
+    apply_embedding_init,
+    capture_base_embeddings,
+)
 from arabic_eval.models.embeddings.standard import resize_token_embeddings
 from arabic_eval.models.embeddings.character_cnn import CharacterCNNEmbedding
 from arabic_eval.models.embeddings.char_jaber_embed import CharJaberEmbedding, CharJaberOutputHead
@@ -71,6 +76,7 @@ class LlamaAdapter(BaseModelAdapter):
         model_name_or_path: str = "meta-llama/Llama-3.2-1B",
         device: str = "auto",
         dtype: str = "bfloat16",
+        embedding_init: Optional[Any] = None,
         **kwargs: Any,
     ) -> None:
         dtype_map = {
@@ -92,6 +98,12 @@ class LlamaAdapter(BaseModelAdapter):
             self._model = self._model.to("cpu")
 
         self._device_str = device
+        self._model_name_or_path = model_name_or_path
+        # model.embedding_init (an EmbeddingInitConfig, a dict of its fields, or None =
+        # legacy): how the rows of a swapped standard vocabulary start after the resize.
+        self._embedding_init: Dict[str, Any] = self._embedding_init_dict(embedding_init)
+        # Filled by _adapt_standard; the pipeline records it under training.embedding_init.
+        self.embedding_init_report: Optional[EmbeddingInitReport] = None
         self._embedding_type: Optional[str] = None
         self._char_output_head: Optional[nn.Module] = None
         # Set during _adapt_charformer; used by _forward_charformer to downsample
@@ -122,10 +134,46 @@ class LlamaAdapter(BaseModelAdapter):
 
         logger.info("Model adapted for embedding type: %s", emb_type)
 
+    @staticmethod
+    def _embedding_init_dict(cfg: Optional[Any]) -> Dict[str, Any]:
+        defaults = {"method": "legacy", "base_tokenizer": None, "weighting": "uniform", "norm": "none", "seed": 42}
+        if cfg is None:
+            return defaults
+        if hasattr(cfg, "model_dump"):
+            cfg = cfg.model_dump()
+        if not isinstance(cfg, dict):
+            raise TypeError(f"embedding_init must be an EmbeddingInitConfig or a dict, got {type(cfg).__name__}")
+        return {**defaults, **cfg}
+
     def _adapt_standard(self, tokenizer: BaseTokenizer) -> None:
-        """Standard subword tokenizer: just resize embeddings."""
+        """Standard subword tokenizer: resize the embeddings, then initialise the rows.
+
+        ``resize_token_embeddings`` keeps the base model's first N pretrained rows
+        (``legacy``); the other ``model.embedding_init`` methods overwrite them
+        from the full pre-resize matrix, captured here first — after the resize
+        only its first N rows exist. A native tokenizer (equal vocab) is a no-op
+        resize and is never re-initialised, whatever the method says.
+        """
+        init = self._embedding_init
+        method = init.get("method", "legacy")
+        old_vocab = int(self._model.get_input_embeddings().weight.shape[0])
+        base_matrix = None
+        if method != "legacy" and old_vocab != tokenizer.vocab_size:
+            base_matrix = capture_base_embeddings(self._model)
         resize_token_embeddings(self._model, tokenizer.vocab_size)
         self._model.config.vocab_size = tokenizer.vocab_size
+        if base_matrix is None:
+            if method != "legacy":
+                logger.info("embedding_init %s skipped: vocab size unchanged (%d), the pretrained rows stay", method, old_vocab)
+            self.embedding_init_report = None
+            return
+        self.embedding_init_report = apply_embedding_init(
+            self._model, tokenizer, method, base_matrix,
+            base_tokenizer_name=init.get("base_tokenizer") or self._model_name_or_path,
+            weighting=init.get("weighting", "uniform"), norm=init.get("norm", "none"),
+            seed=int(init.get("seed", 42)),
+        )
+        del base_matrix
 
     def _adapt_character_cnn(self, tokenizer: BaseTokenizer) -> None:
         """CharacterBERT: replace embedding with CharCNN."""
