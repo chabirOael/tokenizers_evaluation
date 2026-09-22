@@ -56,6 +56,9 @@ from arabic_eval.tokenizers.araroopat import (
     _extract_alpha_chunks,
     _split_runs,
     _strip_clitic_surfaces,
+    entry_realization,
+    join_word,
+    pick_realization,
 )
 from arabic_eval.tokenizers.araroopat_bridge import _resolve_camel_python
 from arabic_eval.tokenizers.araroopat_backend import (
@@ -458,7 +461,24 @@ def trace_validate_words(
     val_rows = []
     for w in unique_words:
         cands = raw_by_word[w]
-        real = MorphAnalyzer._first_valid(cands, w, backend.particles, backend.func_words)
+        top = MorphAnalyzer._first_valid(cands, w, backend.particles, backend.func_words)
+        # The spelling-faithful walk of _native_many (2026-09-22): a rooted top
+        # reading that does not spell the word as written is checked against
+        # every ranked candidate; failing that its ة/ه slot is reconciled.
+        walk: Optional[Dict[str, Any]] = None
+        real = top
+        if B.needs_spelling_walk(top, w):
+            more = backend._candidates_many([w])[0]
+            real = B.prefer_faithful(top, more, w)
+            faithful = next((c for c in more if B.is_rooted_analysis(c) and B.spelling_faithful(c, w)), None)
+            walk = {
+                "top_surface": top.surface, "candidates": len(more),
+                "faithful_index": more.index(faithful) if faithful is not None else None,
+                "outcome": ("faithful candidate" if faithful is not None else
+                            "ة/ه slot reconciled" if real is not top else "kept top reading"),
+                "chosen": {"surface": real.surface, "root": real.root, "pattern": real.pattern,
+                           "fem": real.fem, "enc0": real.enc0},
+            }
         backend._native_cache[w] = real   # same side effect as analyze_many()
         backend._analyze_cache[w] = real  # (overwritten below if the peeler rescues it)
         analyses[w] = real
@@ -472,6 +492,7 @@ def trace_validate_words(
         val_rows.append({
             "word": w, "num_candidates": len(cands), "candidates": traced,
             "accepted_index": next((c["index"] for c in traced if c["accepted"]), None),
+            "spelling_walk": walk,
             "analyzed": real is not None,
             "path": (("FUNC" if real.particle_kind == "func" else "PREP") if real is not None and real.particle else
                      "CLITIC" if real is not None and real.clitic_only else
@@ -1017,17 +1038,18 @@ def trace_training_with_tokenizer(
 
         # ---- Step 4: reconstruction -------------------------------------
         t0 = time.perf_counter()
-        tok._build_reconstruction(entries)
+        tok._build_reconstruction(entries, word_counts)
         gen_lines = tap.take()
         real_reco = dict(tok._reconstruction)
 
         pass1 = []
-        corpus_real: Dict[Tuple[str, str], Counter] = {}
+        written_real: Dict[Tuple[str, str], Counter] = {}
+        diac_real: Dict[Tuple[str, str], Counter] = {}
         all_pairs: set = set()
         for e in entries:
             row: Dict[str, Any] = {"word": e.word}
-            if not (e.analyzed and e.root and e.pattern and e.surface):
-                row["skipped"] = "not analyzed" if not e.analyzed else "missing root/pattern/surface"
+            if not (e.analyzed and e.root and e.pattern):
+                row["skipped"] = "not analyzed" if not e.analyzed else "missing root/pattern"
                 pass1.append(row)
                 continue
             root_tok = f"{PFX_ROOT}{e.root}{SFX}"
@@ -1038,17 +1060,32 @@ def trace_training_with_tokenizer(
                 pass1.append(row)
                 continue
             all_pairs.add((e.root, e.pattern))
-            pro = _trace_proclitic_stack(e.surface, e.proclitics)
+            surface = e.surface or ""
+            pro = _trace_proclitic_stack(surface, e.proclitics)
             enc_ops = _trace_enclitic_stack(pro["output"], e.enclitics)
             s = enc_ops[-1]["after"] if enc_ops else pro["output"]
-            inflected = _strip_clitic_surfaces(e.surface, e.proclitics, e.enclitics)
+            inflected = _strip_clitic_surfaces(surface, e.proclitics, e.enclitics)
+            # The written form: the same strip on the chunk as the corpus wrote it,
+            # accepted only when the decoder's joins give the chunk back.
+            bare = strip_diacritics(e.word)
+            written_stem = _strip_clitic_surfaces(bare, e.proclitics, e.enclitics)
+            rejoined = join_word(e.proclitics, written_stem, e.enclitics) if written_stem else ""
+            real = entry_realization(e, tok.use_diacritized_surface)
             row.update({
-                "root": e.root, "pattern": e.pattern, "surface": e.surface,
+                "root": e.root, "pattern": e.pattern, "surface": surface,
                 "camel_stem": e.stem, "proclitic_strip": pro, "enclitic_strip": enc_ops,
-                "inflected": inflected, "matches_real": inflected == s,
+                "inflected": inflected,
+                "written": {"chunk": bare, "stem": written_stem, "rejoined": rejoined,
+                            "reproduces": rejoined == bare},
+                "form": real[0] if real else None, "source": real[1] if real else None,
+                "weight": word_counts.get(e.word, 1),
+                "matches_real": inflected == s and (
+                    real is None or real[0] == (written_stem if real[1] == "written" else
+                                                (inflected if tok.use_diacritized_surface else strip_diacritics(inflected)))),
             })
-            if inflected:
-                corpus_real.setdefault((e.root, e.pattern), Counter())[inflected] += 1
+            if real is not None:
+                (written_real if real[1] == "written" else diac_real).setdefault(
+                    (e.root, e.pattern), Counter())[real[0]] += word_counts.get(e.word, 1)
             pass1.append(row)
 
         pass2 = []
@@ -1056,14 +1093,16 @@ def trace_training_with_tokenizer(
         for (root, pat) in sorted(all_pairs):
             rid = vocab[f"{PFX_ROOT}{root}{SFX}"]
             pid = vocab[f"{PFX_PAT}{pat}{SFX}"]
-            if (root, pat) in corpus_real:
-                cnt = corpus_real[(root, pat)]
-                chosen = cnt.most_common(1)[0][0]
-                value = chosen if tok.use_diacritized_surface else strip_diacritics(chosen)
+            w_cnt = written_real.get((root, pat))
+            d_cnt = diac_real.get((root, pat))
+            value = pick_realization(w_cnt, d_cnt)
+            if value is not None:
                 pass2.append({
                     "root": root, "pattern": pat, "root_id": rid, "pat_id": pid,
-                    "realizations": [{"form": f, "count": n} for f, n in cnt.most_common()],
-                    "chosen": chosen, "value": value, "tier": 1,
+                    "realizations": [{"form": f, "count": n, "source": "written"} for f, n in (w_cnt or Counter()).most_common()]
+                                    + [{"form": f, "count": n, "source": "diac"} for f, n in (d_cnt or Counter()).most_common()],
+                    "chosen": value, "value": value, "tier": 1,
+                    "source": "written" if w_cnt else "diac",
                     "matches_real": real_reco.get((rid, pid)) == value,
                 })
             else:
@@ -1090,10 +1129,13 @@ def trace_training_with_tokenizer(
                               for k, v in sorted(real_reco.items())],
                     "size": len(real_reco),
                 }, t0, wire=gen_lines, notes=[
-                    "Pass 1 strips the clitic surfaces from CAMeL's full diacritized surface (diac), NOT "
-                    "from its stem field — that keeps inflection (the ي of يدرس) and drops clitics.",
-                    "Pass 2 keeps the most frequent realization per pair and strips diacritics "
-                    "(use_diacritized_surface=false).",
+                    "Pass 1 strips the clitic surfaces from the chunk AS WRITTEN (diacritics removed) and keeps that "
+                    "form when the decoder's own joins give the chunk back (source 'written'); otherwise from CAMeL's "
+                    "diac — NOT from its stem field, so inflection (the ي of يدرس) survives (source 'diac'). "
+                    "With use_diacritized_surface the diac form is the only source.",
+                    "Pass 2 keeps the most frequent WRITTEN form per pair, weighted by corpus occurrences (ties on the "
+                    "string); diac forms are consulted only for a pair with no written form. That is why الإعرابية "
+                    "decodes with the writers' إ although CAMeL's reading spells أَعْرابِيَّة (2026-09-22).",
                     "Pass 3 only fires for pairs with no usable surface: CAMeL generator (tier 2), "
                     "then naive slot substitution (tier 3).",
                 ])

@@ -509,13 +509,14 @@ and the peeler a different residual reading. `_op_analyze` now sorts by
 the native path too — a latent non-reproducibility that predates the peeler.
 `TestLiveCamel::test_live_reading_order_is_deterministic_across_processes` pins it.
 
-### P7b — should the native whole-word path also see `top > 1`?
+### P7b — should the native whole-word path also see `top > 1`? — **PARTLY DONE 2026-09-22**
 
-`_first_valid`'s "walk lower-ranked candidates" is still dead code on the native path (it sees
-one candidate). Requesting `top=32` there would let a rank-2 root+pattern reading rescue a
-rank-1 NTWS/backoff one — but it changes admission across the whole corpus and the pre-pass
-payload grows ~10×. Measure on the 300-question Arabic-Exam admission benchmark before
-deciding; if it helps, it's a one-line change in `_native_many`.
+`_native_many` now asks for `top=32` for exactly the words whose top-1 reading does not spell
+the word as written (`needs_spelling_walk`, ~8 % of the corpus chunks) and walks them for a
+spelling-faithful rooted reading (`prefer_faithful`, see P8). A rank-1 NTWS / backoff reading
+still goes straight to LIT — rescuing those with a rank-2 root reading remains open and needs
+the admission benchmark first; the cost side is settled (one extra batched request for the
+unfaithful words, 443 words/s over the bridge, the pre-pass cache migrates instead of rebuilding).
 
 ### Bare alef as the interrogative — opt-in (`peel_bare_alef`, default off)
 
@@ -558,18 +559,49 @@ for i in range(0, len(need), 64):
 json.dump(rec, open("tests/data/araroopat_camel_recorded.json", "w"), ensure_ascii=False, indent=1, sort_keys=True)
 ```
 
-### P8 — native analyses decode to CAMeL's canonical spelling, not the input (pre-existing)
+### P8 — native analyses decode to CAMeL's canonical spelling, not the input — **FIXED 2026-09-22**
 
-Measured on the pre-pass cache: **84,470 of 506,101** natively analysed types (16.7 %) have
-`dediac(surface) != word` — ة/ه (`عميلة` → `عميله`, 22k), hamza restoration (`الاسفل` →
-`الأسفل`, 22k), ى/ي (3k). `قرضة` encodes as `[ROOT_قرض] [PAT_1َ2ْ3] [CLITICE_ه]` and decodes as
-`قرضه` today. The peeler refuses such residuals; the native path does not check. The PREP path
-already applies the right rule (accept only if the input chunk equals the decoder's output) —
-generalising it to `_dict_to_analysis` is the fix, but it changes native admission, so measure
-before shipping. Note the platform's preprocessing normalises alef variants (`normalize_alef=True`),
-which interacts with this: in pipeline text the interrogative surfaces as bare `ا`, so
-`PEEL_PRC3 = ("أ", "ا")` — with the `ا + ل`-is-the-article guard, measured at 1.2 % false peels on
-10,000 CAMeL-rejected types (§6b).
+Measured on the pre-pass cache before the fix: **91,355 of 519,330** natively analysed rooted
+types (17.6 %) had `dediac(surface) != word` — hamza seat 50 228 (`الإعرابية` read as
+`الأَعْرابِيَّة`, `الاسفل` → `الأسفل`), ة/ه 27 608 (21 160 of them a ة-final word read with a
+3ms ه pronoun: `همزة` → `هَمَزَهُ` → `[CLITICE_ه]` → `همزه`), ى/ي 9 085, mixed 4 895. The cause
+is CAMeL's input normalisation (آ/أ/إ/ٱ → ا, ى → ي, ة → ه before the database lookup) plus an
+MLE disambiguator that never looks at the spelling. Three fixes, in the order they apply:
+
+1. **Spelling-faithful candidate walk** (`prefer_faithful`, `araroopat_backend.py`): a rooted
+   top reading that does not spell the word yields to the first ranked candidate (`top=32`,
+   fetched only for those words) that does — `الإعراب` gets `إِعْراب` (rank 5) instead of
+   `أَعْراب`, `همزة` the feminine noun `هَمْزَة` instead of the verb + pronoun. Faithful candidate
+   exists for 22 % of the hamza/ى cases (the rest are hamza-dropping writers: `ابعد`) and 44 %
+   of the ة/ه ones.
+2. **ة/ه slot reconciliation** (`reconcile_final_taa`): no faithful candidate and the mismatch
+   is exactly that slot → the slot follows the written letter (a ة-final word never carries a
+   ه pronoun; a written ه is a ه). Covers the remaining 56 % of the ة/ه class (`المتضرره`,
+   `تزعمتة`).
+3. **Written-form reconstruction surfaces** (`entry_realization` / `_build_reconstruction`):
+   the surface of a (root, pattern) pair is the most frequent *written* clitic-stripped stem
+   (occurrence-weighted, accepted only when `join_word` — the decoder's own joins — gives the
+   chunk back), CAMeL's `diac` only as a fallback (110 of 127 293 pairs on the full corpus).
+   This is what makes `الإعرابية` (no faithful candidate in CAMeL's database) decode with the
+   writers' إ.
+
+Plus a closed-class fix found on the way (`_particle_analysis`): the alef-insensitive inventory
+match let the verb `كان` ("was", CAMeL POS `verb`) become `[FUNC_كأن]` and decode as `كأن` (27
+chunk types: `كان وكان فكان أكان كانك …`, plus `أفلام` → `أم`, `آن` → `أن`). An alef-*inexact*
+match now needs a closed-class reading (not `verb` / `noun*` / `adj*`; `verb_pseudo` stays), and
+an exactly-spelled inventory entry beats the alphabetically first fold (`إنما` = `إن + ما`).
+A hamza the writer dropped still canonicalises (`الى` → `إلى`, `انها` → `أنها`).
+
+`_CACHE_FORMAT` 8 → 10 with **migration** instead of a rebuild (`_reusable_cache_entries`):
+only the entries the new rules can change are re-analysed (91 355 rooted + ~600 particle
+entries, 4 min over the bridge). Format characters (U+200B, ZWNJ, bidi marks — 70 U+200B in
+the 250 held-out references) are dropped at encode (`normalize_text`) instead of `<unk>`.
+Measured with `scripts/measure_araroopat_roundtrip.py` (v2 → v3 tokenizer, same params):
+reference round-trip chrF 89.11 → 90.85 raw, 96.71 → 98.68 with reference diacritics
+stripped; exact match on 2 000 distinct corpus words 96.40 % → 99.15 % (ة/ه 33 → 0, hamza
+29 → 16 — all hamza-dropped or hamza-added spellings canonicalised to the corpus majority —
+ى/ي 7 → 1). Tests: `tests/test_araroopat_decode_canonical.py`. The v3 numbers are those of
+the format-9 build; the format-10 rebuild (the كان fix) is measured in the 2026-09-22 report.
 
 ---
 

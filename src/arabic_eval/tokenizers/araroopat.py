@@ -40,6 +40,7 @@ from arabic_eval.tokenizers.araroopat_backend import (
     MorphAnalyzer,
     join_particle_enclitic,
     naive_pattern_fill,
+    needs_spelling_walk,
     strip_enclitics_from_end,
     strip_proclitics_from_start,
 )
@@ -125,6 +126,28 @@ CHAR_INVENTORY = sorted(ARABIC_LETTERS - {TAA_MARBUTA}) + sorted(ARABIC_DIACRITI
 def _clean_arabic(text: str) -> str:
     """Keep only Arabic letters, long vowels, and diacritics."""
     return "".join(c for c in text if c in ARABIC_LETTERS or c in ARABIC_DIACRITICS)
+
+
+def _is_format_char(ch: str) -> bool:
+    """Unicode ``Cf`` — zero-width space / joiners, bidi marks, BOM, soft hyphen, ALM."""
+    return unicodedata.category(ch) == "Cf"
+
+
+def normalize_text(text: str) -> str:
+    """The one text normalisation of the tokenizer: NFKC, then format characters dropped.
+
+    Shared by ``encode`` and the corpus pre-pass so the chunk universe (and
+    therefore the analyzer cache keys) agree. Format characters carry no
+    text: U+200B is the most common one in web Arabic (70 occurrences in the
+    250 held-out CIDAR references, always at a word start) and used to
+    reach ``_encode_word`` as an unknown character → ``<unk>`` → ``?`` on
+    decode. NFKC already folds U+FEFF-style compatibility forms of letters;
+    it does not touch the ``Cf`` class.
+    """
+    text = unicodedata.normalize("NFKC", text)
+    if any(_is_format_char(c) for c in text):
+        text = "".join(c for c in text if not _is_format_char(c))
+    return text
 
 
 def _is_arabic_alpha(ch: str) -> bool:
@@ -343,7 +366,7 @@ class AraRooPatTokenizer(BaseTokenizer):
 
         # ---- Step 1: corpus pre-pass (with on-disk cache) ----
         cache_dir = Path(cache_path) if cache_path else Path("outputs/tokenizers/araroopat_cache")
-        entries = self._corpus_prepass(texts, cache_dir)
+        entries, chunk_counts = self._corpus_prepass(texts, cache_dir)
 
         # ---- Step 2: frequency tables ----
         root_freq: Counter = Counter()
@@ -385,7 +408,7 @@ class AraRooPatTokenizer(BaseTokenizer):
         self._build_vocab(root_freq, pat_freq, proclitic_freq, enclitic_freq)
 
         # ---- Step 4: reconstruction lookup from observed (root, pattern) ----
-        self._build_reconstruction(entries)
+        self._build_reconstruction(entries, chunk_counts)
 
         # ---- Step 5: provenance metadata ----
         self._build_metadata(root_freq, pat_freq, proclitic_freq, enclitic_freq,
@@ -411,25 +434,58 @@ class AraRooPatTokenizer(BaseTokenizer):
     # Bump when the post-processing in araroopat_backend changes shape
     # (_dict_to_analysis, normalize_pattern, strip_proclitics_from_start, ...).
     # 5: [FUNC_*] group + alef-insensitive matching; 6: clitic-only words; 7: no
-    # peel onto them; 8: database proper nouns kept as `proper` entries (2026-09-16)
-    _CACHE_FORMAT = 8
+    # peel onto them; 8: database proper nouns kept as `proper` entries (2026-09-16);
+    # 9: spelling-faithful candidate walk + ة/ه slot reconciliation; 10: an alef-inexact
+    # closed-class match needs a closed-class POS (كان is not كأن) — both 2026-09-22
+    _CACHE_FORMAT = 10
+    # Formats a cache can be *migrated* from instead of discarded: the entries the
+    # newer rules can change are re-analysed (``_stale_cache_entry``), every other
+    # entry is reused as is. 8 → 10 touches the rooted entries whose surface does
+    # not spell the word (~92 K of the corpus' 1.15 M chunks) plus the particle
+    # entries matched modulo alef (~600); 9 → 10 only the latter. Minutes over the
+    # bridge against hours for a full pre-pass.
+    _MIGRATABLE_FORMATS = (8, 9)
 
     def _cache_key(self) -> Tuple[Any, ...]:
         return (self._CACHE_FORMAT, tuple(self.prepositions), self.clitic_peeler,
                 self.peel_bare_alef, tuple(self.func_words))
 
-    def _corpus_prepass(self, texts: List[str], cache_dir: Path) -> List[CorpusEntry]:
+    def _reusable_cache_entries(self, payload: Any) -> Tuple[List[CorpusEntry], str]:
+        """The entries of a loaded cache payload this tokenizer may reuse, and why.
+
+        Returns ``(entries, "match")`` when the key is ours, ``(entries minus
+        the ones the newer rule can change, "migrate")`` when only the format
+        differs and is in ``_MIGRATABLE_FORMATS``; raises ``ValueError`` for
+        anything else (a different inventory or peeler setting, a stale format).
+        Shared with the explorer's cache card so both report the same decision.
+        """
+        if not isinstance(payload, dict):
+            raise ValueError("cache format/key mismatch")
+        key = payload.get("key")
+        mine = self._cache_key()
+        if key == mine:
+            return list(payload["entries"]), "match"
+        if (isinstance(key, tuple) and len(key) == len(mine) and key[1:] == mine[1:]
+                and key[0] in self._MIGRATABLE_FORMATS):
+            kept = [e for e in payload["entries"] if not _stale_cache_entry(e, key[0])]
+            return kept, "migrate"
+        raise ValueError("cache format/key mismatch")
+
+    def _corpus_prepass(self, texts: List[str], cache_dir: Path) -> Tuple[List[CorpusEntry], Counter]:
         """Analyze every distinct *alpha chunk* in the corpus once. Cache to disk.
 
         We chunk words by character class (matching what ``_encode_word`` does
         at runtime) so the cache keys match the analyze() calls made during
         encoding — no analyzer hits at runtime if the cache covers the corpus.
+
+        Returns the entries (corpus order) and the chunk → occurrence counter
+        the reconstruction table weights its written surfaces by.
         """
         backend = self._ensure_backend()
 
         word_counts: Counter = Counter()
         for t in texts:
-            t = unicodedata.normalize("NFKC", t)
+            t = normalize_text(t)
             for w in t.split():
                 for chunk in _extract_alpha_chunks(w):
                     word_counts[chunk] += 1
@@ -449,18 +505,20 @@ class AraRooPatTokenizer(BaseTokenizer):
                     payload = pickle.load(f)
                 # The cache stores *post-processed* entries, so it is only
                 # valid for the analysis logic + preposition inventory that
-                # produced it. Anything else re-runs the pre-pass rather
-                # than silently training on stale analyses.
-                if not isinstance(payload, dict) or payload.get("key") != self._cache_key():
-                    raise ValueError("cache format/key mismatch")
-                cached = payload["entries"]
+                # produced it. A migratable older format keeps every entry
+                # the newer rule cannot change; anything else re-runs the
+                # pre-pass rather than silently training on stale analyses.
+                cached, decision = self._reusable_cache_entries(payload)
+                if decision == "migrate":
+                    logger.info("Cache is format %s — migrating: %d of %d entries reused, the rest re-analysed.",
+                                payload["key"][0], len(cached), len(payload["entries"]))
                 cached_by_word = {e.word: e for e in cached}
                 missing = [w for w in unique_words if w not in cached_by_word]
                 if not missing:
                     logger.info("Loaded cached corpus analysis (%d entries) from %s",
                                 len(cached), cache_file)
                     # Filter to current vocabulary universe; expand counts.
-                    return [e for e in cached if e.word in word_counts]
+                    return [e for e in cached if e.word in word_counts], word_counts
                 logger.info("Cache covers %d of %d unique chunks — analyzing only the %d missing ones.",
                             len(unique_words) - len(missing), len(unique_words), len(missing))
                 to_analyze = missing
@@ -512,7 +570,7 @@ class AraRooPatTokenizer(BaseTokenizer):
             logger.info("Cached corpus analysis to %s (%d entries, + first-10k JSON view)",
                         cache_file, len(to_store))
 
-        return entries
+        return entries, word_counts
 
     def _build_vocab(
         self,
@@ -596,46 +654,63 @@ class AraRooPatTokenizer(BaseTokenizer):
             "unk_token": vocab[TOK_UNK],
         }
 
-    def _build_reconstruction(self, entries: List[CorpusEntry]) -> None:
+    def _build_reconstruction(self, entries: List[CorpusEntry],
+                              word_counts: Optional[Counter] = None) -> None:
         """Build (root_id, pat_id) -> *inflected-stem* surface for every distinct pair.
 
         Important nuance: CAMeL's ``stem`` field gives the **lexical** stem
         (root letters in their pattern slots only — no inflectional prefixes
         like the present-tense ي of يدرس). What we want for reconstruction
-        is the **inflected stem** — diacritized surface with clitics stripped
-        but inflection retained. We compute that by stripping clitic surface
-        chars from CAMeL's ``diac`` field (the full surface).
+        is the **inflected stem** — the surface with clitics stripped but
+        inflection retained.
+
+        Where that surface comes from (``entry_realization``): with
+        ``use_diacritized_surface`` off, from the chunk **as the corpus wrote
+        it** — clitics stripped from the written word, accepted only when the
+        decoder's own joins give the word back — so a pair decodes to the
+        spelling the writers used (الإعرابية, not CAMeL's أَعْرابِيَّة; see
+        the backend's *spelling-faithful* section). CAMeL's ``diac`` is the
+        fallback for an entry whose written form does not reproduce, and the
+        only source when the diacritized surface is requested. The most
+        frequent written form wins, weighted by corpus occurrences when
+        ``word_counts`` is given (chunk types otherwise); ``diac`` forms are
+        consulted only for pairs with no written form at all, then the
+        generator, then naive slot substitution.
         """
         reco: Dict[Tuple[int, int], str] = {}
         backend = self._ensure_backend()
+        weight = (lambda w: word_counts.get(w, 1)) if word_counts else (lambda w: 1)
 
-        # Pass 1: collect inflected-stem realizations per (root, pattern_bare).
-        corpus_realizations: Dict[Tuple[str, str], Counter] = {}
+        # Pass 1: collect inflected-stem realizations per (root, pattern_bare),
+        # written forms and diac-derived forms in separate counters.
+        written: Dict[Tuple[str, str], Counter] = {}
+        diac_forms: Dict[Tuple[str, str], Counter] = {}
         all_pairs: set = set()
         for e in entries:
-            if not (e.analyzed and e.root and e.pattern and e.surface):
+            if not (e.analyzed and e.root and e.pattern):
                 continue
             root_tok = f"{PFX_ROOT}{e.root}{SFX}"
             pat_tok = f"{PFX_PAT}{e.pattern}{SFX}"
             if root_tok not in self._vocab or pat_tok not in self._vocab:
                 continue
             all_pairs.add((e.root, e.pattern))
-            inflected = _strip_clitic_surfaces(e.surface, e.proclitics, e.enclitics)
-            if inflected:
-                corpus_realizations.setdefault((e.root, e.pattern), Counter())[inflected] += 1
+            real = entry_realization(e, self.use_diacritized_surface)
+            if real is None:
+                continue
+            form, source = real
+            (written if source == "written" else diac_forms).setdefault(
+                (e.root, e.pattern), Counter())[form] += weight(e.word)
 
-        # Pass 2: prefer the most-frequent corpus realization.
+        # Pass 2: the most frequent written form, else the most frequent diac form.
         unresolved: List[Tuple[str, str]] = []
         for (root, pat) in all_pairs:
-            if (root, pat) in corpus_realizations:
-                inflected = corpus_realizations[(root, pat)].most_common(1)[0][0]
-            else:
+            form = pick_realization(written.get((root, pat)), diac_forms.get((root, pat)))
+            if form is None:
                 unresolved.append((root, pat))
                 continue
-            inflected = inflected if self.use_diacritized_surface else strip_diacritics(inflected)
             root_id = self._vocab[f"{PFX_ROOT}{root}{SFX}"]
             pat_id = self._vocab[f"{PFX_PAT}{pat}{SFX}"]
-            reco[(root_id, pat_id)] = inflected
+            reco[(root_id, pat_id)] = form
 
         # Pass 3: resolve the rest via CAMeL generator (returns bare stem) +
         # naive substitution as last resort.
@@ -652,6 +727,9 @@ class AraRooPatTokenizer(BaseTokenizer):
                 reco[(root_id, pat_id)] = inflected
 
         self._reconstruction = reco
+        n_written = sum(1 for k in all_pairs if k in written)
+        logger.info("Reconstruction: %d pairs — %d from written corpus forms, %d from CAMeL diac, %d generated",
+                    len(all_pairs), n_written, len(all_pairs) - n_written - len(unresolved), len(unresolved))
 
     def _build_metadata(
         self,
@@ -798,7 +876,7 @@ class AraRooPatTokenizer(BaseTokenizer):
             ids.append(self._special_token_map["bos_token"])
             toks.append("")  # BOS contributes no Arabic content
 
-        text = unicodedata.normalize("NFKC", text)
+        text = normalize_text(text)
         for raw_word in text.split():
             self._encode_word(raw_word, ids, toks)
 
@@ -1217,6 +1295,60 @@ class AraRooPatTokenizer(BaseTokenizer):
         return strip_diacritics(naive_pattern_fill(root, pattern)) or root
 
     # ------------------------------------------------------------------
+    # Surfaces per token (embedding initialisation)
+    # ------------------------------------------------------------------
+
+    def token_surfaces(self) -> Dict[int, List[Tuple[str, float]]]:
+        """What each id stands for, for ``model.embedding_init: surface_avg``.
+
+        * ``[ROOT_r]`` → the reconstruction surface of every (r, p) pair in the
+          table, weighted by the pattern's corpus frequency (``vocab_metadata``;
+          1 when unknown): the words the root appears in, in proportion.
+        * ``[PAT_p]`` → the surface of every (r, p) pair, weighted by the root's
+          frequency.
+        * ``[CLITICP_*]`` / ``[CLITICE_*]`` / ``[PREP_*]`` / ``[FUNC_*]`` /
+          ``[CHAR_*]`` / ``[DIGIT_*]`` / ``[PUNCT_*]`` → the surface string itself.
+        * Word-initial Arabic surfaces (roots, patterns, prepositions, function
+          words, proclitics) also get the space-prefixed variant with the same
+          weight — the base tokenizers are byte-level with leading-space pieces.
+        * ``<pad>`` / ``<s>`` / ``</s>`` / ``<unk>`` and the LIT / PROP markers →
+          empty (the initialiser's global-mean fallback).
+        """
+        root_freq = {r: int(m.get("freq") or 0) for r, m in (self._metadata.get("roots") or {}).items()}
+        pat_freq = {p_: int(m.get("freq") or 0) for p_, m in (self._metadata.get("patterns") or {}).items()}
+        by_root: Dict[int, List[Tuple[str, float]]] = {}
+        by_pat: Dict[int, List[Tuple[str, float]]] = {}
+        for (rid, pid), surf in self._reconstruction.items():
+            if not surf:
+                continue
+            root = self._reverse_vocab.get(rid, "")[len(PFX_ROOT):-len(SFX)]
+            pat = self._reverse_vocab.get(pid, "")[len(PFX_PAT):-len(SFX)]
+            by_root.setdefault(rid, []).append((surf, float(max(pat_freq.get(pat, 0), 1))))
+            by_pat.setdefault(pid, []).append((surf, float(max(root_freq.get(root, 0), 1))))
+
+        def with_space(items: List[Tuple[str, float]]) -> List[Tuple[str, float]]:
+            return items + [(" " + s_, w) for s_, w in items]
+
+        out: Dict[int, List[Tuple[str, float]]] = {}
+        for tok, tid in self._vocab.items():
+            if tok in SPECIAL_TOKENS_ORDERED or tok in (TOK_LIT_BEGIN, TOK_LIT_END, TOK_PROP_BEGIN, TOK_PROP_END):
+                out[tid] = []
+            elif tok.startswith(PFX_ROOT):
+                out[tid] = with_space(by_root.get(tid, []))
+            elif tok.startswith(PFX_PAT):
+                out[tid] = with_space(by_pat.get(tid, []))
+            elif tok.startswith((PFX_CLITICP, PFX_PREP, PFX_FUNC)):
+                pfx = next(p_ for p_ in (PFX_CLITICP, PFX_PREP, PFX_FUNC) if tok.startswith(p_))
+                out[tid] = with_space([(tok[len(pfx):-len(SFX)], 1.0)])
+            elif tok.startswith((PFX_CLITICE, PFX_CHAR, PFX_DIGIT, PFX_PUNCT)):
+                pfx = next(p_ for p_ in (PFX_CLITICE, PFX_CHAR, PFX_DIGIT, PFX_PUNCT) if tok.startswith(p_))
+                inner = tok[len(pfx):-len(SFX)]
+                out[tid] = [(inner, 1.0)] if inner.strip() else []
+            else:
+                out[tid] = []
+        return out
+
+    # ------------------------------------------------------------------
     # Save / load
     # ------------------------------------------------------------------
 
@@ -1374,6 +1506,92 @@ def _strip_clitic_surfaces(
     """
     s = strip_proclitics_from_start(surface, proclitics)
     return strip_enclitics_from_end(s, enclitics)
+
+
+def join_word(proclitics: Tuple[str, ...], stem: str, enclitics: Tuple[str, ...]) -> str:
+    """Rebuild a ROOT+PAT word from its parts exactly as ``decode`` does.
+
+    Proclitics through ``join_proclitics`` (the لِ+الـ contraction), then the
+    enclitics in emission order (innermost first) with the decoder's ة → ت
+    rule before a pronoun (مدرس + ة + ه → مدرسته). The inverse of
+    ``_strip_clitic_surfaces`` when the strip was clean — which is exactly
+    what ``entry_realization`` uses it to check.
+    """
+    word = stem
+    for enc in enclitics:
+        if not enc:
+            continue
+        if word.endswith(TAA_MARBUTA) and enc != TAA_MARBUTA:
+            word = word[:-1] + "ت"
+        word += enc
+    return join_proclitics(list(proclitics)) + word
+
+
+def entry_realization(e: CorpusEntry, use_diacritized_surface: bool) -> Optional[Tuple[str, str]]:
+    """The inflected-stem surface a corpus entry contributes to its (root, pattern) pair.
+
+    Returns ``(form, source)`` with ``source`` ``"written"`` — the chunk as the
+    corpus wrote it, diacritics and clitics stripped, accepted only when
+    ``join_word`` gives the (undiacritized) chunk back — or ``"diac"`` — the
+    clitic-stripped CAMeL ``diac``, the pre-2026-09-22 rule and the fallback
+    when the written strip does not reproduce (a ه pronoun read on a written
+    ة the reconciliation could not fix, a peel the joins do not cover).
+    With ``use_diacritized_surface`` the answer is always the diac form: the
+    corpus does not carry the diacritics a diacritized table needs. ``None``
+    when neither source yields a form.
+    """
+    if not use_diacritized_surface and e.word:
+        bare = strip_diacritics(e.word)
+        stem = _strip_clitic_surfaces(bare, e.proclitics, e.enclitics)
+        if stem and join_word(e.proclitics, stem, e.enclitics) == bare:
+            return stem, "written"
+    if e.surface:
+        inflected = _strip_clitic_surfaces(e.surface, e.proclitics, e.enclitics)
+        if inflected:
+            return (inflected if use_diacritized_surface else strip_diacritics(inflected)), "diac"
+    return None
+
+
+def pick_realization(written: Optional[Counter], diac_forms: Optional[Counter]) -> Optional[str]:
+    """Pass 2 of ``_build_reconstruction``: the most frequent written form, else diac form.
+
+    Ties break on the form string so the table is a function of the corpus,
+    not of dict order.
+    """
+    for counter in (written, diac_forms):
+        if counter:
+            return min(counter.items(), key=lambda kv: (-kv[1], kv[0]))[0]
+    return None
+
+
+def _stale_under_spelling_walk(e: CorpusEntry) -> bool:
+    """Would the 2026-09-22 spelling-faithful walk re-decide this cached entry?
+
+    Only a rooted, natively analysed entry whose surface does not spell the
+    word is a candidate for a different reading (see the backend's
+    ``needs_spelling_walk``); particles, clitic-only words, rootless names,
+    peeled words and unanalysed chunks are untouched by the rule.
+    """
+    if not (e.analyzed and e.root and e.pattern) or e.peeled or e.particle or e.clitic_only:
+        return False
+    return needs_spelling_walk(
+        Analysis(root=e.root, pattern=e.pattern, pattern_raw=e.pattern_raw or "", stem=e.stem or "",
+                 surface=e.surface or "", lemma="", pos=""),
+        e.word,
+    )
+
+
+def _stale_particle_match(e: CorpusEntry) -> bool:
+    """A cached closed-class entry whose word does not contain the particle's own
+    spelling — matched modulo alef, the case the format-10 POS gate re-decides."""
+    return bool(e.analyzed and e.particle and e.particle not in strip_diacritics(e.word))
+
+
+def _stale_cache_entry(e: CorpusEntry, from_format: int) -> bool:
+    """Which entries of an older cache format the current rules may change."""
+    if from_format <= 8 and _stale_under_spelling_walk(e):
+        return True
+    return from_format <= 9 and _stale_particle_match(e)
 
 
 def _split_runs(word: str) -> List[Tuple[str, str]]:

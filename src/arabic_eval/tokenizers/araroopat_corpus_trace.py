@@ -70,6 +70,9 @@ from arabic_eval.tokenizers.araroopat import (
     _extract_alpha_chunks,
     _split_runs,
     _strip_clitic_surfaces,
+    entry_realization,
+    join_word,
+    pick_realization,
 )
 from arabic_eval.tokenizers.araroopat_backend import (
     CorpusEntry,
@@ -868,19 +871,26 @@ class CorpusTraceJob:
             try:
                 with cache_file.open("rb") as f:
                     payload = pickle.load(f)
-                if not isinstance(payload, dict) or payload.get("key") != tok._cache_key():
-                    key_found = payload.get("key") if isinstance(payload, dict) else None
+                key_found = payload.get("key") if isinstance(payload, dict) else None
+                try:
+                    cached, reuse = tok._reusable_cache_entries(payload)
+                except ValueError:
+                    cached, reuse = None, "mismatch"
+                if cached is None:
                     decision = "miss"
                     reasons.append("cache format/key mismatch — analyses were produced by a different "
                                    "_CACHE_FORMAT / preposition inventory / peeler setting")
                 else:
-                    key_found = payload["key"]
-                    cached = payload["entries"]
-                    cached_n = len(cached)
+                    cached_n = len(payload["entries"])
+                    if reuse == "migrate":
+                        reasons.append(f"format {key_found[0]} → {tok._CACHE_FORMAT}: migratable — "
+                                       f"{cached_n - len(cached):,} entries the spelling-faithful walk can change are "
+                                       f"re-analysed, {len(cached):,} reused")
                     cached_words = {e.word for e in cached}
                     missing = [w for w in unique_words if w not in cached_words]
                     coverage = {"cached_unique": len(cached_words), "needed_unique": len(unique_words),
-                                "missing": len(missing), "missing_examples": missing[:20]}
+                                "missing": len(missing), "missing_examples": missing[:20],
+                                "migrated": cached_n - len(cached) if reuse == "migrate" else 0}
                     if not missing:
                         decision = "hit"
                         entries = [e for e in cached if e.word in word_counts]
@@ -903,7 +913,8 @@ class CorpusTraceJob:
             "cache_corpus_analysis": tok.cache_corpus_analysis,
             "default_cache_file": str(cache_file.relative_to(REPO_ROOT)),
             "default_cache_exists": cache_file.exists(),
-            "rule": "key must match; chunks the cache holds are reused, chunks it lacks go to CAMeL (partial), the union is written back",
+            "rule": "key must match (a migratable older format keeps every entry the newer rule cannot change); "
+                    "chunks the cache holds are reused, chunks it lacks go to CAMeL (partial), the union is written back",
             "decision": decision, "reasons": reasons, "policy": req["cache_policy"],
             "write_cache": req["write_cache"],
             "key_expected": list(tok._cache_key()), "key_found": list(key_found) if key_found else None,
@@ -1161,53 +1172,72 @@ class CorpusTraceJob:
         self._stage("reconstruction", detail="_build_reconstruction over every entry (generator for unseen pairs)")
         t0 = time.perf_counter()
         with tap:
-            tok._build_reconstruction(entries)
+            tok._build_reconstruction(entries, word_counts)
             gen_lines = tap.take()
         real_reco = dict(tok._reconstruction)
-        corpus_real: Dict[Tuple[str, str], Counter] = {}
+        written_real: Dict[Tuple[str, str], Counter] = {}
+        diac_real: Dict[Tuple[str, str], Counter] = {}
         all_pairs: set = set()
         skipped: Counter = Counter()
+        source_counts: Counter = Counter()
         for e in entries:
-            if not (e.analyzed and e.root and e.pattern and e.surface):
-                skipped["not analyzed" if not e.analyzed else "missing root/pattern/surface"] += 1
+            if not (e.analyzed and e.root and e.pattern):
+                skipped["not analyzed" if not e.analyzed else "missing root/pattern"] += 1
                 continue
             rt, pt = f"{PFX_ROOT}{e.root}{SFX}", f"{PFX_PAT}{e.pattern}{SFX}"
             if rt not in vocab or pt not in vocab:
                 skipped["root cut by budget" if rt not in vocab else "pattern cut by budget"] += 1
                 continue
             all_pairs.add((e.root, e.pattern))
-            inflected = _strip_clitic_surfaces(e.surface, e.proclitics, e.enclitics)
-            if inflected:
-                corpus_real.setdefault((e.root, e.pattern), Counter())[inflected] += 1
+            real = entry_realization(e, tok.use_diacritized_surface)
+            if real is None:
+                skipped["no usable surface"] += 1
+                continue
+            source_counts[real[1]] += 1
+            (written_real if real[1] == "written" else diac_real).setdefault(
+                (e.root, e.pattern), Counter())[real[0]] += word_counts.get(e.word, 1)
+        corpus_real = {k: True for k in set(written_real) | set(diac_real)}
         pass1 = []
         for e in sample_entries:
             row: Dict[str, Any] = {"word": e.word}
-            if not (e.analyzed and e.root and e.pattern and e.surface):
-                row["skipped"] = "not analyzed" if not e.analyzed else "missing root/pattern/surface"
+            if not (e.analyzed and e.root and e.pattern):
+                row["skipped"] = "not analyzed" if not e.analyzed else "missing root/pattern"
             else:
                 rt, pt = f"{PFX_ROOT}{e.root}{SFX}", f"{PFX_PAT}{e.pattern}{SFX}"
                 if rt not in vocab or pt not in vocab:
                     row["skipped"] = f"{rt if rt not in vocab else pt} not in vocab"
                 else:
-                    pro = _trace_proclitic_stack(e.surface, e.proclitics)
+                    surface = e.surface or ""
+                    pro = _trace_proclitic_stack(surface, e.proclitics)
                     enc_ops = _trace_enclitic_stack(pro["output"], e.enclitics)
                     s = enc_ops[-1]["after"] if enc_ops else pro["output"]
-                    inflected = _strip_clitic_surfaces(e.surface, e.proclitics, e.enclitics)
-                    row.update({"root": e.root, "pattern": e.pattern, "surface": e.surface, "camel_stem": e.stem,
+                    inflected = _strip_clitic_surfaces(surface, e.proclitics, e.enclitics)
+                    bare = strip_diacritics(e.word)
+                    written_stem = _strip_clitic_surfaces(bare, e.proclitics, e.enclitics)
+                    rejoined = join_word(e.proclitics, written_stem, e.enclitics) if written_stem else ""
+                    real = entry_realization(e, tok.use_diacritized_surface)
+                    row.update({"root": e.root, "pattern": e.pattern, "surface": surface, "camel_stem": e.stem,
                                 "proclitic_strip": pro, "enclitic_strip": enc_ops, "inflected": inflected,
-                                "matches_real": inflected == s})
+                                "written": {"chunk": bare, "stem": written_stem, "rejoined": rejoined,
+                                            "reproduces": rejoined == bare},
+                                "form": real[0] if real else None, "source": real[1] if real else None,
+                                "weight": word_counts.get(e.word, 1),
+                                "matches_real": inflected == s and (
+                                    real is None or real[0] == (written_stem if real[1] == "written" else
+                                                                (inflected if tok.use_diacritized_surface
+                                                                 else strip_diacritics(inflected))))})
             pass1.append(row)
         pass2 = []
         sample_pairs = sorted({(e.root, e.pattern) for e in sample_entries
                                if e.analyzed and e.root and e.pattern and (e.root, e.pattern) in corpus_real})
         for (root, pat) in sample_pairs:
             rid, pid = vocab[f"{PFX_ROOT}{root}{SFX}"], vocab[f"{PFX_PAT}{pat}{SFX}"]
-            cnt = corpus_real[(root, pat)]
-            chosen = cnt.most_common(1)[0][0]
-            value = chosen if tok.use_diacritized_surface else strip_diacritics(chosen)
+            w_cnt, d_cnt = written_real.get((root, pat)), diac_real.get((root, pat))
+            value = pick_realization(w_cnt, d_cnt)
             pass2.append({"root": root, "pattern": pat, "root_id": rid, "pat_id": pid,
-                          "realizations": [{"form": f, "count": n} for f, n in cnt.most_common(8)],
-                          "chosen": chosen, "value": value, "tier": 1,
+                          "realizations": [{"form": f, "count": n, "source": "written"} for f, n in (w_cnt or Counter()).most_common(8)]
+                                          + [{"form": f, "count": n, "source": "diac"} for f, n in (d_cnt or Counter()).most_common(8)],
+                          "chosen": value, "value": value, "tier": 1, "source": "written" if w_cnt else "diac",
                           "matches_real": real_reco.get((rid, pid)) == value})
         unresolved = sorted(p for p in all_pairs if p not in corpus_real)
         pass3 = []
@@ -1232,6 +1262,9 @@ class CorpusTraceJob:
                               for k_, v in sorted(reco_sample)],
                     "size": len(real_reco),
                     "totals": {"pairs": len(all_pairs), "with_corpus_surface": len(corpus_real),
+                               "pairs_from_written": len(written_real),
+                               "pairs_diac_only": len(set(diac_real) - set(written_real)),
+                               "entries_by_source": dict(source_counts),
                                "unresolved": len(unresolved), "tier2_generator": tier2,
                                "tier3_naive": len(unresolved) - tier2, "skipped": dict(skipped),
                                "generator_wire_lines": len(gen_lines)},
@@ -1241,8 +1274,11 @@ class CorpusTraceJob:
                                           f"Pass 1/2 rows = the sample; pass 3 = first {min(PASS3_CAP, len(unresolved))}; "
                                           f"table = {len(reco_sample)} random entries (search finds any)."),
                 }, t0, wire=gen_lines[:WIRE_CAP], notes=[
-            "Pass 1 strips the clitic surfaces from CAMeL's full diacritized surface (diac), NOT from its stem field.",
-            "Pass 2 keeps the most frequent realization per pair and strips diacritics (use_diacritized_surface=false).",
+            "Pass 1 strips the clitic surfaces from the chunk AS WRITTEN (diacritics removed) and keeps that form when "
+            "the decoder's own joins give the chunk back (source 'written'); otherwise from CAMeL's diac, NOT from its "
+            "stem field (source 'diac'). With use_diacritized_surface the diac form is the only source.",
+            "Pass 2 keeps the most frequent WRITTEN form per pair, weighted by corpus occurrences; diac forms only for a "
+            "pair with no written form — so a pair decodes to the spelling the writers used (2026-09-22).",
             "Pass 3 only fires for pairs with no usable surface: CAMeL generator (tier 2), then naive slot substitution (tier 3).",
         ])
 

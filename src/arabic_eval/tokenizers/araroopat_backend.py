@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import functools
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Dict, List, Optional, Tuple
 
 from arabic_eval.tokenizers.araroopat_bridge import CamelBridge, get_shared_bridge
@@ -600,6 +600,12 @@ def canonical_particle(surface: str, inventory: frozenset) -> Optional[str]:
     return _alef_norm_index(inventory).get(_alef_norm(surface))
 
 
+def _is_open_class_pos(pos: str) -> bool:
+    """CAMeL POS of a content word (verb / noun / adjective, incl. ``noun_prop``,
+    ``noun_num``, ``adj_comp``); ``verb_pseudo`` (إنّ, كأنّ) is closed-class."""
+    return pos == "verb" or pos.startswith(("noun", "adj"))
+
+
 def join_particle_enclitic(particle: str, enclitic: str) -> str:
     """Attach an enclitic to a preposition with the orthographic adjustments.
 
@@ -644,7 +650,15 @@ def _particle_analysis(
 
     Guards: a definite article or a *possessive* enclitic marks a noun
     reading (CAMeL tags pronouns on prepositions as ``*_pron``), so those
-    are left to the normal root+pattern path.
+    are left to the normal root+pattern path. A match that holds only
+    *modulo alef* (the written word is not the inventory spelling) needs a
+    closed-class reading from CAMeL: كان — the verb "was", top reading
+    ``verb`` — folds onto كأن, أفلام ("films", ``noun``) onto أ+ف+ل+أم and
+    آن ("time", ``noun``) onto أن, and every one of them decoded as the
+    particle until 2026-09-22; a hamza the writer dropped (الى, انها, لان)
+    still canonicalises because CAMeL reads those as prep / conj / part.
+    When CAMeL's lemma is itself a listed spelling it wins the fold
+    collision (فان read as إِنَّ → إن, not the alphabetically first أن).
     """
     surface = _strip_diac(word if word else (d.get("diac") or ""))
     if not surface or not particles:
@@ -665,21 +679,33 @@ def _particle_analysis(
     # inventory as a surface fallback. Every candidate is the inventory's
     # canonical spelling.
     ordered: List[str] = []
-    for cand in (canonical_particle(lemma_bare, particles),
+    for cand in (lemma_bare if lemma_bare in particles else None,
+                 canonical_particle(lemma_bare, particles),
                  canonical_particle(_PARTICLE_ASSIMILATION_INVERSE.get(lemma_bare, ""), particles),
                  *sorted(particles)):
         if cand and cand not in ordered:
             ordered.append(cand)
+    open_class = _is_open_class_pos(d.get("pos") or "")
 
     # CAMeL sometimes reports a proclitic that is really the first letter of
     # the particle (لعل → prc1=la_emph + lemma لَعَلَّ), so try the claimed
     # stack first and drop the innermost proclitic until the surface agrees.
     prc_list = [c for c in prc if c]
     surface_norm = _alef_norm(surface)
-    for particle in ordered:
-        expected_tail = join_particle_enclitic(particle, enc0) if enc0 else particle
-        for keep in range(len(prc_list), -1, -1):
-            if _alef_norm("".join(prc_list[:keep]) + expected_tail) == surface_norm:
+    # Two passes: a candidate that spells the surface exactly beats one that
+    # matches only modulo alef (إنما is إن + ما, not the alphabetically first أن).
+    for exact_only in (True, False):
+        for particle in ordered:
+            expected_tail = join_particle_enclitic(particle, enc0) if enc0 else particle
+            for keep in range(len(prc_list), -1, -1):
+                candidate = "".join(prc_list[:keep]) + expected_tail
+                if _alef_norm(candidate) != surface_norm:
+                    continue
+                exact = candidate == surface
+                if exact_only and not exact:
+                    continue
+                if not exact and open_class:
+                    continue   # alef-inexact + an open-class reading: not this particle (كان ≠ كأن)
                 kept = set(prc_list[:keep])
                 return Analysis(
                     root="",
@@ -885,6 +911,94 @@ def _rooted_analysis(d: Dict[str, str], proper: bool = False) -> Optional[Analys
         aspect=_norm_clitic(d.get("asp")),
         proper=proper,
     )
+
+
+# ---------------------------------------------------------------------------
+# Spelling-faithful readings — undoing CAMeL's input normalisation (2026-09-22)
+# ---------------------------------------------------------------------------
+#
+# CAMeL's analyzer normalises the word before the database lookup (its default
+# map folds آ/أ/إ/ٱ → ا, ى → ي and ة → ه), so it happily analyses الإعرابية as
+# الأَعْرابِيَّة (the Bedouin adjective) and همزة as هَمَزَهُ ("he pierced him",
+# verb + 3ms object) — and the MLE disambiguator ranks readings without ever
+# looking at the hamza seat or the final letter the writer used. Measured on
+# the ArabicText-Large pre-pass: of 519 330 rooted chunks, 50 228 come back
+# with a different hamza seat, 27 608 with ة/ه swapped (21 160 of them a
+# ة-final word read with a ه pronoun), 9 085 with ى/ي swapped. Each such
+# reading puts the wrong letter in the pattern token or, worse, emits a
+# [CLITICE_ه] for a written ة — and decode reproduces the reading, not the word.
+#
+# Two remedies, both on the *analysis*, so the pre-pass, the vocab and the
+# runtime encoder agree:
+#   1. ``prefer_faithful``: when the top reading does not spell the word the
+#      writer wrote, walk the ranked candidates for a rooted reading that does
+#      (الإعراب: أَعْراب first, إِعْراب — the one actually written — further
+#      down; همزة: هَمْزَة after هَمَزَهُ). Only rooted candidates compete: a
+#      particle or clitic-only reading is decided before this point.
+#   2. ``reconcile_final_taa``: when no candidate spells the ending and the
+#      mismatch is exactly the ة/ه slot — a ة-final word read with a lone 3ms ه
+#      (تزعمتة), or a ه-final word read as a feminine (المتضرره) — swap the slot
+#      on the top reading and rewrite its surface. The platform declares every
+#      word-final ة the enclitic ة; a ه the writer put there is a ه.
+# What stays: a hamza the writer dropped (ابعد for أبعد) has no faithful
+# candidate and keeps the top reading — the decoder then canonicalises it via
+# the pair's majority written surface (see ``_build_reconstruction``).
+# ---------------------------------------------------------------------------
+
+_HA = "ه"
+
+
+def is_rooted_analysis(a: Optional[Analysis]) -> bool:
+    """A ROOT+PAT reading (not a particle, not clitic-only, not a rootless name)."""
+    return bool(a is not None and a.root and a.pattern and not a.particle and not a.clitic_only)
+
+
+def spelling_faithful(a: Analysis, word: str) -> bool:
+    """Does the reading's surface, diacritics removed, spell ``word`` as written?"""
+    return _strip_diac(a.surface or "") == _strip_diac(word)
+
+
+def reconcile_final_taa(a: Analysis, word: str) -> Analysis:
+    """Make the ة/ه slot of a rooted reading agree with the written word.
+
+    * ``word`` ends in ة, the reading has a lone ه object/possessive pronoun and
+      no ة: the ه is the normaliser's ghost of the written ة → ``fem=ة``,
+      ``enc0=None`` (همزة read as هَمَزَهُ → the ة suffix on the same stem).
+    * ``word`` ends in ه, the reading factored out a ة and has no pronoun: the
+      writer's ه stands → ``fem=None``, ``enc0=ه`` (المتضرره).
+
+    The surface is rewritten so that ``_strip_clitic_surfaces`` recovers the
+    same stem from it. Anything else is returned unchanged.
+    """
+    if not is_rooted_analysis(a) or not word:
+        return a
+    bare_word = _strip_diac(word)
+    bare_surf = _strip_diac(a.surface or "")
+    if bare_word.endswith(TAA_MARBUTA) and a.enc0 == _HA and a.fem is None and a.enc1 is None \
+            and bare_surf.endswith(_HA):
+        surface = _strip_clitic_from_end(a.surface, _HA) + TAA_MARBUTA
+        return replace(a, enc0=None, fem=TAA_MARBUTA, surface=surface)
+    if bare_word.endswith(_HA) and a.fem == TAA_MARBUTA and a.enc0 is None and a.enc1 is None \
+            and bare_surf.endswith(TAA_MARBUTA):
+        surface = _strip_clitic_from_end(a.surface, TAA_MARBUTA) + _HA
+        return replace(a, fem=None, enc0=_HA, surface=surface)
+    return a
+
+
+def prefer_faithful(top: Optional[Analysis], candidates: List[Analysis], word: str) -> Optional[Analysis]:
+    """The reading to keep for ``word``: ``top`` if it spells the word, else the first
+    rooted candidate that does, else ``top`` with its ة/ه slot reconciled."""
+    if not is_rooted_analysis(top) or spelling_faithful(top, word):
+        return top
+    for cand in candidates:
+        if is_rooted_analysis(cand) and spelling_faithful(cand, word):
+            return cand
+    return reconcile_final_taa(top, word)
+
+
+def needs_spelling_walk(a: Optional[Analysis], word: str) -> bool:
+    """Would ``prefer_faithful`` look at more candidates for this reading?"""
+    return is_rooted_analysis(a) and not spelling_faithful(a, word)
 
 
 # ---------------------------------------------------------------------------
@@ -1316,13 +1430,26 @@ class MorphAnalyzer:
         return analysis
 
     def _native_many(self, words: List[str]) -> List[Optional[Analysis]]:
-        """Whole-word CAMeL analyses (no peeling), through ``_native_cache``."""
+        """Whole-word CAMeL analyses (no peeling), through ``_native_cache``.
+
+        One top-1 round trip for the batch; the words whose top reading does
+        not spell them as written (CAMeL normalises hamza / ى / ة on input)
+        get a second, batched top-``RESIDUAL_TOP`` round trip and the
+        spelling-faithful walk of ``prefer_faithful``.
+        """
         out: List[Optional[Analysis]] = [None] * len(words)
         todo = [(i, w) for i, w in enumerate(words) if w and w not in self._native_cache]
         if todo:
             results = self._bridge.analyze([w for _, w in todo])
+            walk: List[str] = []
             for (i, w), cands in zip(todo, results):
-                self._native_cache[w] = self._first_valid(cands, w, self.particles, self.func_words)
+                a = self._first_valid(cands, w, self.particles, self.func_words)
+                self._native_cache[w] = a
+                if needs_spelling_walk(a, w):
+                    walk.append(w)
+            if walk:
+                for w, cands in zip(walk, self._candidates_many(walk)):
+                    self._native_cache[w] = prefer_faithful(self._native_cache[w], cands, w)
         for i, w in enumerate(words):
             out[i] = self._native_cache.get(w) if w else None
         return out
