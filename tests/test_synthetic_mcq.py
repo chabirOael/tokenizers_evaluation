@@ -98,7 +98,7 @@ def _fake_arabic_squad_records(n: int = 50):
     return out
 
 
-@patch("arabic_eval.data.synthetic_mcq._load_arabic_squad")
+@patch("arabic_eval.data.synthetic_mcq._arabic_squad_records")
 def test_corpus_marks_records_as_mcq_letter_template(mock_load):
     mock_load.return_value = _fake_arabic_squad_records(20)
     out = build_synthetic_mcq_corpus(seed=42, num_choices=4)
@@ -116,7 +116,7 @@ def test_corpus_marks_records_as_mcq_letter_template(mock_load):
         assert gold_idx < len(rec.choices)
 
 
-@patch("arabic_eval.data.synthetic_mcq._load_arabic_squad")
+@patch("arabic_eval.data.synthetic_mcq._arabic_squad_records")
 def test_corpus_gold_letters_distribution_is_not_collapsed(mock_load):
     """Random-position assignment must spread the gold across multiple letters
     — otherwise the model could shortcut on letter prior."""
@@ -127,7 +127,7 @@ def test_corpus_gold_letters_distribution_is_not_collapsed(mock_load):
     assert letters_used == {"أ", "ب", "ج", "د"}
 
 
-@patch("arabic_eval.data.synthetic_mcq._load_arabic_squad")
+@patch("arabic_eval.data.synthetic_mcq._arabic_squad_records")
 def test_corpus_is_deterministic_under_seed(mock_load):
     mock_load.return_value = _fake_arabic_squad_records(50)
     a = build_synthetic_mcq_corpus(seed=42)
@@ -139,7 +139,7 @@ def test_corpus_is_deterministic_under_seed(mock_load):
         assert x.answer == y.answer
 
 
-@patch("arabic_eval.data.synthetic_mcq._load_arabic_squad")
+@patch("arabic_eval.data.synthetic_mcq._arabic_squad_records")
 def test_max_records_caps_corpus_size(mock_load):
     mock_load.return_value = _fake_arabic_squad_records(50)
     out = build_synthetic_mcq_corpus(seed=42, max_records=10)

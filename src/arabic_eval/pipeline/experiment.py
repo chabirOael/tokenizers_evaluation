@@ -86,6 +86,73 @@ def _phase_eval_loader(
     )
 
 
+def _phase_eval_mixture_loaders(
+    phase_cfg: PhaseConfig,
+    tokenizer,
+    corpus_params=None,
+    exclusions=None,
+    manifest_path=None,
+):
+    """One eval loader per category, composed from the phase corpora's ``dev``
+    slices at the phase mixture's ratio (``early_stopping.eval_mixture``).
+
+    Returns ``(loaders, manifest)`` or ``(None, None)`` when the phase does not
+    use it — in which case the caller falls back to ``_phase_eval_loader`` and
+    nothing about the old path changes.
+    """
+    es = phase_cfg.early_stopping
+    if es is None or not es.enabled or getattr(es, "eval_mixture", None) is None:
+        return None, None
+    from arabic_eval.config import MixtureConfig
+    from arabic_eval.data.sft_mixture import compose_mixture, load_mixture_pools
+
+    em = es.eval_mixture
+    train_mix = phase_cfg.mixture
+    eval_mix = MixtureConfig(
+        total_examples=em.total_examples,
+        shares=dict(train_mix.shares),
+        within_category=train_mix.within_category,
+        weights=dict(train_mix.weights) if train_mix.weights else None,
+        upsample=False,                       # a short dev pool is an error, never a repeat
+        drop_truncated_answers=train_mix.drop_truncated_answers,
+        seed=em.seed,
+    )
+    datasets = list(phase_cfg.datasets)
+    pools, before = load_mixture_pools(datasets, corpus_params, phase_cfg.clean_latin_rows,
+                                       exclusions, split="dev")
+    encodings, manifest = compose_mixture(
+        eval_mix, datasets, pools, tokenizer, phase_cfg.max_length, "answer_only",
+        batch_size=phase_cfg.batch_size, pool_sizes_before_filter=before,
+        clean_latin_rows=phase_cfg.clean_latin_rows, attach_category=True,
+    )
+    manifest["split"] = "dev"
+    manifest["role"] = "early_stop_eval_mixture"
+
+    from torch.utils.data import DataLoader
+    from arabic_eval.data.collation import get_collator
+    from arabic_eval.data.sft_mixture import _QATokenizedDataset
+    collator = get_collator(tokenizer.embedding_type,
+                            pad_token_id=getattr(tokenizer, "pad_token_id", 0),
+                            max_length=phase_cfg.max_length)
+    loaders = {}
+    by_category: Dict[str, list] = {}
+    for entry in encodings:
+        by_category.setdefault(entry["_category"], []).append(entry)
+    for category, entries in sorted(by_category.items()):
+        loaders[category] = DataLoader(
+            _QATokenizedDataset(entries), batch_size=phase_cfg.batch_size,
+            shuffle=False, collate_fn=collator,
+        )
+    logger.info(
+        "early-stop eval mixture: %d dev records — %s",
+        len(encodings),
+        "; ".join(f"{c} {len(e)}" for c, e in sorted(by_category.items())),
+    )
+    if manifest_path is not None:
+        save_json(manifest, manifest_path)
+    return loaders, manifest
+
+
 def _packed_mix_loader(
     phase_name: str,
     phase_cfg: PhaseConfig,
@@ -271,8 +338,21 @@ def _run_all_phases(
             from arabic_eval.data.finetune_corpora import TEMPLATE_VERSION
             data_info["template_version"] = TEMPLATE_VERSION
 
-        eval_loader = _phase_eval_loader(phase_cfg, tokenizer, corpus_params=training_cfg.corpus_params,
-                                         exclusions=exclusions)
+        eval_mix_path = output_dir / "data" / "sft_eval_mixture_manifest.json"
+        eval_loaders, eval_mix_manifest = _phase_eval_mixture_loaders(
+            phase_cfg, tokenizer, corpus_params=training_cfg.corpus_params,
+            exclusions=exclusions, manifest_path=eval_mix_path,
+        )
+        if eval_loaders is not None:
+            eval_loader = None
+            data_info["eval_mixture"] = {
+                **manifest_summary(eval_mix_manifest),
+                "split": "dev",
+                "manifest_path": str(eval_mix_path),
+            }
+        else:
+            eval_loader = _phase_eval_loader(phase_cfg, tokenizer, corpus_params=training_cfg.corpus_params,
+                                             exclusions=exclusions)
 
         result: PhaseResult = run_phase(
             phase_name=phase_name,
@@ -280,6 +360,7 @@ def _run_all_phases(
             phase_cfg=phase_cfg,
             train_loader=train_loader,
             eval_loader=eval_loader,
+            eval_loaders=eval_loaders,
             output_dir=output_dir,
             bf16=training_cfg.bf16,
             fp16=training_cfg.fp16,
@@ -298,6 +379,8 @@ def _run_all_phases(
             # the JSON stays human-readable.
             "train_losses_tail": result.train_losses[-200:],
             "eval_losses": result.eval_losses,
+            "eval_history": result.eval_history,
+            "eval_loss_definition": result.eval_loss_definition,
             "data": data_info,
         }
     if packed is not None:

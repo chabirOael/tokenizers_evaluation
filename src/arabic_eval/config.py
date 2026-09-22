@@ -110,6 +110,33 @@ class TaskConfig(BaseModel):
     })
 
 
+class EvalMixtureConfig(BaseModel):
+    """Compose the early-stop eval set the way the phase's *training* set is
+    composed, from the ``dev`` split of the same corpora (added 2026-09-22).
+
+    The default ``eval_splits`` signal is extractive only (TyDiQA + ARCD dev),
+    while the Phase 3 mixture puts ~87 % of its loss tokens in free-form
+    answers: on the 2026-09-22 arms the 12 % that is extractive decided when
+    the 87 % stopped training, and AraRooPat restored a checkpoint that had
+    seen 5 600 of 30 000 mixture examples against BPE's 27 200. With this set,
+    the stop metric is the training objective measured on held-out records of
+    the training composition: ``total_examples`` records drawn from the dev
+    pools at the phase mixture's ``shares`` / ``within_category`` / ``weights``
+    (``upsample`` is always false — a dev pool that cannot fill its quota is an
+    error, not a repeat), scored as Σ NLL / Σ answer tokens over all
+    categories, with the per-category numbers reported next to it.
+    """
+    total_examples: int = 1000
+    seed: int = 42
+
+    @field_validator("total_examples")
+    @classmethod
+    def _positive_total(cls, v):
+        if v <= 0:
+            raise ValueError(f"early_stopping.eval_mixture.total_examples must be positive, got {v}")
+        return v
+
+
 class EarlyStoppingConfig(BaseModel):
     """Early-stopping policy for Phase 3 (SFT).
 
@@ -138,6 +165,11 @@ class EarlyStoppingConfig(BaseModel):
             "arcd": "dev",
         }
     )
+    # The alternative to ``eval_splits``: an eval set composed like the phase's
+    # training mixture, from the ``dev`` slices of the same corpora. Exactly
+    # one of the two is in force; setting this requires the phase to have a
+    # ``mixture`` and ``eval_splits`` to be empty.
+    eval_mixture: Optional[EvalMixtureConfig] = None
 
 
 class QABlendConfig(BaseModel):
@@ -350,12 +382,47 @@ class PhaseConfig(BaseModel):
             raise ValueError("qa_blend is only valid on a phase whose datasets is ['pretraining_mix']")
         if self.mixture is not None:
             self._validate_mixture()
+        self._validate_eval_mixture()
         if not uses_mix and self.steps is None:
             raise ValueError(
                 "steps is required (only phases on 'pretraining_mix' derive it from mix_tokens, "
                 "and phases with a 'mixture' from total_examples / batch_size)"
             )
         return self
+
+    def _validate_eval_mixture(self) -> None:
+        """``early_stopping.eval_mixture`` composes the stop signal from the
+        phase's own corpora at the phase mixture's ratio — so it needs that
+        mixture, it is the alternative to ``eval_splits`` (never both), and it
+        makes no sense on a raw-text phase."""
+        es = self.early_stopping
+        em = getattr(es, "eval_mixture", None) if es is not None else None
+        if em is None:
+            return
+        if "pretraining_mix" in self.datasets:
+            raise ValueError(
+                "early_stopping.eval_mixture is only valid on a QA phase; a 'pretraining_mix' phase "
+                "has no per-category QA composition to mirror"
+            )
+        if self.mixture is None:
+            raise ValueError(
+                "early_stopping.eval_mixture needs the phase to have a 'mixture' (it reuses its shares, "
+                "within_category and weights); add one or use eval_splits"
+            )
+        if "eval_splits" in es.model_fields_set and es.eval_splits:
+            raise ValueError(
+                "early_stopping.eval_splits and early_stopping.eval_mixture are alternatives: the first "
+                "scores held-out records of named splits, the second a mixture of the phase's own dev "
+                f"pools at the training ratio. Got both (eval_splits={dict(es.eval_splits)}). base.yaml "
+                "sets eval_splits, so a config that switches to eval_mixture has to clear it: write "
+                "'eval_splits: {}' next to eval_mixture"
+            )
+        if em.total_examples % self.batch_size != 0:
+            lo = (em.total_examples // self.batch_size) * self.batch_size
+            raise ValueError(
+                f"early_stopping.eval_mixture.total_examples ({em.total_examples}) must be a multiple of "
+                f"batch_size ({self.batch_size}); nearest valid values: {lo} or {lo + self.batch_size}"
+            )
 
     def _validate_mixture(self) -> None:
         """``mixture`` needs a QA phase whose ``datasets`` cover exactly the

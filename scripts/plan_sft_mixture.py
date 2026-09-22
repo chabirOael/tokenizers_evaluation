@@ -87,6 +87,28 @@ def main() -> int:
         for n in phase.datasets
     ]
     print(_table(rows, ["corpus", "category", "available", "after_latin", "weight", "planned", "beyond_pool"]))
+    es = phase.early_stopping
+    eval_mix = getattr(es, "eval_mixture", None) if es is not None else None
+    if eval_mix is not None:
+        from arabic_eval.config import MixtureConfig
+        eval_cfg = MixtureConfig(
+            total_examples=eval_mix.total_examples, shares=dict(mixture.shares),
+            within_category=mixture.within_category,
+            weights=dict(mixture.weights) if mixture.weights else None,
+            upsample=False, drop_truncated_answers=mixture.drop_truncated_answers,
+            seed=eval_mix.seed,
+        )
+        dev_pools, dev_before = load_mixture_pools(phase.datasets, config.training.corpus_params,
+                                                   phase.clean_latin_rows, exclusions, split="dev")
+        dev_caps = {n: len(dev_pools[n]) for n in phase.datasets}
+        dev_plan = plan_mixture(eval_cfg, phase.datasets, dev_caps, phase.batch_size)
+        print(f"\nearly-stop eval mixture (dev split): {eval_cfg.total_examples} records; "
+              f"max at these shares: {dev_plan['max_total_examples_at_these_shares']}")
+        print(_table(
+            [(n, CORPUS_CATEGORY[n], dev_before[n], dev_caps[n], dev_plan["allocation"][n])
+             for n in phase.datasets],
+            ["corpus", "category", "dev_rows", "after_latin", "planned"]))
+
     if args.plan_only:
         return 0
 

@@ -348,12 +348,18 @@ def compose_mixture(
     batch_size: int = 1,
     pool_sizes_before_filter: Optional[Mapping[str, int]] = None,
     clean_latin_rows: bool = False,
+    attach_category: bool = False,
 ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
     """Draw the phase's training set from per-corpus record pools.
 
     ``pools`` maps each of ``datasets`` to its (already Latin-filtered, if
     requested) records. Returns ``(encodings, manifest)``; the encodings are
     shuffled with ``mixture.seed``.
+
+    ``attach_category`` adds a ``"_category"`` key to every encoding — used by
+    the early-stop eval mixture, which scores each category separately. The
+    collators read only the keys they know, but the training path leaves it off
+    so its entries stay exactly what they were.
     """
     capacities = {n: len(pools[n]) for n in datasets}
     plan = plan_mixture(mixture, datasets, capacities, batch_size)
@@ -371,7 +377,11 @@ def compose_mixture(
     per_dataset: Dict[str, Dict[str, Any]] = {}
     for name in datasets:
         stats = drawers[name].stats()
-        encodings.extend(drawers[name].kept)
+        kept = drawers[name].kept
+        if attach_category:
+            for entry in kept:
+                entry["_category"] = CORPUS_CATEGORY[name]
+        encodings.extend(kept)
         per_dataset[name] = {
             "category": CORPUS_CATEGORY[name],
             "available": int((pool_sizes_before_filter or {}).get(name, capacities[name])),
@@ -453,10 +463,12 @@ def load_mixture_pools(
     corpus_params: Optional[Mapping[str, Mapping[str, Any]]] = None,
     clean_latin_rows: bool = False,
     exclusions: Any = None,
+    split: str = "train",
 ) -> Tuple[Dict[str, List[QARecord]], Dict[str, int]]:
-    """Load every corpus' train split (with its ``training.corpus_params``
-    and the contamination ``exclusions``) and apply the phase's Latin
-    filter. Returns ``(pools, sizes_before_filter)``."""
+    """Load every corpus' ``split`` (with its ``training.corpus_params`` and
+    the contamination ``exclusions``) and apply the phase's Latin filter.
+    Returns ``(pools, sizes_before_filter)``. ``split="dev"`` builds the pools
+    of an early-stop eval mixture; ``validation`` is never a mixture pool."""
     corpus_params = corpus_params or {}
     pools: Dict[str, List[QARecord]] = {}
     before: Dict[str, int] = {}
@@ -464,11 +476,11 @@ def load_mixture_pools(
         kw: Dict[str, Any] = dict(corpus_params.get(name, {}))
         if exclusions is not None:
             kw["exclusions"] = exclusions
-        recs = load_corpus(name, "train", **kw)
+        recs = load_corpus(name, split, **kw)
         before[name] = len(recs)
         if clean_latin_rows:
             recs = filter_latin_records(recs)
-            logger.info("mixture: clean_latin_rows on %s: %d → %d records", name, before[name], len(recs))
+            logger.info("mixture: clean_latin_rows on %s/%s: %d → %d records", name, split, before[name], len(recs))
         pools[name] = recs
     return pools, before
 

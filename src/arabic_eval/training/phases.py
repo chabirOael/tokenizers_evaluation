@@ -18,7 +18,7 @@ import math
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 import torch
 from torch.amp import autocast
@@ -45,6 +45,10 @@ class PhaseResult:
     final_train_loss: float
     train_losses: List[Tuple[int, float]] = field(default_factory=list)  # (step, loss)
     eval_losses: List[Tuple[int, float]] = field(default_factory=list)
+    # Every eval, with its token counts and per-category breakdown (only the
+    # ``eval_mixture`` path fills ``per_category``).
+    eval_history: List[Dict[str, Any]] = field(default_factory=list)
+    eval_loss_definition: str = "batch_mean"
     best_eval_loss: Optional[float] = None
     best_eval_step: Optional[int] = None
     early_stopped: bool = False
@@ -127,6 +131,59 @@ def _eval_loss(
     return total / count
 
 
+@torch.no_grad()
+def _eval_loss_token_weighted(
+    adapter: BaseModelAdapter,
+    eval_loaders: Mapping[str, DataLoader],
+    bf16: bool,
+    fp16: bool,
+) -> Dict[str, Any]:
+    """Σ NLL / Σ answer tokens over one loader per category — the training
+    objective measured on held-out records of the training composition.
+
+    The per-batch mean of ``_eval_loss`` weights a batch of one-letter MCQ
+    answers exactly like a batch of 140-token free-form answers; the mixture
+    puts ~87 % of its loss *tokens* in free-form, so the two differ. The loss
+    the adapter returns is already the mean over that batch's unmasked
+    (shifted) label positions, so ``loss × tokens`` is their exact NLL sum —
+    no second softmax over a 150 000-row vocabulary.
+    """
+    adapter.model.eval()
+    autocast_dtype = torch.bfloat16 if bf16 else (torch.float16 if fp16 else None)
+    per_category: Dict[str, Dict[str, float]] = {}
+    for category, loader in eval_loaders.items():
+        nll, tokens, records = 0.0, 0, 0
+        for batch in loader:
+            batch = _to_device(batch, adapter.device)
+            labels = batch.get("labels")
+            n = int((labels[..., 1:] != -100).sum().item()) if labels is not None else 0
+            if n == 0:
+                continue
+            if autocast_dtype is not None:
+                with autocast(device_type=adapter.device.type, dtype=autocast_dtype):
+                    out = adapter.forward(batch)
+            else:
+                out = adapter.forward(batch)
+            nll += float(out["loss"].item()) * n
+            tokens += n
+            records += int(labels.shape[0])
+        per_category[category] = {
+            "loss": (nll / tokens) if tokens else float("nan"),
+            "nll": nll, "tokens": tokens, "records": records,
+        }
+    adapter.model.train()
+    total_tokens = sum(c["tokens"] for c in per_category.values())
+    total_nll = sum(c["nll"] for c in per_category.values())
+    return {
+        "loss": (total_nll / total_tokens) if total_tokens else float("nan"),
+        "tokens": total_tokens,
+        "per_category": {
+            k: {"loss": round(v["loss"], 6), "tokens": v["tokens"], "records": v["records"]}
+            for k, v in per_category.items()
+        },
+    }
+
+
 def _to_device(batch: Dict[str, Any], device: torch.device) -> Dict[str, Any]:
     out = {}
     for k, v in batch.items():
@@ -148,6 +205,7 @@ def run_phase(
     phase_cfg: PhaseConfig,
     train_loader: DataLoader,
     eval_loader: Optional[DataLoader] = None,
+    eval_loaders: Optional[Mapping[str, DataLoader]] = None,
     output_dir: Path,
     bf16: bool = True,
     fp16: bool = False,
@@ -156,14 +214,19 @@ def run_phase(
     """Run one training phase. See module docstring for the per-phase semantics.
 
     ``eval_loader`` is required only when ``phase_cfg.early_stopping`` is set
-    and enabled. Phase 1 / Phase 2 pass ``eval_loader=None``.
+    and enabled. Phase 1 / Phase 2 pass ``eval_loader=None``. ``eval_loaders``
+    (category → loader, built from the phase's dev pools by
+    ``early_stopping.eval_mixture``) replaces it and switches the stop metric
+    to the token-weighted mixture loss.
     """
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
     early_stop = phase_cfg.early_stopping
+    use_mixture_eval = bool(eval_loaders)
+    result_eval_definition = "token_weighted_mixture" if use_mixture_eval else "batch_mean"
     if early_stop is not None and early_stop.enabled:
-        if eval_loader is None:
+        if eval_loader is None and not use_mixture_eval:
             raise ValueError(
                 f"phase {phase_name!r} has early_stopping enabled but no eval_loader was provided"
             )
@@ -274,12 +337,23 @@ def run_phase(
         if (early_stop is not None and early_stop.enabled
                 and step >= early_stop.min_steps_before_stop
                 and step % early_stop.eval_every_n_steps == 0):
-            eval_loss_value = _eval_loss(adapter, eval_loader, bf16=bf16, fp16=fp16)
+            if use_mixture_eval:
+                ev = _eval_loss_token_weighted(adapter, eval_loaders, bf16=bf16, fp16=fp16)
+                eval_loss_value = ev["loss"]
+                result.eval_history.append({"step": step, "loss": round(eval_loss_value, 6),
+                                            "tokens": ev["tokens"], "per_category": ev["per_category"]})
+                breakdown = " | " + " ".join(
+                    f"{cat}={c['loss']:.4f}" for cat, c in sorted(ev["per_category"].items())
+                ) + f" tokens={ev['tokens']}"
+            else:
+                eval_loss_value = _eval_loss(adapter, eval_loader, bf16=bf16, fp16=fp16)
+                result.eval_history.append({"step": step, "loss": round(eval_loss_value, 6)})
+                breakdown = ""
             result.eval_losses.append((step, eval_loss_value))
             logger.info(
-                "[%s] step %d eval_loss=%.4f (best=%.4f@step %d, patience=%d/%d)",
+                "[%s] step %d eval_loss=%.4f (best=%.4f@step %d, patience=%d/%d)%s",
                 phase_name, step, eval_loss_value, best_eval_loss, best_eval_step,
-                patience_counter, early_stop.patience,
+                patience_counter, early_stop.patience, breakdown,
             )
             if eval_loss_value + early_stop.min_delta < best_eval_loss:
                 best_eval_loss = eval_loss_value
@@ -303,6 +377,7 @@ def run_phase(
         result.steps_completed = step
 
     result.final_train_loss = last_logged_loss
+    result.eval_loss_definition = result_eval_definition
     result.early_stopped = early_stopped
     if best_eval_step > 0:
         result.best_eval_loss = best_eval_loss

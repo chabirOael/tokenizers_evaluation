@@ -42,6 +42,7 @@ from arabic_eval.data.sft_mixture import (
     category_quotas,
     compose_mixture,
     largest_remainder,
+    load_mixture_pools,
     manifest_summary,
     max_total_at_shares,
     plan_mixture,
@@ -580,3 +581,66 @@ def test_aya_cache_fingerprint_depends_on_allowlist(monkeypatch):
     load_corpus("aya_ar", "train", include_datasets=["Aya-Dataset"])
     load_corpus("aya_ar", "train", include_datasets=["Aya-Dataset", "Dolly-v2 (T)"])
     assert paths[0] == paths[1] != paths[2]
+
+
+# --------------------------------------------------------------------------
+# Early-stop eval mixture (added 2026-09-22)
+# --------------------------------------------------------------------------
+
+class TestEvalMixture:
+    """``early_stopping.eval_mixture`` composes the stop signal from the dev
+    pools of the phase's own corpora, at the training mixture's ratio."""
+
+    def test_attach_category_tags_every_encoding(self):
+        tok = _WordTok()
+        encs, _man = compose_mixture(_mix(total_examples=100), DATASETS, POOLS, tok, 128, "answer_only",
+                                     batch_size=4, attach_category=True)
+        assert len(encs) == 100
+        cats = [e["_category"] for e in encs]
+        assert set(cats) == {"extractive", "mcq", "free_form"}
+        assert cats.count("extractive") == 40 and cats.count("mcq") == 30 and cats.count("free_form") == 30
+
+    def test_without_attach_category_entries_are_untouched(self):
+        tok = _WordTok()
+        encs, _ = compose_mixture(_mix(total_examples=100), DATASETS, POOLS, tok, 128, "answer_only", batch_size=4)
+        assert all("_category" not in e for e in encs)
+
+    def test_composing_from_dev_pools_honours_the_shares(self):
+        """The eval mixture is the same function over smaller (dev) pools."""
+        dev_pools = {k: v[: max(4, len(v) // 20)] for k, v in POOLS.items()}
+        tok = _WordTok()
+        encs, man = compose_mixture(_mix(total_examples=20), list(dev_pools), dev_pools, tok, 128,
+                                    "answer_only", batch_size=4, attach_category=True)
+        assert len(encs) == 20
+        assert man["categories"]["extractive"]["kept"] == 8
+        assert man["categories"]["mcq"]["kept"] == 6
+        assert man["categories"]["free_form"]["kept"] == 6
+
+    def test_a_dev_pool_too_small_is_an_error_not_a_repeat(self):
+        tiny = {k: v[:2] for k, v in POOLS.items()}
+        tok = _WordTok()
+        with pytest.raises(MixtureShortfallError):
+            compose_mixture(_mix(total_examples=100, upsample=False), list(tiny), tiny, tok, 128,
+                            "answer_only", batch_size=4, attach_category=True)
+
+    def test_load_mixture_pools_reads_the_requested_split(self, monkeypatch):
+        seen = []
+
+        def fake_load_corpus(name, split, **kw):
+            seen.append((name, split))
+            return POOLS[name][:5]
+        monkeypatch.setattr("arabic_eval.data.sft_mixture.load_corpus", fake_load_corpus)
+        pools, before = load_mixture_pools(["cidar", "arcd"], None, False, None, split="dev")
+        assert seen == [("cidar", "dev"), ("arcd", "dev")]
+        assert set(pools) == {"cidar", "arcd"} and before["cidar"] == 5
+
+    def test_eval_mixture_is_seed_deterministic(self):
+        tok = _WordTok()
+        a, _ = compose_mixture(_mix(total_examples=40, seed=7), DATASETS, POOLS, tok, 128, "answer_only",
+                               batch_size=4, attach_category=True)
+        b, _ = compose_mixture(_mix(total_examples=40, seed=7), DATASETS, POOLS, tok, 128, "answer_only",
+                               batch_size=4, attach_category=True)
+        c, _ = compose_mixture(_mix(total_examples=40, seed=9), DATASETS, POOLS, tok, 128, "answer_only",
+                               batch_size=4, attach_category=True)
+        assert [e["input_ids"] for e in a] == [e["input_ids"] for e in b]
+        assert [e["input_ids"] for e in a] != [e["input_ids"] for e in c]

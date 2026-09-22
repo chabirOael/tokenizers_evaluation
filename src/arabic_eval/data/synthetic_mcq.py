@@ -36,7 +36,7 @@ import logging
 import random
 from typing import List, Optional
 
-from .finetune_corpora import QARecord, _load_arabic_squad
+from .finetune_corpora import QARecord, _arabic_squad_records
 
 logger = logging.getLogger(__name__)
 
@@ -100,7 +100,10 @@ def build_synthetic_mcq_corpus(
 
     ``max_records`` (optional) caps the corpus size — useful for smoke tests.
     """
-    extractive = _load_arabic_squad("train")
+    # every SQuAD row, not the train slice: the dev carve-out must not change
+    # which MCQ records exist or what distractors they drew (see
+    # ``_arabic_squad_records``).
+    extractive = _arabic_squad_records()
     rng = random.Random(seed)
     letters = _arabic_choice_letters()
     if num_choices < 2 or num_choices > len(letters):
@@ -145,10 +148,13 @@ def build_synthetic_mcq_corpus(
 
 def load_arabic_squad_mcq(split: str) -> List[QARecord]:
     """Loader entry-point matching the ``_LOADERS`` signature in
-    ``finetune_corpora.py``. Currently only ``split == "train"`` is supported
-    (Arabic-SQuAD has no validation split)."""
-    if split != "train":
-        raise ValueError(
-            f"arabic_squad_mcq has no '{split}' split (only 'train' is available)"
-        )
-    return build_synthetic_mcq_corpus()
+    ``finetune_corpora.py``. ``train`` / ``dev`` partition the corpus by the
+    underlying Arabic-SQuAD row id; ``validation`` is refused (Arabic-SQuAD
+    has no validation split)."""
+    from .finetune_corpora import _partition_dev, _require_train_or_dev
+    _require_train_or_dev(split, "arabic_squad_mcq")
+    records = build_synthetic_mcq_corpus()
+    # The dev slice is hashed on the Arabic-SQuAD row each MCQ was built from
+    # (``sq_mcq_<index>``), under the ``arabic_squad`` key — so a passage is
+    # dev in the extractive and the MCQ corpus together, or in neither.
+    return _partition_dev(records, "arabic_squad_mcq", split)

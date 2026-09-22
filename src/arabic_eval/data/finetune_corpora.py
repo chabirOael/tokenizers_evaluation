@@ -81,7 +81,7 @@ import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Mapping, Optional, Sequence
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from torch.utils.data import DataLoader, Dataset
 
@@ -119,6 +119,48 @@ def is_dev_title(corpus: str, title: Optional[str], fraction: float = DEV_FRACTI
     import hashlib
     h = hashlib.sha1(f"{_DEV_SALT}:{corpus}:{title or ''}".encode("utf-8")).hexdigest()[:8]
     return int(h, 16) / 0x100000000 < fraction
+
+
+def is_dev_id(corpus: str, record_id: str, fraction: float = DEV_FRACTION) -> bool:
+    """Deterministic record-level dev membership for corpora that have no title
+    to group by: ``sha1(salt:corpus:id) < fraction``. Same salt scheme as
+    ``is_dev_title``, so a corpus uses one or the other, never both."""
+    import hashlib
+    h = hashlib.sha1(f"{_DEV_SALT}:{corpus}:{record_id}".encode("utf-8")).hexdigest()[:8]
+    return int(h, 16) / 0x100000000 < fraction
+
+
+#: Corpora whose ``dev`` slice is chosen per record id (the rest use
+#: ``is_dev_title``). ``arabic_squad_mcq`` is hashed under the
+#: ``arabic_squad`` key on the SQuAD row it was built from, so a passage is
+#: dev in both corpora or in neither — otherwise the MCQ dev slice would ask
+#: about passages the extractive train slice teaches.
+_ID_DEV_CORPORA = frozenset({"arabic_squad", "arabic_squad_mcq", "cidar", "bactrian_x_ar", "aya_ar"})
+_MCQ_ID_PREFIX = "sq_mcq_"
+
+
+def dev_key(corpus: str, record_id: str) -> Tuple[str, str]:
+    """``(corpus, id)`` the dev hash is taken over."""
+    if corpus == "arabic_squad_mcq" and record_id.startswith(_MCQ_ID_PREFIX):
+        return "arabic_squad", record_id[len(_MCQ_ID_PREFIX):]
+    return corpus, record_id
+
+
+def is_dev_record(corpus: str, record_id: str, fraction: float = DEV_FRACTION) -> bool:
+    return is_dev_id(*dev_key(corpus, record_id), fraction=fraction)
+
+
+def _require_train_or_dev(split: str, corpus: str) -> None:
+    """These corpora have no official evaluation split; ``dev`` is a 5 % slice
+    of their train split, ``validation`` stays refused."""
+    if split not in {"train", "dev"}:
+        raise ValueError(f"{corpus} has no '{split}' split (only 'train' is available)")
+
+
+def _partition_dev(records: List["QARecord"], corpus: str, split: str) -> List["QARecord"]:
+    """``train`` = everything but the dev slice, ``dev`` = the slice."""
+    want_dev = split == "dev"
+    return [r for r in records if is_dev_record(corpus, r.id) == want_dev]
 
 
 def _train_dev_split(split: str, corpus: str) -> str:
@@ -287,12 +329,15 @@ def _format_qa_full(record: QARecord) -> str:
 # Per-corpus loaders
 # --------------------------------------------------------------------------
 
-def _load_arabic_squad(split: str) -> List[QARecord]:
-    """Load Mostafa3zazi/Arabic_SQuAD (flat schema, train-only)."""
-    if split != "train":
-        raise ValueError(
-            f"arabic_squad has no '{split}' split (only 'train' is available)"
-        )
+def _arabic_squad_records() -> List[QARecord]:
+    """Every Arabic-SQuAD row, unpartitioned.
+
+    ``arabic_squad_mcq`` is *derived* from this list: it walks it in order and
+    draws distractors from a seeded RNG, so the list it sees must not change
+    when the dev slice is carved out — otherwise every synthetic MCQ record
+    would differ from the ones every archived run trained on. The dev
+    partition therefore happens in the two loaders, never here.
+    """
     from datasets import load_dataset
     ds = load_dataset("Mostafa3zazi/Arabic_SQuAD", split="train", revision=PINNED_REVISIONS["arabic_squad"])
     records: List[QARecord] = []
@@ -309,6 +354,16 @@ def _load_arabic_squad(split: str) -> List[QARecord]:
             answer=answer,
             source="arabic_squad",
         ))
+    return records
+
+
+def _load_arabic_squad(split: str) -> List[QARecord]:
+    """Load Mostafa3zazi/Arabic_SQuAD (flat schema, no official eval split).
+
+    ``train`` / ``dev`` partition it by record id (``is_dev_id``);
+    ``validation`` is refused."""
+    _require_train_or_dev(split, "arabic_squad")
+    records = _partition_dev(_arabic_squad_records(), "arabic_squad", split)
     logger.info("arabic_squad/%s: loaded %d records", split, len(records))
     return records
 
@@ -421,8 +476,7 @@ def _load_cidar(split: str) -> List[QARecord]:
     18 ``index`` values: exact duplicates are dropped (first kept) and a
     repeated index gets its row position appended so record ids stay unique.
     """
-    if split != "train":
-        raise ValueError(f"cidar has no '{split}' split (only 'train' is available)")
+    _require_train_or_dev(split, "cidar")
     from datasets import load_dataset
     ds = load_dataset("arbml/CIDAR", split="train", revision=PINNED_REVISIONS["cidar"])
     records: List[QARecord] = []
@@ -442,6 +496,7 @@ def _load_cidar(split: str) -> List[QARecord]:
         if rec is not None:
             seen_ids.add(rec_id)
             records.append(rec)
+    records = _partition_dev(records, "cidar", split)
     logger.info("cidar/%s: loaded %d records (of %d rows; %d exact duplicates dropped)",
                 split, len(records), len(ds), n_dup)
     return records
@@ -457,8 +512,7 @@ def _load_bactrian_x_ar(split: str) -> List[QARecord]:
     ``{instruction, input, id, output}``). 641 rows carry ``input: null``
     (treated as empty); ``input`` becomes the record's ``context``.
     """
-    if split != "train":
-        raise ValueError(f"bactrian_x_ar has no '{split}' split (only 'train' is available)")
+    _require_train_or_dev(split, "bactrian_x_ar")
     from huggingface_hub import hf_hub_download
     path = hf_hub_download(
         "MBZUAI/Bactrian-X", "data/ar.json.gz", repo_type="dataset",
@@ -473,6 +527,7 @@ def _load_bactrian_x_ar(split: str) -> List[QARecord]:
         )
         if rec is not None:
             records.append(rec)
+    records = _partition_dev(records, "bactrian_x_ar", split)
     logger.info("bactrian_x_ar/%s: loaded %d records (of %d rows)", split, len(records), len(rows))
     return records
 
@@ -504,8 +559,7 @@ def _load_aya_ar(split: str, include_datasets: Sequence[str] = AYA_DEFAULT_INCLU
     under ``SFT_CORPORA_CACHE_DIR/aya_ar/<fingerprint>.parquet`` keyed on
     revision + allowlist, so later runs skip the shards entirely.
     """
-    if split != "train":
-        raise ValueError(f"aya_ar has no '{split}' split (only 'train' is available)")
+    _require_train_or_dev(split, "aya_ar")
     include = list(include_datasets)
     if not include:
         raise ValueError("aya_ar: include_datasets must name at least one Aya sub-dataset")
@@ -534,6 +588,7 @@ def _load_aya_ar(split: str, include_datasets: Sequence[str] = AYA_DEFAULT_INCLU
             f"aya_ar: include_datasets {missing} matched no Arab-script row of {AYA_REPO}/{AYA_CONFIG} "
             f"(present: {sorted(seen_names)}); check the sub-dataset names (dataset_name column)"
         )
+    records = _partition_dev(records, "aya_ar", split)
     logger.info("aya_ar/%s: loaded %d records %s", split, len(records), seen_names)
     return records
 

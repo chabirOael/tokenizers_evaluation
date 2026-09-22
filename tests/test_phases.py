@@ -431,3 +431,141 @@ class TestPhaseConfigCleanLatinRows:
 
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-v"]))
+
+
+# --------------------------------------------------------------------------
+# Token-weighted per-category early-stop eval (added 2026-09-22)
+# --------------------------------------------------------------------------
+
+class _MaskedDataset(Dataset):
+    """Sequences whose first ``n_prompt`` label positions are masked, so the
+    loss sees exactly ``seq_len - n_prompt`` answer tokens per record."""
+    def __init__(self, vocab: int, seq_len: int, n: int, n_prompt: int, seed: int = 0) -> None:
+        g = torch.Generator().manual_seed(seed)
+        self.input_ids = torch.randint(0, vocab, (n, seq_len), generator=g)
+        self.n_prompt = n_prompt
+
+    def __len__(self) -> int:
+        return self.input_ids.shape[0]
+
+    def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
+        ids = self.input_ids[idx]
+        labels = ids.clone()
+        labels[: self.n_prompt] = -100
+        return {"input_ids": ids, "labels": labels}
+
+
+def _masked_loader(vocab=32, seq_len=8, n=4, n_prompt=6, batch=2, seed=0) -> DataLoader:
+    return DataLoader(_MaskedDataset(vocab, seq_len, n, n_prompt, seed=seed),
+                      batch_size=batch, shuffle=False)
+
+
+def _hand_nll(adapter, loader):
+    """Σ NLL over shifted, unmasked label positions, and their count."""
+    total, tokens = 0.0, 0
+    with torch.no_grad():
+        for batch in loader:
+            logits = adapter.model(batch["input_ids"])
+            sl = logits[..., :-1, :].contiguous()
+            lab = batch["labels"][..., 1:].contiguous()
+            nll = F.cross_entropy(sl.view(-1, sl.size(-1)), lab.view(-1),
+                                  ignore_index=-100, reduction="sum")
+            total += float(nll)
+            tokens += int((lab != -100).sum())
+    return total, tokens
+
+
+class TestTokenWeightedEval:
+    def test_matches_a_hand_computed_sum_over_two_categories(self):
+        from arabic_eval.training.phases import _eval_loss_token_weighted
+        adapter = _TinyAdapter(device="cpu")
+        loaders = {
+            "extractive": _masked_loader(n=4, n_prompt=6, seed=1),   # 4 records × 1 answer token
+            "free_form": _masked_loader(n=4, n_prompt=2, seed=2),    # 4 records × 5 answer tokens
+        }
+        got = _eval_loss_token_weighted(adapter, loaders, bf16=False, fp16=False)
+
+        exp_nll, exp_tok = 0.0, 0
+        for cat, loader in loaders.items():
+            nll, tok = _hand_nll(adapter, loader)
+            assert got["per_category"][cat]["tokens"] == tok
+            assert got["per_category"][cat]["loss"] == pytest.approx(nll / tok, rel=1e-5)
+            assert got["per_category"][cat]["records"] == 4
+            exp_nll += nll
+            exp_tok += tok
+        assert got["tokens"] == exp_tok
+        assert got["loss"] == pytest.approx(exp_nll / exp_tok, rel=1e-5)
+
+    def test_weights_by_tokens_not_by_batches(self):
+        """The whole point: a category of one-token answers must not weigh the
+        same as a category of five-token answers."""
+        from arabic_eval.training.phases import _eval_loss, _eval_loss_token_weighted
+        adapter = _TinyAdapter(device="cpu")
+        short = _masked_loader(n=4, n_prompt=6, seed=1)
+        long = _masked_loader(n=4, n_prompt=2, seed=2)
+        tw = _eval_loss_token_weighted(adapter, {"a": short, "b": long}, bf16=False, fp16=False)
+        s_nll, s_tok = _hand_nll(adapter, short)
+        l_nll, l_tok = _hand_nll(adapter, long)
+        assert l_tok >= s_tok * 3                      # the long category dominates the tokens
+        batch_mean = (_eval_loss(adapter, short, bf16=False, fp16=False)
+                      + _eval_loss(adapter, long, bf16=False, fp16=False)) / 2
+        assert tw["loss"] == pytest.approx((s_nll + l_nll) / (s_tok + l_tok), rel=1e-5)
+        assert abs(tw["loss"] - batch_mean) > 1e-6     # and it differs from the per-batch mean
+
+    def test_run_phase_uses_the_mixture_metric_and_logs_the_breakdown(self, caplog, tmp_path):
+        cfg = _phase_cfg(steps=4, early_stopping=EarlyStoppingConfig(
+            enabled=True, eval_every_n_steps=2, patience=10, min_steps_before_stop=0,
+            restore_best_at_end=False, eval_splits={},
+        ))
+        adapter = _TinyAdapter(device="cpu")
+        loaders = {"extractive": _masked_loader(n=4, n_prompt=6, seed=1),
+                   "free_form": _masked_loader(n=4, n_prompt=2, seed=2)}
+        with caplog.at_level("INFO"):
+            result = run_phase(phase_name="sft", adapter=adapter, phase_cfg=cfg,
+                               train_loader=_make_loader(n=16), eval_loaders=loaders,
+                               output_dir=tmp_path, bf16=False, fp16=False, logging_steps=100)
+        assert result.eval_loss_definition == "token_weighted_mixture"
+        assert result.eval_history and set(result.eval_history[0]) == {"step", "loss", "tokens", "per_category"}
+        assert set(result.eval_history[0]["per_category"]) == {"extractive", "free_form"}
+        assert result.eval_losses[0][1] == pytest.approx(result.eval_history[0]["loss"], rel=1e-6)
+
+        line = next(m for m in caplog.messages if "eval_loss=" in m)
+        assert "extractive=" in line and "free_form=" in line and "tokens=" in line
+        # the console's progress parser still matches
+        from arabic_eval.tools.experiment_console import _RE_EVAL_LOSS
+        m = _RE_EVAL_LOSS.search(line)
+        assert m and m.group(1) == "sft"
+
+    def test_the_old_path_is_unchanged(self, caplog, tmp_path):
+        cfg = _phase_cfg(steps=4, early_stopping=EarlyStoppingConfig(
+            enabled=True, eval_every_n_steps=2, patience=10, min_steps_before_stop=0,
+            restore_best_at_end=False,
+        ))
+        adapter = _TinyAdapter(device="cpu")
+        with caplog.at_level("INFO"):
+            result = run_phase(phase_name="sft", adapter=adapter, phase_cfg=cfg,
+                               train_loader=_make_loader(n=16), eval_loader=_make_loader(n=8),
+                               output_dir=tmp_path, bf16=False, fp16=False, logging_steps=100)
+        assert result.eval_loss_definition == "batch_mean"
+        assert all("per_category" not in e for e in result.eval_history)
+        line = next(m for m in caplog.messages if "eval_loss=" in m)
+        assert "extractive=" not in line and line.rstrip().endswith(")")
+
+    def test_early_stop_fires_on_the_mixture_metric(self, tmp_path):
+        cfg = _phase_cfg(steps=20, learning_rate=0.0, early_stopping=EarlyStoppingConfig(
+            enabled=True, eval_every_n_steps=2, patience=2, min_steps_before_stop=0,
+            restore_best_at_end=False, eval_splits={},
+        ))
+        adapter = _TinyAdapter(device="cpu")
+        loaders = {"extractive": _masked_loader(n=4, n_prompt=6, seed=1)}
+        result = run_phase(phase_name="sft", adapter=adapter, phase_cfg=cfg,
+                           train_loader=_make_loader(n=80), eval_loaders=loaders,
+                           output_dir=tmp_path, bf16=False, fp16=False, logging_steps=100)
+        assert result.early_stopped                      # LR 0 → a flat metric → patience runs out
+        assert result.steps_completed < 20
+
+    def test_missing_both_eval_inputs_still_raises(self, tmp_path):
+        cfg = _phase_cfg(steps=2, early_stopping=EarlyStoppingConfig(enabled=True))
+        with pytest.raises(ValueError, match="no eval_loader"):
+            run_phase(phase_name="sft", adapter=_TinyAdapter(device="cpu"), phase_cfg=cfg,
+                      train_loader=_make_loader(), output_dir=tmp_path, bf16=False, fp16=False)

@@ -5,7 +5,7 @@ Held-out sets (``configs/contamination/heldout_sets.yaml``): TyDiQA-AR
 ``validation`` (the public dev split; TyDi's test is hidden), ARCD
 ``validation`` (the paper's test split) and, once its ``path`` is set, the
 free-form eval prompt file. Training side: the Phase 3 QA corpora (the
-``train`` *and* ``dev`` slices of TyDiQA / ARCD, ``train`` of the others),
+``train`` *and* ``dev`` slices of every corpus that has both),
 the cached pretraining-mix pool of a config (by document) and, opt-in,
 the tokenizer-training corpus.
 
@@ -45,9 +45,12 @@ from arabic_eval.utils.io import write_report_table  # noqa: E402
 from arabic_eval.utils.logging import setup_logger  # noqa: E402
 
 ALL_CORPORA = tuple(_LOADERS)
-# The two corpora whose official train split is partitioned into train + dev:
-# both slices are training-side (dev steers early-stopping), so both are scanned.
-TRAIN_DEV_CORPORA = ("tydiqa_arabic", "arcd")
+# Corpora whose train split is partitioned into train + dev: both slices are
+# training-side (dev steers early-stopping), so both are scanned. TyDiQA and
+# ARCD carve dev by article title; the other five by record id (added
+# 2026-09-22 for the free-form early-stop signal).
+TRAIN_DEV_CORPORA = ("tydiqa_arabic", "arcd", "arabic_squad", "arabic_squad_mcq",
+                     "cidar", "bactrian_x_ar", "aya_ar")
 DEFAULT_POOL_CONFIG = "configs/experiments/all_tokenizers_sweep_pretrain_mix.yaml"
 
 
