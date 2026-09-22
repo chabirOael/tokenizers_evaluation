@@ -5,9 +5,11 @@
 # morphology-aware vocabulary beat a frequency-driven one at equal adaptation? Free-form eval only, like arm B.
 # Differences from the AraRooPat file: tokenizer type / vocab_size / save_path / params (load_path null: BPE trains in
 # ~2 min); embedding_init surface_avg works unchanged — BaseTokenizer.token_surfaces gives every BPE piece its own
-# decoded string (a lone byte of a multi-byte letter has none and gets the global-mean row). At ~3.4 chars/token the
-# 16 K BPE packs fewer tokens per pool word than AraRooPat (2.97), so the 50 M-word pool holds the 131 M tokens the
-# phases draw with more margin; the pool itself is shared with v3 (same fingerprint), only the pack is per tokenizer.
+# decoded string (a lone byte of a multi-byte letter has none and gets the global-mean row). The 16 K BPE packs
+# 1.75 tokens per pool word (measured 2026-09-22 on 1 800 pool docs) against AraRooPat's 2.97, so the 50 M-word pool
+# of v3 would hold only ~87 M tokens against the 126 M raw + 4.9 M QA the phases draw: this cell has its own
+# 80 M-word pool (~140 M tokens, a new fingerprint — build ~15 min with HF_TOKEN, pack minutes for an HF tokenizer).
+# Equal compute (131 M tokens), not equal text — the platform's stated convention for cross-tokenizer budgets.
 # Phase 3: the same mixture 30 000 at 40/30/30; drop_truncated_answers + upsample kept for parity (BPE truncates
 # fewer records than AraRooPat at max_length 512, so fewer repeats).
 experiment:
@@ -54,7 +56,7 @@ model:
 training:
   pretraining_mix:
     pool:
-      total_words: 50000000      # 20 M gave 59.4 M tokens of this vocab; the two phases below draw 131 M (a new pool fingerprint)
+      total_words: 80000000      # BPE-16K: 1.75 tokens/word → ~140 M tokens; the two phases below draw 131 M (own pool fingerprint)
   corpus_params:
     aya_ar:
       include_datasets: ["Aya-Dataset", "Dolly-v2 (T)"]   # the two free-form sub-datasets of standard_arabic
