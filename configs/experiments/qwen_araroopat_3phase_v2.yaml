@@ -1,0 +1,257 @@
+# Arm B, second attempt: Qwen3-4B-Base + AraRooPat with max_patterns 40 000 (every pattern of frequency ≥ 2 —
+# the true Max tier of today's inventories; vocab 17 074), all three phases, free-form eval. Delta over base.yaml.
+# History: written 2026-09-21 as Balanced (4 000 patterns); the console-saved copy that ran at 11:55 carried
+# 40 000 and an output_dir under a stray top-level folder. The user kept the 40 000-pattern tokenizer, the partial
+# cell was moved to the output_dir below (its tokenizer, Phase 1 and Phase 2 checkpoints are intact; the run's
+# log and snapshot are in <cell>/phase12_run_20260921-115522/), and Phase 3 + eval continue from the Phase 2
+# checkpoint through qwen_araroopat_3phase_v2_resume_sft.yaml. This file is the full recipe for a from-scratch
+# re-run (~2 h). Every setting that differs from the first attempt (cell `araroopat`, 2026-09-18: degenerate
+# 50.8 %, chrF 7.6) is a consequence of a measured fix:
+#   * tokenizer: one YAML anchor for the top-level block and the sweep cell — a single-cell run trains the
+#     top-level `tokenizer`, the sweep cell is informational (the first run trained 10 000 patterns that way).
+#   * Phase 1 / 2 budget ×4 / ×5 (4.1 M → 16.4 M and 20.5 M tokens): the AraRooPat LM was under-trained —
+#     held-out raw-text loss 2.67 nats/token after Phase 2 (1.35 / char) against 2.27 (0.83 / char) for the
+#     untouched native model. Measured 2026-09-21: Phase 1 942 s (loss 2.78), Phase 2 1 756 s (loss 2.48, was
+#     2.57 at a fifth of the tokens). The 20 M-word pool packs to 59.4 M tokens of this vocab; the two phases
+#     draw 35.4 M.
+#   * Phase 2 / 3 LR 2e-4 → 2e-5 with warm-up 400 micro-steps (100 updates): 2e-4 is a LoRA-scale rate that
+#     pushed the native arm's raw-text loss 2.27 → 3.4 and the AraRooPat SFT model's to 3.86; the scheduler
+#     horizon is in updates since 2026-09-18, so the cosine now really decays.
+#   * drop_truncated_answers: true — at ~1.9 chars/token 8.3 % of the free-form SFT records lost their answer
+#     end at max_length 512 (native: 2.4 %); a truncated record carries no EOS and teaches "never stop".
+#     upsample: true because the same rule leaves the extractive pool 164 records short of its 12 000 quota.
+#   * Phase 3 otherwise identical to the native SFT arm (mixture 30 000 at 40/30/30, extractive dev early
+#     stop) so the two arms differ in tokenizer + Phase 1/2 exposure only.
+#   * eval: freeform_cidar under the 2026-09-21 rules — exact template-label stop markers, periodic-tail
+#     loop stop, 2 400-char budget pinned here so the cell is comparable with the reference cells
+#     native_qwen3_base_m2_c2400 / native_qwen3_sft_m2_c2400 in the same experiment folder.
+# Known, unchanged: AraRooPat decodes `<unk>` as `?` (reference round-trip chrF 89.2 on the held-out
+# references, native 99.4) and a tanween after ة becomes its own LIT chunk — a decode-fidelity ceiling this
+# run measures, not one it fixes. The CAMeL pre-pass cache (outputs/tokenizers/araroopat_cache/) makes
+# tokenizer training ~8 min; the pool (9b02b0462005e107) is reused and this vocab is already packed.
+experiment:
+  name: araroopat_3phase_v2
+  description: Qwen3-4B-Base + AraRooPat (10 000 roots / 40 000 patterns = every pattern with freq ≥ 2, vocab 17 074),
+    Phase 1 16.4 M + Phase 2 20.5 M mix tokens at LR 5e-4 / 2e-5, Phase 3 mixture 30 000 at LR 2e-5 with
+    drop_truncated_answers + upsample, free-form eval at 2 400 chars — arm B v2 of qwen_native_vs_araroopat
+  output_dir: outputs/experiments/qwen_native_vs_araroopat/araroopat_3phase_v2
+  seed: 42
+  deterministic: true
+  created_at: null
+  # the 11:55 run: tokenizer + Phase 1 + 2 done, Phase 3 failed (mixture shortfall)
+  runs:
+    - {started_at: "2026-09-21T11:55:22+00:00", run_id: "20260921-115522_qwen_araroopat_3phase_v2", source: console}
+
+data:
+  # Tokenizer-training corpus preprocessing (base.yaml defaults, stated because they key the CAMeL cache):
+  preprocessing:
+    normalize_unicode: true
+    remove_diacritics: false
+    normalize_alef: false        # off since 2026-09-16: the fold rewrote 13 % of words into spellings no eval text uses
+    remove_tatweel: true
+    min_text_length: 10
+    join_lone_waw: true
+
+tokenizer:
+  type: araroopat
+  vocab_size: null               # derived: roots + patterns + fixed slots (17 074 at 40 000 patterns)
+  save_path: outputs/tokenizers/araroopat_maxpat40k_v2
+  load_path: null                # train in-run (pre-pass cache hit ≈ 8 min); the resume config loads the saved one instead
+  params: &araroopat_params      # configs/tokenizers/araroopat.yaml with max_patterns 40 000; the sweep cell reuses the anchor
+    max_roots: 10000
+    max_patterns: 40000
+    min_root_freq: 2
+    min_pattern_freq: 2
+    generator_timeout_ms: 50
+    use_diacritized_surface: false
+    cache_corpus_analysis: true
+    add_bos_eos: true
+    clitic_peeler: true
+    peel_bare_alef: false
+    proper_nouns: unrooted
+    prepositions:
+    - من
+    - إلى
+    - عن
+    - على
+    - في
+    - حتى
+    - منذ
+    - مذ
+    - خلا
+    - عدا
+    - حاشا
+    - متى
+    - لعل
+    - كي
+    - لولا
+    - مع
+    - تجاه
+    - خلال
+    - بلا
+    func_words:
+    - هو
+    - هي
+    - هم
+    - هن
+    - هما
+    - أنا
+    - أنت
+    - أنتم
+    - أنتن
+    - أنتما
+    - نحن
+    - إيا
+    - هذا
+    - هذه
+    - هذان
+    - هاتان
+    - هؤلاء
+    - ذلك
+    - تلك
+    - ذاك
+    - أولئك
+    - الذي
+    - التي
+    - الذين
+    - اللذان
+    - اللتان
+    - اللاتي
+    - اللواتي
+    - اللائي
+    - أن
+    - إن
+    - أو
+    - أم
+    - ثم
+    - بل
+    - لكن
+    - إذا
+    - إذ
+    - حيث
+    - كما
+    - لو
+    - إما
+    - أما
+    - إلا
+    - ألا
+    - بينما
+    - حينما
+    - عندما
+    - كلما
+    - لأن
+    - كأن
+    - ليت
+    - إذن
+    - هكذا
+    - كذا
+    - مثلما
+    - طالما
+    - حسبما
+    - أينما
+    - فيما
+    - ذات
+    - ما
+    - ماذا
+    - لماذا
+    - كيف
+    - أين
+    - هل
+    - أي
+    - كم
+    - أيان
+    - أنى
+    - لا
+    - لم
+    - لن
+    - لما
+    - قد
+    - سوف
+
+model:
+  type: qwen3
+  name_or_path: Qwen/Qwen3-4B-Base
+  dtype: bfloat16
+  device: auto
+
+training:
+  corpus_params:
+    aya_ar:
+      include_datasets: ["Aya-Dataset", "Dolly-v2 (T)"]   # the two free-form sub-datasets of standard_arabic
+  phases:
+    embedding_alignment:         # Phase 1: new embeddings + tied lm_head on raw text, body frozen
+      enabled: true
+      datasets: [pretraining_mix]
+      trainable_parameters: [embed_tokens, lm_head]
+      steps: 4000                # micro-steps = updates at accumulation 1
+      mix_tokens: 16384000       # 4 000 × 8 × 512 — blocks [0, 32000) of the packed corpus
+      learning_rate: 5.0e-4      # embeddings only: the higher rate is safe here
+      batch_size: 8
+      gradient_accumulation_steps: 1
+      max_length: 512
+      loss_target: full_sequence
+      lr_scheduler: constant
+      warmup_steps: 0
+    warmup:                      # Phase 2: whole model on raw text + 7 % QA-format blend
+      enabled: true
+      datasets: [pretraining_mix]
+      trainable_parameters: ["*"]
+      steps: 10000               # micro-steps; 2 500 updates at accumulation 4
+      mix_tokens: 20480000       # 10 000 × 4 × 512 — blocks [32000, 69200) + 2 800 QA-blend blocks
+      learning_rate: 2.0e-5      # full fine-tuning of a 4B model (was 2e-4 — destructive, see header)
+      batch_size: 4
+      gradient_accumulation_steps: 4
+      max_length: 512
+      loss_target: full_sequence
+      lr_scheduler: cosine       # horizon 2 500 updates
+      warmup_steps: 400          # micro-steps = 100 updates
+      qa_blend:
+        datasets: [tydiqa_arabic, arcd]
+        share: 0.07
+        split: train
+        seed: 42
+    sft:                         # Phase 3: identical to qwen_native_sft_only.yaml except drop_truncated_answers + upsample (see header)
+      enabled: true
+      datasets: [tydiqa_arabic, arcd, arabic_squad_mcq, cidar, bactrian_x_ar, aya_ar]
+      trainable_parameters: ["*"]
+      mixture:
+        total_examples: 30000
+        shares: {extractive: 0.40, mcq: 0.30, free_form: 0.30}
+        within_category: equal
+        upsample: true             # extractive keeps 11 836 of 12 000 at max_length 512 under this tokenizer (1 984 + 101
+                                   # truncation drops, 239 cut answers) → 164 records repeat once; without it: MixtureShortfallError
+        drop_truncated_answers: true
+        seed: 42
+      steps: null                # derived: 30 000 / 4 = 7 500 micro-steps (early stop may end it sooner)
+      learning_rate: 2.0e-5
+      batch_size: 4
+      gradient_accumulation_steps: 4
+      max_length: 512
+      loss_target: answer_only
+      lr_scheduler: cosine       # horizon 1 875 updates
+      warmup_steps: 400          # micro-steps = 100 updates
+      early_stopping:
+        enabled: true
+        eval_every_n_steps: 200
+        patience: 5
+        min_delta: 5.0e-4
+        min_steps_before_stop: 500
+        restore_best_at_end: true
+        eval_splits: {tydiqa_arabic: dev, arcd: dev}   # extractive-only signal (a free-form dev slice is the planned next change)
+
+evaluation:
+  intrinsic_metrics: true
+  morphological_metrics: true
+  downstream_metrics: true
+  eval_row_dump: true
+  score_normalization: char+pmi
+  num_fewshot: 3                 # unused by freeform_cidar; kept so adding the MCQ tasks later changes nothing else
+
+sweep:
+  tokenizers:
+    - type: araroopat            # == tokenizer.type above; one cell → no --sweep, this list is informational
+      vocab_sizes: [null]
+      params: *araroopat_params
+  tasks:
+    - type: freeform_cidar
+      params: {max_output_chars: 2400}   # pinned: the fixed decoding rule of the reference cells (code default since 2026-09-21)
