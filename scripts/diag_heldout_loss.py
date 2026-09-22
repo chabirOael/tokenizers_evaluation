@@ -3,11 +3,21 @@
 
 Two numbers an SFT run must not get wrong, measured on data no phase trained on:
 
-  (a) **Pretraining-mix loss** — causal LM loss per token (and per character)
-      on the last 120 documents of the pool's ``fineweb2_arb.parquet``,
-      concatenated with EOS and chunked into 512-token blocks. A rise over the
-      untouched base is damage to the language model (the 2e-4 native run of
-      2026-09-18 went from 2.27 to 3.4 nats).
+  (a) **Raw-text LM loss** — causal LM loss per token (and per character) on
+      the 150 FineWeb-2 documents of ``configs/contamination/rawtext_heldout_v1.jsonl``
+      (``--rawtext``), concatenated with EOS and chunked into 512-token blocks.
+      A rise over the untouched base is damage to the language model (the 2e-4
+      native run of 2026-09-18 went from 2.27 to 3.4 nats).
+
+      Until 2026-09-22 this read **the last 120 documents of the cell's own
+      pool** instead (``--pool``, kept for reproducing those numbers). That was
+      not held out: the packer walks the whole pool in ``source_doc_order`` and
+      the phases draw a prefix of the packed blocks, so each of those documents
+      was training text with probability 0.88 (AraRooPat v3), 0.98 (BPE-16K),
+      0.62 (v2) — while the native cells, which never trained on a pool, were
+      measured on genuinely unseen text. The old row compared an in-training
+      number with a held-out one; ``--rawtext`` is the same measurement on
+      documents no packer of any pool ever reached.
   (b) **Held-out CIDAR answers** — the 250 references of the free-form held-out
       set rendered with the *current* Phase 3 ``instruction`` template
       (``tokenize_record``: LCP answer-only masking, EOS appended when the
@@ -62,6 +72,7 @@ log = logging.getLogger("diag_heldout_loss")
 
 DEFAULT_POOL = "outputs/data_cache/pretraining_mix/9b02b0462005e107"
 DEFAULT_HELDOUT = "configs/contamination/freeform_cidar_heldout_v1.jsonl"
+DEFAULT_RAWTEXT = "configs/contamination/rawtext_heldout_v1.jsonl"
 N_DOCS = 120
 BLOCK = 512
 
@@ -69,6 +80,15 @@ BLOCK = 512
 # --------------------------------------------------------------------------
 # pure helpers (tested)
 # --------------------------------------------------------------------------
+
+def file_sha256(path: Path) -> str:
+    import hashlib
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
 
 def strip_specials(ids: Sequence[int], bos: Optional[int], eos: Optional[int]) -> List[int]:
     """Drop a leading BOS and a trailing EOS the tokenizer added on its own."""
@@ -246,7 +266,8 @@ def checkpoint_for(cell_dir: Path, base: bool, override: Optional[str], model_cf
 
 
 def run(cell_dir: Path, *, base: bool, checkpoint: Optional[str], pool: Optional[str], heldout: str,
-        v1_template: bool, n_docs: int, block: int, max_length: int, device: str, dtype: str) -> Dict[str, Any]:
+        v1_template: bool, n_docs: int, block: int, max_length: int, device: str, dtype: str,
+        rawtext: str = DEFAULT_RAWTEXT) -> Dict[str, Any]:
     import pyarrow.parquet as pq
     import torch
     from transformers import AutoModelForCausalLM
@@ -262,15 +283,28 @@ def run(cell_dir: Path, *, base: bool, checkpoint: Optional[str], pool: Optional
     ckpt = checkpoint_for(cell_dir, base, checkpoint, model_cfg)
 
     # (a) raw text
-    pool_path = pool_dir_for(cell_dir, pool) / "fineweb2_arb.parquet"
-    docs = pq.read_table(pool_path, columns=["text"]).column("text").to_pylist()[-n_docs:]
+    if pool:
+        pool_path = pool_dir_for(cell_dir, pool) / "fineweb2_arb.parquet"
+        docs = pq.read_table(pool_path, columns=["text"]).column("text").to_pylist()[-n_docs:]
+        rawtext_meta = {"mode": "pool_tail", "pool": str(pool_path), "n_docs": len(docs),
+                        "held_out": False,
+                        "note": "the last n docs of the cell's pool — training text for an adapted arm"}
+    else:
+        rawtext_path = REPO_ROOT / rawtext
+        rows = [json.loads(l) for l in rawtext_path.read_text(encoding="utf-8").splitlines() if l.strip()]
+        docs = [r["text"] for r in rows]
+        rawtext_meta = {"mode": "rawtext_heldout", "rawtext_file": str(rawtext_path.relative_to(REPO_ROOT)),
+                        "rawtext_sha256": file_sha256(rawtext_path), "n_docs": len(docs), "held_out": True,
+                        "source": rows[0].get("source") if rows else None}
+        pool_path = None
     t0 = time.perf_counter()
     doc_ids = [strip_specials(tokenizer.encode(d).input_ids, bos, eos) for d in docs]
     chars = sum(len(d) for d in docs)
     toks = sum(len(x) for x in doc_ids)
     blocks = blocks_from(doc_ids, int(eos), block)
-    log.info("pool: %d docs, %d chars, %d tokens (%.2f chars/token), %d blocks of %d — encoded in %.0fs",
-             len(docs), chars, toks, chars / max(toks, 1), len(blocks), block, time.perf_counter() - t0)
+    log.info("%s: %d docs, %d chars, %d tokens (%.2f chars/token), %d blocks of %d — encoded in %.0fs",
+             rawtext_meta["mode"], len(docs), chars, toks, chars / max(toks, 1), len(blocks), block,
+             time.perf_counter() - t0)
 
     # (b) held-out answers
     recs = heldout_records(REPO_ROOT / heldout)
@@ -295,7 +329,8 @@ def run(cell_dir: Path, *, base: bool, checkpoint: Optional[str], pool: Optional
         "cell": str(cell_dir), "checkpoint": ckpt, "base": base, "tokenizer": tok_cfg.type,
         "template_version": 1 if v1_template else TEMPLATE_VERSION,
         "prompt_example": (v1_format_prompt if v1_template else _format_qa_prompt)(recs[0]) if recs else None,
-        "pool": str(pool_path), "n_docs": len(docs), "block_size": block, "max_length": max_length,
+        "pool": str(pool_path) if pool_path else None, "rawtext": rawtext_meta,
+        "n_docs": len(docs), "block_size": block, "max_length": max_length,
         "heldout": heldout, "dtype": dtype,
         "mix": mix, "heldout_answers": ans,
     }
@@ -307,6 +342,8 @@ def print_table(res: Dict[str, Any]) -> None:
         ("checkpoint", res["checkpoint"]),
         ("tokenizer", res["tokenizer"]),
         ("template", f"v{res['template_version']}"),
+        ("raw text", f"{res['rawtext']['mode']} ({res['rawtext']['n_docs']} docs, "
+                     f"held out: {res['rawtext']['held_out']})"),
         ("mix loss / token", m["loss_per_token"]),
         ("mix loss / char", m["loss_per_char"]),
         ("mix chars / token", m["chars_per_token"]),
@@ -328,7 +365,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     ap.add_argument("--cell", required=True, help="experiment cell directory (has config.json)")
     ap.add_argument("--base", action="store_true", help="measure the untouched model.name_or_path instead of training/sft")
     ap.add_argument("--checkpoint", help="an explicit checkpoint directory (e.g. <cell>/training/warmup)")
-    ap.add_argument("--pool", help="pool directory holding fineweb2_arb.parquet (default: the cell's packed manifest, else the default pool)")
+    ap.add_argument("--rawtext", default=DEFAULT_RAWTEXT,
+                    help="held-out raw-text JSONL (default: the committed rawtext_heldout_v1.jsonl)")
+    ap.add_argument("--pool", help="measure the OLD way instead: the last --n-docs documents of this pool "
+                                   "directory's fineweb2_arb.parquet (training text for an adapted arm; "
+                                   "kept to reproduce pre-2026-09-22 numbers)")
     ap.add_argument("--heldout", default=DEFAULT_HELDOUT)
     ap.add_argument("--v1-template", action="store_true", help="render the references with the flat v1 template")
     ap.add_argument("--n-docs", type=int, default=N_DOCS)
@@ -343,10 +384,16 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     cell_dir = Path(args.cell)
     res = run(cell_dir, base=args.base, checkpoint=args.checkpoint, pool=args.pool, heldout=args.heldout,
               v1_template=args.v1_template, n_docs=args.n_docs, block=args.block, max_length=args.max_length,
-              device=args.device, dtype=args.dtype)
+              device=args.device, dtype=args.dtype, rawtext=args.rawtext)
     print_table(res)
+    stem = "diag_heldout_loss" if args.pool else "diag_heldout_rawtext_v1"
+    suffix = ""
+    if args.checkpoint and not args.base:
+        name = Path(args.checkpoint).name
+        if name and name != "sft":
+            suffix = f"_{name}"
     out = Path(args.out) if args.out else cell_dir / (
-        "diag_heldout_loss" + ("_base" if args.base else "") + ("_v1" if args.v1_template else "") + ".json")
+        stem + suffix + ("_base" if args.base else "") + ("_v1" if args.v1_template else "") + ".json")
     out.parent.mkdir(parents=True, exist_ok=True)
     with open(out, "w", encoding="utf-8") as f:
         json.dump(res, f, ensure_ascii=False, indent=2)

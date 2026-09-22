@@ -1,0 +1,147 @@
+{
+  "file": "configs/contamination/rawtext_heldout_v1.jsonl",
+  "sha256": "c6522a4f0050702bafc72190707d077d0bf3b040549be9f2d89298300f52e1dd",
+  "n_docs": 150,
+  "seed": 42,
+  "source": "fineweb2_arb",
+  "rule": "FineWeb-2 documents of the source pool at a position >= the largest docs_taken of any packed entry of that pool in source_doc_order(n_docs, pool_seed, source), whose raw-text sha1 is absent from every other pool directory (all sources) and from the taken documents of the source pool; drawn with a seeded permutation.",
+  "source_pool": {
+    "fingerprint": "51e0a74a3d05b6cf",
+    "seed": 42,
+    "docs": 131048,
+    "packed_entries": [
+      {
+        "entry": "4963c823cf727496",
+        "tokenizer": "bpe",
+        "docs_taken": 128754
+      }
+    ],
+    "docs_taken_max": 128754
+  },
+  "other_pools": {
+    "9b02b0462005e107": 48793,
+    "d9d1b696d93e6bd9": 123477
+  },
+  "candidates": {
+    "beyond_docs_taken": 2294,
+    "dropped_other_pool_hash": 1419,
+    "dropped_same_pool_taken_hash": 0,
+    "surviving_hash_filter": 875,
+    "clean_after_ngram_filter": 812
+  },
+  "ngram_filter": {
+    "pool_documents_scanned": 372123,
+    "candidates_indexed": 875,
+    "candidates_with_long_window": 63,
+    "short_heading_matches_ignored": 105895,
+    "criterion": "exact duplicate, or a shared run >= 20 words, or coverage >= 0.5 of the candidate's 8-grams",
+    "examples": [
+      {
+        "heldout_id": "f23ad9167d922ff0b912da542436f29149ba3403",
+        "pool": "51e0a74a3d05b6cf",
+        "source": "fineweb2_arb",
+        "doc": "<urn:uuid:4ee3ae8e-a9c1-46a8-869b-f1617ae8ed01>",
+        "exact": "",
+        "coverage": 0.136,
+        "run_words": 32
+      },
+      {
+        "heldout_id": "0b620bfc7d6396709698ccb2dfa24435482753bb",
+        "pool": "51e0a74a3d05b6cf",
+        "source": "fineweb2_arb",
+        "doc": "<urn:uuid:2ad31f1c-f60e-4657-9ddf-ede66dd2231f>",
+        "exact": "",
+        "coverage": 0.055,
+        "run_words": 23
+      },
+      {
+        "heldout_id": "a7e1a178f62c16f3d8da7b74056f882662c56b81",
+        "pool": "51e0a74a3d05b6cf",
+        "source": "fineweb2_arb",
+        "doc": "<urn:uuid:904c1520-ee16-436c-82f5-ae146b27b88e>",
+        "exact": "",
+        "coverage": 0.18,
+        "run_words": 29
+      },
+      {
+        "heldout_id": "18d73f2b19ee412c80d8d42a39c8986fbd2bbe4a",
+        "pool": "51e0a74a3d05b6cf",
+        "source": "fineweb2_arb",
+        "doc": "<urn:uuid:904c1520-ee16-436c-82f5-ae146b27b88e>",
+        "exact": "",
+        "coverage": 0.103,
+        "run_words": 29
+      },
+      {
+        "heldout_id": "c5a3496c07423cb5297d2117ac059c5b989797da",
+        "pool": "51e0a74a3d05b6cf",
+        "source": "fineweb2_arb",
+        "doc": "<urn:uuid:e02a73dd-8e05-4683-a249-00883792686d>",
+        "exact": "",
+        "coverage": 0.055,
+        "run_words": 45
+      },
+      {
+        "heldout_id": "e6db97bda741080febcf182f9880e498def5a2ba",
+        "pool": "51e0a74a3d05b6cf",
+        "source": "fineweb2_arb",
+        "doc": "<urn:uuid:a61a68f3-7974-4a57-ae90-128b4047f948>",
+        "exact": "",
+        "coverage": 0.293,
+        "run_words": 50
+      },
+      {
+        "heldout_id": "85bbd68ccdc265b4cb8508064ae2c6582b5985c0",
+        "pool": "51e0a74a3d05b6cf",
+        "source": "fineweb2_arb",
+        "doc": "<urn:uuid:3f53e933-2104-4ddb-aeff-04b240ff8fce>",
+        "exact": "",
+        "coverage": 0.016,
+        "run_words": 40
+      },
+      {
+        "heldout_id": "91521b8e3e0cc824511c77ec74eb42759914a2af",
+        "pool": "51e0a74a3d05b6cf",
+        "source": "fineweb2_arb",
+        "doc": "<urn:uuid:bdcbfac2-95e8-45f8-b574-d002e59a6ee4>",
+        "exact": "",
+        "coverage": 0.016,
+        "run_words": 54
+      },
+      {
+        "heldout_id": "9e650dec80edf68cb5c24b2ea821099bf3beda0d",
+        "pool": "51e0a74a3d05b6cf",
+        "source": "fineweb2_arb",
+        "doc": "<urn:uuid:3bf13957-d12b-4d0e-8580-ec426bf89e40>",
+        "exact": "",
+        "coverage": 0.068,
+        "run_words": 49
+      },
+      {
+        "heldout_id": "51d24657ebf17c6ac5d916c09115a9ea392546f9",
+        "pool": "51e0a74a3d05b6cf",
+        "source": "fineweb2_arb",
+        "doc": "<urn:uuid:3e906627-18e1-4d30-be75-5c9b47e9bd85>",
+        "exact": "",
+        "coverage": 0.039,
+        "run_words": 21
+      }
+    ]
+  },
+  "words": {
+    "total": 50199,
+    "median": 232,
+    "min": 57,
+    "max": 2158
+  },
+  "registered_in_heldout_sets": false,
+  "registration_note": "Deliberately not in configs/contamination/heldout_sets.yaml: registering it changes the held-out fingerprint, hence the pretraining-mix pool fingerprint and exclusions.json, which would confound comparisons with cells trained on the current pools. Register it before the next pool build so Stage A drops it by content.",
+  "verification": {
+    "pool_documents_scanned": 372123,
+    "real_overlaps": 0,
+    "long_shared_paragraphs": 0,
+    "short_heading_matches": 19508,
+    "criterion": "coverage >= 0.5, or a shared run >= 20 words, or an exact passage duplicate",
+    "hits": []
+  }
+}

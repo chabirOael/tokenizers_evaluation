@@ -128,7 +128,7 @@ Step-0 values are uninformative under tied embeddings (all within 1.4 nats of ln
 | | AraRooPat v2 | **AraRooPat v3** | **BPE-16K v3** | native base | native SFT |
 |---|---|---|---|---|---|
 | vocab / chars per token | 17 074 / 1.96 | 17 184 / 1.92 | 16 000 / 3.33 | 151 936 / 2.30 | 151 936 / 2.30 |
-| LM loss after Phase 2 / SFT (nats/char) | 1.29 / 1.34 | **0.95 / 0.97** | 0.90 / 0.91 | 0.82 | 0.84 |
+| LM loss after Phase 2 / SFT (nats/char) ¹ | 1.30 / 1.35 | **0.86 / 0.88** | 0.85 / 0.86 | 0.83 | 0.84 |
 | answer NLL after SFT (nats/char) | 1.27 | **0.81** | 0.64 | 0.80 | 0.76 |
 | P(EOS at end) / EOS rank-1 | 0.49 / 0.88 | 0.68 / 0.88 | 0.60 / 0.86 | 0.42 / 0.76 | 0.64 / 0.91 |
 | judge ± SE | 1.07 ± 0.02 | **2.00 ± 0.08** | 1.99 ± 0.08 | 2.42 ± 0.09 | 2.28 ± 0.09 |
@@ -143,13 +143,15 @@ Step-0 values are uninformative under tied embeddings (all within 1.4 nats of ln
 
 Head to head, AraRooPat v3 − BPE-16K v3 on the same 250 prompts (paired bootstrap, 10 000 resamples): **Δ +0.012 [−0.136, +0.156]**, win / tie / loss 24 / 54 / 22 %.
 
+¹ Re-measured 2026-09-22 on the held-out `configs/contamination/rawtext_heldout_v1.jsonl` (§3.6). As first reported the row read 1.29 / 1.34 · **0.95 / 0.97** · 0.90 / 0.91 · 0.82 · 0.84, from the last 120 documents of *each cell's own pool* — three different document sets, and for the adapted arms mostly their own training text. The correction closes most of the LM gap to the native model: 0.13 → **0.03** nats/char for AraRooPat v3 after Phase 2, 0.08 → **0.02** for BPE-16K.
+
 **Acceptance (thresholds set before the run):** LM loss ≤ 1.00 nats/char after Phase 2 (0.95 ✓) and ≤ 1.05 after SFT (0.97 ✓); answer NLL ≤ 0.90 (0.81 ✓); judge ≥ 2.0 (2.004 ✓, at the line); paired CI vs native base not entirely below −0.5 (✓); **loop stop ≤ 12 % (31.2 % ✗)**; mean answer 150–400 chars (176 ✓); round-trip chrF ≥ 92 diacritics-stripped (98.97 ✓). Seven of eight.
 
 ## 4. What the campaign established
 
 1. The native model's loops were partly measurement (the first loop rule) and partly a greedy attractor of the base model; under the corrected rules the untrained base loops on 6.8 % of prompts and the SFT arm on 12.4 %. SFT on the 30 000-record mixture learns the references' register and length but not their content: judge 2.28 vs 2.42, CI including zero.
-2. AraRooPat v1/v2 failed for a reason unrelated to morphology: an arbitrary embedding initialization and a 37 M-token budget left the language model at 1.34 nats/char (native 0.82). Informed initialization plus 131 M tokens brought it to 0.97 and the judge from 1.07 to 2.00; answer NLL now equals the untrained native model's.
-3. At equal adaptation a plain BPE-16K vocabulary ties AraRooPat on the judge and beats it on LM loss (0.91 vs 0.97), answer NLL (0.64 vs 0.81 nats/char), loops (20.8 vs 31.2 %) and generation speed (153 vs 111 chars/s), with 1.7× more text seen per token budget. AraRooPat's measurable advantages are decode fidelity to the written word (99.3 % word round trip) and root conservation (0.379 vs 0.048). Both arms sit 0.4 judge points under the untouched native model; that gap is the cost of re-learning any vocabulary in 131 M tokens.
+2. AraRooPat v1/v2 failed for a reason unrelated to morphology: an arbitrary embedding initialization and a 37 M-token budget left the language model at 1.35 nats/char (native 0.83). Informed initialization plus 131 M tokens brought it to 0.88 and the judge from 1.07 to 2.00; answer NLL now equals the untrained native model's. (Loss figures corrected in §3.6; as first measured, 1.34 → 0.97 against a native 0.82.)
+3. At equal adaptation a plain BPE-16K vocabulary ties AraRooPat on the judge and beats it on LM loss (0.86 vs 0.88), answer NLL (0.64 vs 0.81 nats/char), loops (20.8 vs 31.2 %) and generation speed (153 vs 111 chars/s), with 1.7× more text seen per token budget. AraRooPat's measurable advantages are decode fidelity to the written word (99.3 % word round trip) and root conservation (0.379 vs 0.048). Both arms sit 0.4 judge points under the untouched native model; that gap is the cost of re-learning any vocabulary in 131 M tokens — and it is **not** explained by language-model quality, which after the §3.6 correction is within 0.03 nats/char of native for both.
 4. Phase 2 loss is flat from its first fifth in both arms; more raw text at this learning rate is not the next lever.
 
 ## 5. Open items and next steps (in the order proposed)
