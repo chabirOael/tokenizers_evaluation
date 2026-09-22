@@ -1,0 +1,262 @@
+# Arm B v3, Phase 3 + free-form eval only, continued from the Phase 2 checkpoint of qwen_araroopat_3phase_v3.yaml
+# (run 20260922-045152). One change to the recipe: the early-stop signal.
+#
+# Why. v3's Phase 3 early-stopped at micro-step 2 400 of 7 500 on the extractive dev loss (best 0.1115 at 1 400)
+# and restored that checkpoint — 1 400 x 4 = 5 600 of the 30 000 mixture examples, ~1 700 of them free-form.
+# The BPE-16K comparator, on the same recipe, never stopped: best 0.3581 at 6 800, i.e. 27 200 examples. But
+# extractive records are 12 % of this mixture's loss tokens and free-form answers 87 % (CLAUDE.md, *Shares are in
+# examples; the loss is in tokens*), so the 12 % decided when the 87 % stopped training, and it decided very
+# differently for the two arms. The per-token extractive loss is not comparable across tokenizers either
+# (0.11 vs 0.36 says nothing about quality). early_stopping.eval_mixture composes the stop set from the *dev*
+# slices of this phase's own corpora at the same 40/30/30 ratio and scores it as total NLL / total answer tokens,
+# with the per-category losses logged next to it — the training objective, measured on held-out records of the
+# training composition.
+#
+# Differences from qwen_araroopat_3phase_v3.yaml, and nothing else:
+#   * model.name_or_path = that run's Phase 2 checkpoint; Phase 1 and Phase 2 disabled.
+#   * model.embedding_init removed: the checkpoint's embedding matrix already has the 17 184 surface_avg rows, so
+#     new == old and resize_token_embeddings is a no-op (the run log must show no row re-initialised).
+#   * early_stopping: eval_splits null, eval_mixture {total_examples: 1000, seed: 42}.
+# Everything else — tokenizer, mixture, LR, schedule, decoding rules — is v3's.
+#
+# Caveat on comparability: 5 % of every free-form / extractive / MCQ pool is now dev, so the seeded permutation
+# draws a slightly different training set than v3 did (same shares, same quotas, ~5 % fewer candidates). The two
+# cells differ in the stop rule *and* in which records filled the quotas; they do not differ in composition.
+#
+# Acceptance (P2.4 of the 2026-09-22 brief): loop stop <= 12 % and below araroopat_3phase_v3's 31.2 %; judge >= 2.00
+# with the paired CI vs that cell not entirely below 0; answer NLL <= 0.81 nats/char; raw-text loss on the P0
+# held-out set within +0.03 nats/char of this arm's Phase 2 checkpoint (0.8595); mean answer 150-400 chars;
+# EOS rate >= 67.6 %.
+experiment:
+  name: araroopat_3phase_v3_ffstop
+  description: Phase 3 (mixture 30 000 at 40/30/30, LR 2e-5) + free-form eval from the Phase 2 checkpoint of
+    araroopat_3phase_v3, early-stopping on a token-weighted mixture of the corpora's dev slices instead of the
+    extractive-only signal — arm B v3 of qwen_native_vs_araroopat with the free-form dev stop
+  output_dir: outputs/experiments/qwen_native_vs_araroopat/araroopat_3phase_v3_ffstop
+  seed: 42
+  deterministic: true
+  created_at: "2026-09-22T19:55:00+00:00"
+
+data:
+  # Tokenizer-training corpus preprocessing (base.yaml defaults, stated because they key the CAMeL cache):
+  preprocessing:
+    normalize_unicode: true
+    remove_diacritics: false
+    normalize_alef: false        # off since 2026-09-16: the fold rewrote 13 % of words into spellings no eval text uses
+    remove_tatweel: true
+    min_text_length: 10
+    join_lone_waw: true
+
+tokenizer:
+  type: araroopat
+  vocab_size: null               # derived: roots + patterns + fixed slots (17 074 at 40 000 patterns)
+  save_path: outputs/tokenizers/araroopat_maxpat40k_v3
+  load_path: outputs/tokenizers/araroopat_maxpat40k_v3   # built 2026-09-22 after the decode fix (see header); null would retrain the same vocab
+  params: &araroopat_params      # configs/tokenizers/araroopat.yaml with max_patterns 40 000; the sweep cell reuses the anchor
+    max_roots: 10000
+    max_patterns: 40000
+    min_root_freq: 2
+    min_pattern_freq: 2
+    generator_timeout_ms: 50
+    use_diacritized_surface: false
+    cache_corpus_analysis: true
+    add_bos_eos: true
+    clitic_peeler: true
+    peel_bare_alef: false
+    proper_nouns: unrooted
+    prepositions:
+    - من
+    - إلى
+    - عن
+    - على
+    - في
+    - حتى
+    - منذ
+    - مذ
+    - خلا
+    - عدا
+    - حاشا
+    - متى
+    - لعل
+    - كي
+    - لولا
+    - مع
+    - تجاه
+    - خلال
+    - بلا
+    func_words:
+    - هو
+    - هي
+    - هم
+    - هن
+    - هما
+    - أنا
+    - أنت
+    - أنتم
+    - أنتن
+    - أنتما
+    - نحن
+    - إيا
+    - هذا
+    - هذه
+    - هذان
+    - هاتان
+    - هؤلاء
+    - ذلك
+    - تلك
+    - ذاك
+    - أولئك
+    - الذي
+    - التي
+    - الذين
+    - اللذان
+    - اللتان
+    - اللاتي
+    - اللواتي
+    - اللائي
+    - أن
+    - إن
+    - أو
+    - أم
+    - ثم
+    - بل
+    - لكن
+    - إذا
+    - إذ
+    - حيث
+    - كما
+    - لو
+    - إما
+    - أما
+    - إلا
+    - ألا
+    - بينما
+    - حينما
+    - عندما
+    - كلما
+    - لأن
+    - كأن
+    - ليت
+    - إذن
+    - هكذا
+    - كذا
+    - مثلما
+    - طالما
+    - حسبما
+    - أينما
+    - فيما
+    - ذات
+    - ما
+    - ماذا
+    - لماذا
+    - كيف
+    - أين
+    - هل
+    - أي
+    - كم
+    - أيان
+    - أنى
+    - لا
+    - لم
+    - لن
+    - لما
+    - قد
+    - سوف
+
+model:
+  type: qwen3
+  name_or_path: outputs/experiments/qwen_native_vs_araroopat/araroopat_3phase_v3/training/warmup   # Phase 2 checkpoint of run 20260922-045152
+  dtype: bfloat16
+  device: auto
+  # embedding_init is deliberately absent: the checkpoint already carries v3's 17 184 surface_avg rows, and
+  # new == old makes resize_token_embeddings a no-op, so no row is re-initialised (verify in the run log).
+
+training:
+  pretraining_mix:
+    pool:
+      total_words: 50000000      # 20 M gave 59.4 M tokens of this vocab; the two phases below draw 131 M (a new pool fingerprint)
+  corpus_params:
+    aya_ar:
+      include_datasets: ["Aya-Dataset", "Dolly-v2 (T)"]   # the two free-form sub-datasets of standard_arabic
+  phases:
+    embedding_alignment:         # Phase 1: done in run 20260922-045152 (8 000 steps, 32.8 M mix tokens, loss 3.34 → 1.96)
+      enabled: false
+      datasets: [pretraining_mix]
+      trainable_parameters: [embed_tokens, lm_head]
+      steps: 8000                # micro-steps = updates at accumulation 1 (v2: 4 000)
+      mix_tokens: 32768000       # 8 000 × 8 × 512 — blocks [0, 64000) of the packed corpus
+      learning_rate: 5.0e-4      # embeddings only: the higher rate is safe here
+      batch_size: 8
+      gradient_accumulation_steps: 1
+      max_length: 512
+      loss_target: full_sequence
+      lr_scheduler: constant
+      warmup_steps: 0
+    warmup:                      # Phase 2: done in run 20260922-045152 (48 000 steps, 98.3 M mix tokens + 5 % QA blend, windows 1.80 → 1.68)
+      enabled: false
+      datasets: [pretraining_mix]
+      trainable_parameters: ["*"]
+      steps: 48000               # micro-steps; 12 000 updates at accumulation 4 (v2: 10 000 / 2 500)
+      mix_tokens: 98304000       # 48 000 × 4 × 512 — 182 400 raw blocks from [64000, …) + 9 600 QA-blend blocks
+      learning_rate: 2.0e-5      # full fine-tuning of a 4B model (was 2e-4 — destructive, see header)
+      batch_size: 4
+      gradient_accumulation_steps: 4
+      max_length: 512
+      loss_target: full_sequence
+      lr_scheduler: cosine       # horizon 12 000 updates
+      warmup_steps: 400          # micro-steps = 100 updates
+      qa_blend:
+        datasets: [tydiqa_arabic, arcd]
+        share: 0.05                # v2 had 0.07 of 20.5 M tokens (2 800 blocks); 0.07 of 98.3 M = 13 440 blocks exceeds the packed
+                                   # TyDiQA + ARCD train corpus (10 396 blocks, 5.3 M tokens) and the packer never wraps — the first
+                                   # v3 attempt died here after Phase 1. 0.05 = 9 600 blocks = one pass over the QA corpus.
+        split: train
+        seed: 42
+    sft:                         # Phase 3: identical to qwen_native_sft_only.yaml except drop_truncated_answers + upsample (see header)
+      enabled: true
+      datasets: [tydiqa_arabic, arcd, arabic_squad_mcq, cidar, bactrian_x_ar, aya_ar]
+      trainable_parameters: ["*"]
+      mixture:
+        total_examples: 30000
+        shares: {extractive: 0.40, mcq: 0.30, free_form: 0.30}
+        within_category: equal
+        upsample: true             # extractive keeps 11 836 of 12 000 at max_length 512 under this tokenizer (1 984 + 101
+                                   # truncation drops, 239 cut answers) → 164 records repeat once; without it: MixtureShortfallError
+        drop_truncated_answers: true
+        seed: 42
+      steps: null                # derived: 30 000 / 4 = 7 500 micro-steps (early stop may end it sooner)
+      learning_rate: 2.0e-5
+      batch_size: 4
+      gradient_accumulation_steps: 4
+      max_length: 512
+      loss_target: answer_only
+      lr_scheduler: cosine       # horizon 1 875 updates
+      warmup_steps: 400          # micro-steps = 100 updates
+      early_stopping:
+        enabled: true
+        eval_every_n_steps: 200
+        patience: 5
+        min_delta: 5.0e-4
+        min_steps_before_stop: 500
+        restore_best_at_end: true
+        eval_splits: null          # cleared (null, not {}: the YAML layers deep-merge and an empty mapping would keep base.yaml's keys)
+        eval_mixture:              # the stop signal mirrors the training objective (see header)
+          total_examples: 1000     # 250 eval batches of 4; drawn from the dev slices at the mixture's 40/30/30
+          seed: 42
+
+evaluation:
+  intrinsic_metrics: true
+  morphological_metrics: true
+  downstream_metrics: true
+  eval_row_dump: true
+  score_normalization: char+pmi
+  num_fewshot: 3                 # unused by freeform_cidar; kept so adding the MCQ tasks later changes nothing else
+
+sweep:
+  tokenizers:
+    - type: araroopat            # == tokenizer.type above; one cell → no --sweep, this list is informational
+      vocab_sizes: [null]
+      params: *araroopat_params
+  tasks:
+    - type: freeform_cidar
+      params: {max_output_chars: 2400}   # pinned: the fixed decoding rule of the reference cells (code default since 2026-09-21)

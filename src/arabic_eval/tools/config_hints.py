@@ -167,7 +167,7 @@ FIELD_HINTS: Dict[str, Tuple[str, str]] = {
                                                              'on'),
     'training.phases.*.early_stopping.eval_splits': ('Which split of each corpus is the eval set, one key per line. The alternative to eval_mixture — set one or the other, never both.',
                                                      'tydiqa_arabic: dev\narcd: dev'),
-    'training.phases.*.early_stopping.eval_mixture': ('Instead of eval_splits: compose the stop signal from the dev slices of the phase\'s own corpora, at the phase mixture\'s ratio, and score it as total NLL / total answer tokens with a per-category breakdown. Needs the phase to have a mixture, and eval_splits cleared ({}). Use it when the phase trains on a mixture: an extractive-only signal decides when the free-form 87 % of the loss stops training.',
+    'training.phases.*.early_stopping.eval_mixture': ('Instead of eval_splits: compose the stop signal from the dev slices of the phase\'s own corpora, at the phase mixture\'s ratio, and score it as total NLL / total answer tokens with a per-category breakdown. Needs the phase to have a mixture, and eval_splits cleared with null (not {} — the YAML layers deep-merge). Use it when the phase trains on a mixture: an extractive-only signal decides when the free-form 87 % of the loss stops training.',
                                                       'null (eval_splits is used)'),
     'training.phases.*.early_stopping.eval_mixture.total_examples': ('Dev records drawn for each eval pass; must divide by the phase batch_size.',
                                                                      '1000'),

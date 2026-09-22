@@ -159,7 +159,11 @@ class EarlyStoppingConfig(BaseModel):
     # ``dev`` = a title-level 5 % slice of each official *train* split
     # (``finetune_corpora.is_dev_title``); the official evaluation splits
     # (``validation``) are held out and never steer training (2026-09-17).
-    eval_splits: Dict[DatasetName, str] = Field(
+    # ``null`` (or ``{}``) means "no split-based eval set" — the form a config
+    # takes when it switches to ``eval_mixture``. It has to be ``null``, not
+    # ``{}``: the YAML layers deep-merge, and an empty mapping merged over
+    # base.yaml's keeps base.yaml's keys.
+    eval_splits: Optional[Dict[DatasetName, str]] = Field(
         default_factory=lambda: {
             "tydiqa_arabic": "dev",
             "arcd": "dev",
@@ -409,13 +413,13 @@ class PhaseConfig(BaseModel):
                 "early_stopping.eval_mixture needs the phase to have a 'mixture' (it reuses its shares, "
                 "within_category and weights); add one or use eval_splits"
             )
-        if "eval_splits" in es.model_fields_set and es.eval_splits:
+        if es.eval_splits:
             raise ValueError(
                 "early_stopping.eval_splits and early_stopping.eval_mixture are alternatives: the first "
                 "scores held-out records of named splits, the second a mixture of the phase's own dev "
                 f"pools at the training ratio. Got both (eval_splits={dict(es.eval_splits)}). base.yaml "
-                "sets eval_splits, so a config that switches to eval_mixture has to clear it: write "
-                "'eval_splits: {}' next to eval_mixture"
+                "sets eval_splits and the YAML layers deep-merge, so a config that switches to eval_mixture "
+                "has to clear it with 'eval_splits: null' (an empty mapping would merge away)"
             )
         if em.total_examples % self.batch_size != 0:
             lo = (em.total_examples // self.batch_size) * self.batch_size

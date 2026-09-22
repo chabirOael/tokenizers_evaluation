@@ -70,6 +70,11 @@ def _phase_eval_loader(
     es = phase_cfg.early_stopping
     if es is None or not es.enabled:
         return None
+    if not es.eval_splits:
+        raise RuntimeError(
+            "early_stopping is enabled but eval_splits is empty and eval_mixture is not set; "
+            "give it one of the two"
+        )
     eval_records = load_corpora(list(es.eval_splits.keys()), es.eval_splits, corpus_params=corpus_params,
                                 exclusions=exclusions)
     if not eval_records:
