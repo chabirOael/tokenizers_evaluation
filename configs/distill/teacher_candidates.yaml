@@ -1,0 +1,63 @@
+# Teacher bake-off candidates (2026-09-23, docs/report.md §3.8). Every candidate answers the same
+# 250 cidar-dev prompts under vLLM (.venv-judge): greedy, seed 0, no repetition penalty, its own
+# chat template with the system prompt of arabic_eval.distill.teacher.SYSTEM_PROMPT, thinking off,
+# stop at its own EOS / end of turn, token cap = ceil(2400 / chars_per_token × 1.15) + 8 with
+# chars_per_token measured on the dev references with its tokenizer (derive_token_cap).
+# Excluded by rule: the judge's family (Gemma-4, Fanar-2) and any Qwen model (the native arm's
+# vocabulary). `revision` pins the snapshot every run loads; `load_repo` names a cached alias of the
+# same snapshot; `fallbacks` are tried in order when the first load fails.
+max_model_len: 4096
+seed: 0
+candidates:
+  - slug: jais2_8b
+    params_b: 8
+    repo: inceptionai/Jais-2-8B-Chat
+    revision: da0e1639cd92b508b24120f7f77f5270a8465dc4
+    dtype: bfloat16
+    gpu_memory_utilization: 0.90
+    notes: "Arabic-first, own 150 K vocabulary, Apache 2.0; vLLM jais2.py"
+  - slug: llama33_70b_awq
+    params_b: 70
+    repo: casperhansen/llama-3.3-70b-instruct-awq
+    revision: 64d255621f40b42adaf6d1f32a47e1d4534c0f14
+    dtype: auto
+    gpu_memory_utilization: 0.92
+    notes: "AWQ int4 of meta-llama/Llama-3.3-70B-Instruct (AraGen v3 52.1 for the bf16 model)"
+  - slug: falcon_h1_34b
+    params_b: 34
+    repo: tiiuae/Falcon-H1-34B-Instruct
+    revision: 6e6890e26cba1f58b1e6ee70d654ddf054f9fce8
+    dtype: bfloat16
+    gpu_memory_utilization: 0.95
+    fallbacks:
+      # bf16 at the default max_num_seqs OOMs on 2026-09-23: vLLM's CUDA-graph profiling allocates a minimal
+      # state cache of 73.1 GiB (a Mamba state per sequence slot) on top of 63 GiB of weights. Fewer concurrent
+      # sequences is a capacity knob, not a precision change, so it is tried before fp8 / GPTQ.
+      - {engine_kwargs: {max_num_seqs: 32}}
+      - {quantization: fp8, engine_kwargs: {max_num_seqs: 64}}
+      - {repo: tiiuae/Falcon-H1-34B-Instruct-GPTQ-Int4, revision: d94ad5a4d96a39c7416da06d6e5555896c31ff35, dtype: auto, engine_kwargs: {max_num_seqs: 64}}
+    notes: "hybrid Mamba-attention (falcon_h1.py), AraGen v3 45.7; stands in for Falcon-H1-Arabic (not on the Hub)"
+  - slug: cmdr7b_arabic
+    params_b: 7
+    repo: CohereLabs/c4ai-command-r7b-arabic-02-2025
+    revision: 2d5440c7cea22410006fb461a1b24c067683da77
+    dtype: bfloat16
+    gpu_memory_utilization: 0.90
+    notes: "MSA-optimised 7B (Cohere2ForCausalLM), CC-BY-NC"
+  - slug: aya_expanse_32b
+    params_b: 32
+    repo: CohereLabs/aya-expanse-32b
+    load_repo: CohereForAI/aya-expanse-32b      # the same repo under its former owner name, already cached at this commit
+    revision: b306ea27e360683b50c005d7fcbad6a242317910
+    dtype: bfloat16
+    gpu_memory_utilization: 0.95
+    fallbacks:
+      - {quantization: fp8}
+    notes: "CC-BY-NC"
+  - slug: allam_7b
+    params_b: 7
+    repo: ALLaM-AI/ALLaM-7B-Instruct-preview
+    revision: a28dd1e67420cde72d3629c8633a974cf7d9c366
+    dtype: bfloat16
+    gpu_memory_utilization: 0.90
+    notes: "4 k context, Llama-shaped"

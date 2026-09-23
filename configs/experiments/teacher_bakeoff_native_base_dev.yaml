@@ -1,0 +1,56 @@
+# Teacher bake-off reference row (2026-09-23, docs/report.md §3.8, brief P1.2): the untouched
+# Qwen3-4B-Base with its native tokenizer answers the SAME 250 cidar-dev prompts the teacher
+# candidates answer, through the pipeline's own free-form path (generate_freeform on the native
+# adapter, our Alpaca-AR instruction template, the reference cells' decoding rules: greedy, exact
+# stop markers, loop stop, 2 400-character budget). Not a candidate — the number the candidates
+# have to beat (the P1.3 stop point). Differences from qwen_native_no_presteps_after_LOOP_fix.yaml:
+# heldout_path = the dev prompt file (built by scripts/distill/dump_bakeoff_prompts.py; it carries
+# `prompt`, `reference`, `stratum` like the held-out set), the token cap pinned at 1 209 — the
+# native cap of the reference cells — through token_cap_floor = token_cap_ceiling (the task would
+# otherwise re-derive it from the dev references' chars/token), intrinsic metrics off.
+experiment:
+  name: native_qwen3_base_dev
+  description: "Qwen3-4B-Base + native tokenizer, untrained, free-form eval on the 250 cidar-dev bake-off prompts (reference row of the teacher bake-off)"
+  output_dir: outputs/experiments/teacher_bakeoff/native_qwen3_base_dev
+  created_at: "2026-09-23T20:20:00+00:00"
+  seed: 42
+  deterministic: true
+  runs:
+    - {started_at: "2026-09-23T20:57:32+00:00", source: cli}
+tokenizer:
+  type: native_qwen3
+  vocab_size: null
+  params:
+    model_name_or_path: Qwen/Qwen3-4B-Base
+  save_path: outputs/tokenizers/native_qwen3_4b
+  load_path: null
+model:
+  type: qwen3
+  name_or_path: Qwen/Qwen3-4B-Base
+  dtype: bfloat16
+  device: auto
+training:
+  phases:
+    embedding_alignment:
+      enabled: false
+    warmup:
+      enabled: false
+    sft:
+      enabled: false
+evaluation:
+  intrinsic_metrics: false
+  morphological_metrics: false
+sweep:
+  tokenizers:
+  - type: native_qwen3
+    vocab_sizes:
+    - null
+    params:
+      model_name_or_path: Qwen/Qwen3-4B-Base
+  tasks:
+  - type: freeform_cidar
+    params:
+      max_output_chars: 2400
+      heldout_path: outputs/data_cache/distill/bakeoff/prompts_dev.jsonl
+      token_cap_floor: 1209
+      token_cap_ceiling: 1209
