@@ -1,0 +1,133 @@
+# The BPE-16K comparator with the Phase 3 block of qwen_araroopat_3phase_v4.yaml (2026-09-23, P4 of the v4 brief),
+# continued from the Phase 2 checkpoint of qwen_bpe16k_3phase_v3.yaml (run 20260922-091654) — the same starting
+# point as qwen_bpe16k_3phase_v3_ffstop.yaml. Runs only if AraRooPat v4 passes the gate (paired judge CI vs
+# araroopat_3phase_v3_ffstop above 0, or loop stop <= 15 %): without it a v4 gain is an AraRooPat number, not a
+# tokenizer finding.
+#
+# Differences from qwen_bpe16k_3phase_v3_ffstop.yaml: the Phase 3 block only (mixture 45 000 at 25/15/60,
+# max_length 1024, batch 2 x accumulation 8, warm-up 800 micro-steps, eval_mixture every 500 micro-steps,
+# min_steps_before_stop 1 500) — character for character the block of the AraRooPat v4 config.
+experiment:
+  name: bpe_16k_3phase_v4
+  description: The BPE-16K comparator with arm B v4's Phase 3 (mixture 45 000 at 25/15/60, max_length 1024, batch
+    2 x 8, LR 2e-5, mixture dev stop) from the Phase 2 checkpoint of bpe_16k_3phase_v3 — the fair replication of v4
+  output_dir: outputs/experiments/qwen_native_vs_araroopat/bpe_16k_3phase_v4
+  seed: 42
+  deterministic: true
+  created_at: "2026-09-23T08:44:47+00:00"
+
+data:
+  # Tokenizer-training corpus preprocessing (base.yaml defaults, stated because they key the CAMeL cache):
+  preprocessing:
+    normalize_unicode: true
+    remove_diacritics: false
+    normalize_alef: false        # off since 2026-09-16: the fold rewrote 13 % of words into spellings no eval text uses
+    remove_tatweel: true
+    min_text_length: 10
+    join_lone_waw: true
+
+tokenizer:
+  type: bpe
+  vocab_size: 16000
+  save_path: outputs/tokenizers/bpe_16k_v3
+  load_path: outputs/tokenizers/bpe_16k_v3   # the tokenizer run 20260922-091654 trained and saved — must match the checkpoint's rows
+  params: &bpe_params            # configs/tokenizers/bpe.yaml
+    min_frequency: 2
+
+model:
+  type: qwen3
+  name_or_path: outputs/experiments/qwen_native_vs_araroopat/bpe_16k_3phase_v3/training/warmup   # Phase 2 checkpoint of run 20260922-091654
+  dtype: bfloat16
+  device: auto
+  # embedding_init is deliberately absent: the checkpoint already carries the surface_avg rows, and
+  # new == old makes resize_token_embeddings a no-op (verify in the run log).
+
+training:
+  pretraining_mix:
+    pool:
+      total_words: 80000000      # BPE-16K: 1.75 tokens/word → ~140 M tokens; the two phases below draw 131 M (own pool fingerprint)
+  corpus_params:
+    aya_ar:
+      include_datasets: ["Aya-Dataset", "Dolly-v2 (T)"]   # the two free-form sub-datasets of standard_arabic
+  phases:
+    embedding_alignment:         # Phase 1: new embeddings + tied lm_head on raw text, body frozen
+      enabled: false
+      datasets: [pretraining_mix]
+      trainable_parameters: [embed_tokens, lm_head]
+      steps: 8000                # micro-steps = updates at accumulation 1 (v2: 4 000)
+      mix_tokens: 32768000       # 8 000 × 8 × 512 — blocks [0, 64000) of the packed corpus
+      learning_rate: 5.0e-4      # embeddings only: the higher rate is safe here
+      batch_size: 8
+      gradient_accumulation_steps: 1
+      max_length: 512
+      loss_target: full_sequence
+      lr_scheduler: constant
+      warmup_steps: 0
+    warmup:                      # Phase 2: whole model on raw text + 7 % QA-format blend
+      enabled: false
+      datasets: [pretraining_mix]
+      trainable_parameters: ["*"]
+      steps: 48000               # micro-steps; 12 000 updates at accumulation 4 (v2: 10 000 / 2 500)
+      mix_tokens: 98304000       # 48 000 × 4 × 512 — 186 240 raw blocks from [64000, …) + 5 760 QA-blend blocks
+      learning_rate: 2.0e-5      # full fine-tuning of a 4B model (was 2e-4 — destructive, see header)
+      batch_size: 4
+      gradient_accumulation_steps: 4
+      max_length: 512
+      loss_target: full_sequence
+      lr_scheduler: cosine       # horizon 12 000 updates
+      warmup_steps: 400          # micro-steps = 100 updates
+      qa_blend:
+        datasets: [tydiqa_arabic, arcd]
+        share: 0.03                # the QA blend is fixed TEXT, so its block count is per tokenizer: BPE-16K packs TyDiQA + ARCD
+                                   # train into 5 919 blocks (214 tokens/record; AraRooPat 10 396), and 0.05 = 9 600 blocks killed
+                                   # the first attempt after Phase 1. 0.03 = 5 760 blocks ≈ 13 780 records = 0.97 of a pass, the
+                                   # same record exposure as v3's 0.05 (9 600 AraRooPat blocks = 0.92 of a pass).
+        split: train
+        seed: 42
+    sft:                         # Phase 3: byte-identical to qwen_araroopat_3phase_v4.yaml
+      enabled: true
+      datasets: [tydiqa_arabic, arcd, arabic_squad_mcq, cidar, bactrian_x_ar, aya_ar]
+      trainable_parameters: ["*"]
+      mixture:
+        total_examples: 45000      # ffstop: 30 000
+        shares: {extractive: 0.25, mcq: 0.15, free_form: 0.60}   # ffstop: 40/30/30 -> 11 250 / 6 750 / 27 000
+        within_category: equal     # 9 000 per free-form corpus; a corpus that runs dry spills to the others (water-fill)
+        upsample: true             # kept from ffstop; at 1 024 tokens the extractive pool should not need it
+        drop_truncated_answers: true
+        seed: 42
+      steps: null                # derived: 45 000 / 2 = 22 500 micro-steps = 2 813 updates at accumulation 8
+      learning_rate: 2.0e-5
+      batch_size: 2              # ffstop: 4
+      gradient_accumulation_steps: 8   # ffstop: 4 — the same 16 sequences per update
+      max_length: 1024           # ffstop: 512 — keeps AraRooPat's long free-form answers (1.96 chars/token)
+      loss_target: answer_only
+      lr_scheduler: cosine       # horizon 2 813 updates
+      warmup_steps: 800          # micro-steps = 100 updates, as before
+      early_stopping:
+        enabled: true
+        eval_every_n_steps: 500    # micro-steps = 1 000 examples between evals (ffstop: 200 x 4 = 800)
+        patience: 5
+        min_delta: 5.0e-4
+        min_steps_before_stop: 1500
+        restore_best_at_end: true
+        eval_splits: null          # cleared (null, not {}: the YAML layers deep-merge)
+        eval_mixture:              # 1 000 dev records at the phase's 25/15/60, scored per answer token
+          total_examples: 1000     # 500 eval batches of 2; max_length follows the phase (1 024)
+          seed: 42
+
+evaluation:
+  intrinsic_metrics: true
+  morphological_metrics: true
+  downstream_metrics: true
+  eval_row_dump: true
+  score_normalization: char+pmi
+  num_fewshot: 3                 # unused by freeform_cidar; kept so adding the MCQ tasks later changes nothing else
+
+sweep:
+  tokenizers:
+    - type: bpe                  # == tokenizer.type above; one cell → no --sweep, this list is informational
+      vocab_sizes: [16000]
+      params: *bpe_params
+  tasks:
+    - type: freeform_cidar
+      params: {max_output_chars: 2400}   # pinned: the fixed decoding rule of the reference cells (code default since 2026-09-21)
