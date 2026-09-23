@@ -1,0 +1,59 @@
+# Decoding ablation (2026-09-23, P1 of the v4 brief) — the native Qwen3 SFT checkpoint, eval only, repetition penalty 1.2.
+#
+# Question: how much of a cell's loop-stop rate under pure greedy decoding is a greedy attractor that a
+# token-level repetition penalty removes? AraRooPat ffstop loops on 21.2 % of the 250 held-out prompts, BPE
+# ffstop 19.6 %, native SFT 12.4 %, native base 6.8 %. Each of the four cells of outputs/experiments/
+# qwen_decoding_ablation/ re-evaluates one existing checkpoint with repetition_penalty 1.2 (the value the
+# 2026-09-18 ablation measured on the untrained base: loops 44 % -> 8 % under the v1 template) and is paired with
+# its greedy twin in qwen_native_vs_araroopat/ (native_qwen3_sft_m2_c2400).
+#
+# Everything else is the reference rule set: exact stop markers, periodic-tail loop stop, 2 400-char budget.
+# The penalty is token-level and therefore granularity-dependent (an AraRooPat clitic token recurs in every
+# other word; a BPE word is one or two pieces): these cells answer "decoding or model?" for each checkpoint,
+# they are NOT a cross-tokenizer comparison. Intrinsic metrics are off (the same tokenizers are measured in the
+# twin cells). The penalty skips each row's left padding (native pads with the EOS id; HF's own processor would
+# penalise EOS on every padded row) — see tasks/freeform/generation.py.
+experiment:
+  name: native_qwen3_sft_rp12
+  description: "native Qwen3 SFT checkpoint (native_qwen3_sft) re-evaluated with repetition_penalty 1.2 (decoding ablation, eval only)"
+  output_dir: outputs/experiments/qwen_decoding_ablation/native_qwen3_sft_rp12
+  seed: 42
+  deterministic: true
+  created_at: "2026-09-23T08:40:17+00:00"
+
+tokenizer:
+  type: native_qwen3
+  vocab_size: null
+  save_path: outputs/tokenizers/native_qwen3_4b
+  load_path: null
+  params:
+    model_name_or_path: Qwen/Qwen3-4B-Base
+
+model:
+  type: qwen3
+  name_or_path: outputs/experiments/qwen_native_vs_araroopat/native_qwen3_sft/training/sft
+  dtype: bfloat16
+  device: auto
+
+training:
+  corpus_params:
+    aya_ar:
+      include_datasets: ["Aya-Dataset", "Dolly-v2 (T)"]
+  phases:
+    embedding_alignment: {enabled: false}
+    warmup: {enabled: false}
+    sft: {enabled: false}
+
+evaluation:
+  intrinsic_metrics: false
+  morphological_metrics: false
+  downstream_metrics: true
+  eval_row_dump: true
+
+sweep:
+  tokenizers:
+    - type: native_qwen3
+      vocab_sizes: [null]
+  tasks:
+    - type: freeform_cidar
+      params: {max_output_chars: 2400, repetition_penalty: 1.2}

@@ -433,3 +433,109 @@ class TestEvaluate:
         b = task.evaluate(adapter, tokenizer, max_samples=4)
         for k in ("chrf", "mean_gen_tokens", "degenerate_rate", "eos_rate"):
             assert a[k] == b[k]
+
+
+# --------------------------------------------------------------------------
+# decoding knobs for the ablation (2026-09-23): repetition_penalty / no_repeat_ngram_size
+# --------------------------------------------------------------------------
+
+class _PadIsEosTokenizer(_WordTokenizer):
+    """The native wrappers' convention: pad id == EOS id."""
+
+    @property
+    def special_tokens(self): return {"pad_token": EOS, "bos_token": BOS, "eos_token": EOS, "unk_token": UNK}
+
+
+def _capture_generate(adapter, monkeypatch) -> List[Dict]:
+    calls: List[Dict] = []
+    real = adapter.generate
+
+    def spy(input_ids, **kw):
+        out = real(input_ids, **kw)
+        calls.append({"input_ids": input_ids.clone(), "out": out.clone(), **kw})
+        return out
+
+    monkeypatch.setattr(adapter, "generate", spy)
+    return calls
+
+
+class TestRepetitionPenaltyKnob:
+    def test_default_call_is_the_greedy_call(self):
+        assert G.decoding_kwargs(DecodingConfig(), [0, 3]) == {"repetition_penalty": 1.0}
+        assert FreeformCidarTask({}).decoding.repetition_penalty == 1.0
+        assert DecodingConfig().to_json()["repetition_penalty"] == 1.0
+        kw = G.decoding_kwargs(DecodingConfig(repetition_penalty=1.2), [0, 3])
+        assert kw["repetition_penalty"] == 1.0 and len(kw["logits_processor"]) == 1   # HF's own stays off
+
+    def test_processor_is_hfs_formula_without_the_left_padding(self):
+        from transformers.generation.logits_process import RepetitionPenaltyLogitsProcessor
+        torch.manual_seed(0)
+        scores = torch.randn(2, 12)
+        ids = torch.tensor([[EOS, EOS, 5, 6, 5], [7, 5, 6, 8, 9]])           # row 0 left-padded with pad == EOS
+        ours = G._context_repetition_penalty(1.3, [2, 0])(ids, scores.clone())
+        hf = RepetitionPenaltyLogitsProcessor(1.3)(ids, scores.clone())
+        assert torch.equal(ours[1], hf[1])                                    # no padding: identical to HF
+        assert ours[0, EOS] == scores[0, EOS] and hf[0, EOS] != scores[0, EOS]  # the pad (= EOS) is not penalized
+        for t in (5, 6):
+            assert ours[0, t] == hf[0, t] != scores[0, t]
+        untouched = [t for t in range(12) if t not in (5, 6)]
+        assert torch.equal(ours[0, untouched], scores[0, untouched])
+
+    def test_real_generation_is_batch_independent_with_pad_equal_eos(self, adapter, heldout):
+        tok = _PadIsEosTokenizer()
+        tok.train(TEXTS, VOCAB)
+        adapter.adapt_to_tokenizer(tok)
+        with torch.no_grad():                        # near-flat logits (tied head), so a penalty can flip the argmax
+            adapter.model.get_input_embeddings().weight.mul_(0.05)
+        params = {"heldout_path": str(heldout), "bertscore_model": None, "token_cap_floor": 12,
+                  "token_cap_ceiling": 12, "loop_stop": False, "repetition_penalty": 1.5}
+        prompts = [FreeformCidarTask.build_prompt(r) for r in FreeformCidarTask(params).load_examples()]
+        one = generate_freeform(adapter, tok, prompts, FreeformCidarTask({**params, "batch_size": 1}).decoding, 12)
+        six = generate_freeform(adapter, tok, prompts, FreeformCidarTask({**params, "batch_size": 6}).decoding, 12)
+        assert [r.generation_raw for r in one] == [r.generation_raw for r in six]
+        greedy = generate_freeform(adapter, tok, prompts, FreeformCidarTask({**params, "repetition_penalty": 1.0,
+                                                                            "batch_size": 6}).decoding, 12)
+        assert [r.generation_raw for r in greedy] != [r.generation_raw for r in six]   # the knob does something
+
+    def test_both_calls_carry_it_and_the_dump_records_it(self, adapter, tokenizer, heldout, monkeypatch, tmp_path):
+        adapter.adapt_to_tokenizer(tokenizer)
+        calls = _capture_generate(adapter, monkeypatch)
+        task = FreeformCidarTask({"heldout_path": str(heldout), "bertscore_model": None, "batch_size": 4,
+                                  "token_cap_floor": 6, "token_cap_ceiling": 6, "repetition_penalty": 1.2})
+        task.evaluate(adapter, tokenizer, max_samples=5, row_dump_dir=tmp_path)
+        assert calls[0]["max_new_tokens"] == 8 and len(calls) == 3                      # warm-up + 2 batches
+        assert all(len(c["logits_processor"]) == 1 and c["repetition_penalty"] == 1.0 for c in calls)
+        import pyarrow.parquet as pq
+        meta = json.loads(pq.read_table(tmp_path / "freeform_cidar.parquet").schema.metadata[b"arabic_eval"])
+        assert meta["decoding"]["repetition_penalty"] == 1.2 and meta["decoding"]["sampling"] == "greedy"
+
+
+class TestNoRepeatNgramKnob:
+    def test_default_off_and_forwarded_when_set(self):
+        assert "no_repeat_ngram_size" not in G.decoding_kwargs(DecodingConfig(), [0])
+        assert FreeformCidarTask({}).decoding.no_repeat_ngram_size == 0
+        assert G.decoding_kwargs(DecodingConfig(no_repeat_ngram_size=3), [0])["no_repeat_ngram_size"] == 3
+        assert DecodingConfig(no_repeat_ngram_size=3).to_json()["no_repeat_ngram_size"] == 3
+
+    def test_real_generation_repeats_no_ngram(self, adapter, tokenizer, heldout, monkeypatch):
+        adapter.adapt_to_tokenizer(tokenizer)
+        base = {"heldout_path": str(heldout), "bertscore_model": None, "batch_size": 6, "loop_stop": False,
+                "token_cap_floor": 20, "token_cap_ceiling": 20}
+
+        def bigrams_repeated(calls) -> int:
+            n = 0
+            for c in calls[1:]:                                                   # skip the warm-up
+                width = c["input_ids"].shape[1]
+                for row in c["out"][:, width:].tolist():
+                    row = row[: row.index(EOS)] if EOS in row else row
+                    grams = list(zip(row, row[1:]))
+                    n += len(grams) - len(set(grams))
+            return n
+
+        calls = _capture_generate(adapter, monkeypatch)
+        FreeformCidarTask(base).evaluate(adapter, tokenizer)
+        assert bigrams_repeated(calls) > 0                                        # the random tiny model does loop
+        calls.clear()
+        FreeformCidarTask({**base, "no_repeat_ngram_size": 2}).evaluate(adapter, tokenizer)
+        assert all(c["no_repeat_ngram_size"] == 2 for c in calls)
+        assert bigrams_repeated(calls) == 0

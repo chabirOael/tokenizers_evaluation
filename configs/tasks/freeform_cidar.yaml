@@ -36,6 +36,11 @@ task:
     marker_check_every: 16
     # Stop a sequence whose decoded text ends in a repetition loop (periodic tail or a letter ×20), cut right after the first copy; tokenizer-agnostic, unlike a token repetition penalty. [bool]
     loop_stop: true
+    # — decoding —
+    # MEASUREMENT ONLY (decoding ablation): HF's token-level repetition penalty over the context (prompt included, left padding excluded); 1.0 = pure greedy. Granularity-dependent — an AraRooPat clitic token recurs in every other word — so a cell scored with it is not comparable with another tokenizer's greedy cell. [float; range 1–…; advanced]
+    repetition_penalty: 1.0
+    # MEASUREMENT ONLY (decoding ablation): HF's ban on repeating any token n-gram of the context; 0 = off. Token-level and granularity-dependent like repetition_penalty. [int; range 0–…; advanced]
+    no_repeat_ngram_size: 0
     # — scoring —
     # Encoder of the in-house BERTScore (tasks/freeform/bertscore.py); null skips BERTScore. [str | null]
     bertscore_model: "xlm-roberta-large"

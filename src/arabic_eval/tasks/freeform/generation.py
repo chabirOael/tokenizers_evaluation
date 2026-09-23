@@ -11,6 +11,24 @@ granularity-dependent (a character-level tokenizer repeats characters by
 nature) and would be a confound. Repetition loops are left for the metrics
 and the judge to penalize.
 
+Two token-level knobs exist for **measurement only** (added 2026-09-23 for the
+decoding ablation, ``DecodingConfig.repetition_penalty`` /
+``no_repeat_ngram_size``; defaults 1.0 / 0 = the greedy rule above, byte for
+byte): how much of a cell's loop rate is a greedy attractor that a penalty
+removes. They are granularity-dependent by construction — one AraRooPat word
+is ``[ROOT] [PAT]`` plus clitic tokens, so ``[CLITICP_و]`` or ``[CLITICE_ة]``
+is "repeated" in every other word, while a BPE word is one or two pieces — so
+a cell scored with them is not comparable with a greedy cell of another
+tokenizer. The repetition penalty is HF's formula (CTRL: a logit of a token
+already in the context is divided by the penalty when positive, multiplied
+when negative; the prompt counts, as in HF) applied over the context
+**minus each row's left padding**: HF's own processor penalizes every id in
+``input_ids``, pads included, and the native Qwen / Llama wrappers pad with
+the EOS id — every padded row of a batch would have its EOS penalized, i.e.
+the output would depend on the batch composition. ``no_repeat_ngram_size``
+is HF's processor unchanged (a pad n-gram can only ban a token after a
+finished row's padding).
+
 Stops: the tokenizer's EOS; a stop marker in the decoded text (the model
 starting a new prompt block — a template section label or a header line, in
 the templates' exact words, is the common failure of a small SFT'd model); a
@@ -97,13 +115,17 @@ class DecodingConfig:
     marker_check_every: int = 16
     loop_stop: bool = True      # stop a sequence whose decoded text contains a repetition loop
     seed: int = 42
+    # Token-level, granularity-dependent — for the decoding ablation, not for a cross-tokenizer comparison.
+    repetition_penalty: float = 1.0   # HF's formula over the context minus left padding; 1.0 = off
+    no_repeat_ngram_size: int = 0     # HF's n-gram ban; 0 = off
 
     def to_json(self) -> dict:
         return {"max_output_chars": self.max_output_chars, "max_prompt_tokens": self.max_prompt_tokens,
                 "batch_size": self.batch_size, "token_cap_margin": self.token_cap_margin,
                 "token_cap_floor": self.token_cap_floor, "token_cap_ceiling": self.token_cap_ceiling,
                 "stop_markers": list(self.stop_markers), "marker_check_every": self.marker_check_every,
-                "loop_stop": self.loop_stop, "seed": self.seed, "sampling": "greedy", "repetition_penalty": 1.0}
+                "loop_stop": self.loop_stop, "seed": self.seed, "sampling": "greedy",
+                "repetition_penalty": self.repetition_penalty, "no_repeat_ngram_size": self.no_repeat_ngram_size}
 
 
 @dataclass
@@ -189,6 +211,40 @@ def text_stop(text: str, markers: Sequence[str], loop_stop: bool) -> TextStop:
     return TextStop(text, "")
 
 
+def _context_repetition_penalty(penalty: float, pad_lens: Sequence[int]):
+    """HF's ``RepetitionPenaltyLogitsProcessor`` formula over each row's context
+    from its first non-pad position on (left padding: row ``r`` is padded on
+    ``[0, pad_lens[r])``) — so a pad id that equals the EOS id is never penalized."""
+    import torch
+    from transformers import LogitsProcessor
+
+    class _ContextRepetitionPenalty(LogitsProcessor):
+        def __init__(self) -> None:
+            self.penalty = float(penalty)
+            self.pad_lens = torch.tensor(list(pad_lens), dtype=torch.long)
+
+        def __call__(self, input_ids, scores):  # noqa: D401
+            pos = torch.arange(input_ids.shape[1], device=input_ids.device).unsqueeze(0)
+            valid = (pos >= self.pad_lens.to(input_ids.device).unsqueeze(1)).to(scores.dtype)
+            seen = torch.zeros_like(scores).scatter_add_(1, input_ids, valid) > 0
+            penalized = torch.where(scores < 0, scores * self.penalty, scores / self.penalty)
+            return torch.where(seen, penalized, scores)
+
+    return _ContextRepetitionPenalty()
+
+
+def decoding_kwargs(cfg: DecodingConfig, pad_lens: Sequence[int]) -> dict:
+    """The ``generate`` kwargs of the decoding knobs. At the defaults this is exactly
+    the pre-2026-09-23 call (``repetition_penalty=1.0``, nothing else)."""
+    kw: dict = {"repetition_penalty": 1.0}
+    if cfg.repetition_penalty != 1.0:
+        from transformers import LogitsProcessorList
+        kw["logits_processor"] = LogitsProcessorList([_context_repetition_penalty(cfg.repetition_penalty, pad_lens)])
+    if cfg.no_repeat_ngram_size > 0:
+        kw["no_repeat_ngram_size"] = int(cfg.no_repeat_ngram_size)
+    return kw
+
+
 def _marker_stopping(tokenizer: BaseTokenizer, markers: Sequence[str], prompt_len: int, every: int,
                      loop_stop: bool = True):
     import torch
@@ -254,17 +310,21 @@ def generate_freeform(
             attn[r, width - len(ids):] = 1
         return input_ids.to(device), attn.to(device), width
 
+    def _pad_lens(idx: List[int], width: int) -> List[int]:
+        return [width - len(encoded[i]) for i in idx]
+
     try:
         if order and warmup:
             # Untimed warm-up on the first batch (mirrors the tokenizer warm-up
             # of the pipeline): transformers' first generate call pays a large
             # one-off CPU-side cost that must not be billed to gen_chars_per_sec.
             idx = order[: cfg.batch_size]
-            input_ids, attn, _ = _batch(idx)
+            input_ids, attn, width = _batch(idx)
             t0 = time.perf_counter()
             with torch.inference_mode():
                 adapter.generate(input_ids, attention_mask=attn, max_new_tokens=8, do_sample=False, num_beams=1,
-                                 repetition_penalty=1.0, pad_token_id=pad_id, eos_token_id=eos_id, use_cache=True)
+                                 pad_token_id=pad_id, eos_token_id=eos_id, use_cache=True,
+                                 **decoding_kwargs(cfg, _pad_lens(idx, width)))
             logger.info("free-form generation: warm-up batch of %d × 8 tokens in %.1fs (not timed)",
                         len(idx), time.perf_counter() - t0)
         for s in range(0, len(order), cfg.batch_size):
@@ -276,8 +336,8 @@ def generate_freeform(
             with torch.inference_mode():
                 out = adapter.generate(
                     input_ids, attention_mask=attn, max_new_tokens=token_cap, do_sample=False, num_beams=1,
-                    repetition_penalty=1.0, pad_token_id=pad_id, eos_token_id=eos_id,
-                    stopping_criteria=stopping, use_cache=True,
+                    pad_token_id=pad_id, eos_token_id=eos_id,
+                    stopping_criteria=stopping, use_cache=True, **decoding_kwargs(cfg, _pad_lens(idx, width)),
                 )
             batch_wall = time.perf_counter() - t0
             dt = batch_wall / len(idx)

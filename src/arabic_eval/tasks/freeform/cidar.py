@@ -116,6 +116,8 @@ class FreeformCidarTask(BaseTask):
             marker_check_every=int(cfg.get("marker_check_every", d.marker_check_every)),
             loop_stop=bool(cfg.get("loop_stop", d.loop_stop)),
             seed=int(cfg.get("seed", d.seed)),
+            repetition_penalty=float(cfg.get("repetition_penalty", d.repetition_penalty)),
+            no_repeat_ngram_size=int(cfg.get("no_repeat_ngram_size", d.no_repeat_ngram_size)),
         )
         self.bertscore_model: Optional[str] = cfg.get("bertscore_model", DEFAULT_BERTSCORE_MODEL)
         self.bertscore_layer = int(cfg.get("bertscore_layer", DEFAULT_BERTSCORE_LAYER))
@@ -152,6 +154,14 @@ class FreeformCidarTask(BaseTask):
             ParamSpec("loop_stop", "bool", d.loop_stop, group="stops",
                       help="Stop a sequence whose decoded text ends in a repetition loop (periodic tail or a letter ×20), "
                            "cut right after the first copy; tokenizer-agnostic, unlike a token repetition penalty."),
+            ParamSpec("repetition_penalty", "float", d.repetition_penalty, min=1.0, advanced=True, group="decoding",
+                      help="MEASUREMENT ONLY (decoding ablation): HF's token-level repetition penalty over the context "
+                           "(prompt included, left padding excluded); 1.0 = pure greedy. Granularity-dependent — an "
+                           "AraRooPat clitic token recurs in every other word — so a cell scored with it is not "
+                           "comparable with another tokenizer's greedy cell."),
+            ParamSpec("no_repeat_ngram_size", "int", d.no_repeat_ngram_size, min=0, advanced=True, group="decoding",
+                      help="MEASUREMENT ONLY (decoding ablation): HF's ban on repeating any token n-gram of the context; "
+                           "0 = off. Token-level and granularity-dependent like repetition_penalty."),
             ParamSpec("bertscore_model", "str", DEFAULT_BERTSCORE_MODEL, nullable=True, group="scoring",
                       help="Encoder of the in-house BERTScore (tasks/freeform/bertscore.py); null skips BERTScore."),
             ParamSpec("bertscore_layer", "int", DEFAULT_BERTSCORE_LAYER, min=0, advanced=True, group="scoring",

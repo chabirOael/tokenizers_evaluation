@@ -178,7 +178,8 @@ def test_freeform_task_built_with_empty_params_equals_the_spec_and_the_dataclass
     d = spec_defaults(spec)
     dc = DecodingConfig()
     for f in ("max_output_chars", "max_prompt_tokens", "batch_size", "token_cap_margin", "token_cap_floor",
-              "token_cap_ceiling", "marker_check_every", "loop_stop", "seed"):
+              "token_cap_ceiling", "marker_check_every", "loop_stop", "seed",
+              "repetition_penalty", "no_repeat_ngram_size"):
         assert d[f] == getattr(dc, f), f
     assert d["stop_markers"] == list(dc.stop_markers)
     assert d["heldout_path"] == DEFAULT_HELDOUT_PATH
@@ -192,9 +193,10 @@ def test_freeform_task_built_with_empty_params_equals_the_spec_and_the_dataclass
     groups = {s.name: s.group for s in spec}
     assert groups["max_output_chars"] == "budget" and groups["stop_markers"] == "stops"
     assert groups["bertscore_model"] == "scoring" and groups["heldout_path"] == "misc"
+    assert groups["repetition_penalty"] == groups["no_repeat_ngram_size"] == "decoding"
     advanced = {s.name for s in spec if s.advanced}
     assert advanced == {"token_cap_margin", "token_cap_floor", "token_cap_ceiling", "marker_check_every",
-                        "bertscore_layer", "bertscore_batch_size"}
+                        "bertscore_layer", "bertscore_batch_size", "repetition_penalty", "no_repeat_ngram_size"}
     assert {s.name for s in spec if s.nullable} == {"bertscore_model"}
     # the spec accepts what the two reeval configs pin, and flags the injected num_fewshot
     assert validate_params(spec, {"max_output_chars": 2400}, owner="freeform_cidar") == []

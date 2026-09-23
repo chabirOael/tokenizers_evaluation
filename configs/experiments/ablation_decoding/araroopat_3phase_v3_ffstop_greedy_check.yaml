@@ -1,0 +1,158 @@
+# Reproduction check for the decoding ablation (2026-09-23): the AraRooPat ffstop SFT checkpoint re-evaluated
+# under the default (pure greedy) rules through the code that added the repetition_penalty / no_repeat_ngram_size
+# knobs. Two things are checked at once: the knobs at their defaults leave generation byte-identical, and the
+# saved training/sft checkpoint is the model the twin cell araroopat_3phase_v3_ffstop scored in-run (restore-best
+# happens before the save in phases.py), i.e. the rp12 cell may be paired with that twin. Output one level below
+# the ablation folder so the judge's one-level cell discovery does not pick it up.
+experiment:
+  name: araroopat_3phase_v3_ffstop_greedy
+  description: "AraRooPat v3 ffstop SFT checkpoint re-evaluated under pure greedy (reproduction check of the twin cell)"
+  output_dir: outputs/experiments/qwen_decoding_ablation/_repro/araroopat_3phase_v3_ffstop_greedy
+  seed: 42
+  deterministic: true
+  created_at: "2026-09-23T08:40:17+00:00"
+
+tokenizer:
+  type: araroopat
+  vocab_size: null
+  save_path: outputs/tokenizers/araroopat_maxpat40k_v3
+  load_path: outputs/tokenizers/araroopat_maxpat40k_v3
+  params:            # the tokenizer block of araroopat_3phase_v3_ffstop (loaded, never retrained)
+    max_roots: 10000
+    max_patterns: 40000
+    min_root_freq: 2
+    min_pattern_freq: 2
+    generator_timeout_ms: 50
+    use_diacritized_surface: false
+    cache_corpus_analysis: true
+    add_bos_eos: true
+    clitic_peeler: true
+    peel_bare_alef: false
+    proper_nouns: unrooted
+    prepositions:
+    - من
+    - إلى
+    - عن
+    - على
+    - في
+    - حتى
+    - منذ
+    - مذ
+    - خلا
+    - عدا
+    - حاشا
+    - متى
+    - لعل
+    - كي
+    - لولا
+    - مع
+    - تجاه
+    - خلال
+    - بلا
+    func_words:
+    - هو
+    - هي
+    - هم
+    - هن
+    - هما
+    - أنا
+    - أنت
+    - أنتم
+    - أنتن
+    - أنتما
+    - نحن
+    - إيا
+    - هذا
+    - هذه
+    - هذان
+    - هاتان
+    - هؤلاء
+    - ذلك
+    - تلك
+    - ذاك
+    - أولئك
+    - الذي
+    - التي
+    - الذين
+    - اللذان
+    - اللتان
+    - اللاتي
+    - اللواتي
+    - اللائي
+    - أن
+    - إن
+    - أو
+    - أم
+    - ثم
+    - بل
+    - لكن
+    - إذا
+    - إذ
+    - حيث
+    - كما
+    - لو
+    - إما
+    - أما
+    - إلا
+    - ألا
+    - بينما
+    - حينما
+    - عندما
+    - كلما
+    - لأن
+    - كأن
+    - ليت
+    - إذن
+    - هكذا
+    - كذا
+    - مثلما
+    - طالما
+    - حسبما
+    - أينما
+    - فيما
+    - ذات
+    - ما
+    - ماذا
+    - لماذا
+    - كيف
+    - أين
+    - هل
+    - أي
+    - كم
+    - أيان
+    - أنى
+    - لا
+    - لم
+    - لن
+    - لما
+    - قد
+    - سوف
+
+model:
+  type: qwen3
+  name_or_path: outputs/experiments/qwen_native_vs_araroopat/araroopat_3phase_v3_ffstop/training/sft
+  dtype: bfloat16
+  device: auto
+
+training:
+  corpus_params:
+    aya_ar:
+      include_datasets: ["Aya-Dataset", "Dolly-v2 (T)"]
+  phases:
+    embedding_alignment: {enabled: false}
+    warmup: {enabled: false}
+    sft: {enabled: false}
+
+evaluation:
+  intrinsic_metrics: false
+  morphological_metrics: false
+  downstream_metrics: true
+  eval_row_dump: true
+
+sweep:
+  tokenizers:
+    - type: araroopat
+      vocab_sizes: [null]
+  tasks:
+    - type: freeform_cidar
+      params: {max_output_chars: 2400}
