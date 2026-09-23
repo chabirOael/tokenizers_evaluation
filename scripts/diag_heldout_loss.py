@@ -26,6 +26,17 @@ Two numbers an SFT run must not get wrong, measured on data no phase trained on:
       where EOS is the top-1 prediction there. SFT has to lower the NLL below
       the base's and raise P(EOS); if it does not, it did not learn the task.
 
+      **Across tokenizers, read ``nll_per_answer_char``, never the per-token
+      NLL.** It is ``answer_nll_total`` (Σ NLL over the answer tokens, EOS
+      included) ÷ ``reference_chars`` (Σ ``len`` of the kept references *as
+      encoded*, i.e. after the tokenizer's own normalization — AraRooPat's
+      NFKC + format-character drop gives 72 636 of the raw 72 705). The raw
+      count is ``reference_chars_raw`` and ``nll_per_answer_char_raw_chars``
+      divides by it. Two reports of 2026-09-22 divided the per-token NLL by a
+      chars-per-token figure instead (the raw-text block's or the task's),
+      which is not the references', and inverted the BPE-vs-AraRooPat ranking.
+      ``scripts/diag_backfill_per_char.py`` adds the fields to older JSONs.
+
     # the SFT checkpoint of a cell (reads config.json, rebuilds the tokenizer)
     .venv/bin/python scripts/diag_heldout_loss.py --cell outputs/experiments/<exp>/<cell>
     # the untouched base model with the cell's tokenizer / model name
@@ -129,10 +140,13 @@ def heldout_records(path: Path) -> List[QARecord]:
 
 
 def answer_encodings(recs: Sequence[QARecord], tokenizer: BaseTokenizer, max_length: int,
-                     v1: bool = False) -> Tuple[List[Tuple[List[int], List[int]]], int]:
+                     v1: bool = False, kept: Optional[List[QARecord]] = None,
+                     ) -> Tuple[List[Tuple[List[int], List[int]]], int]:
     """``(input_ids, labels)`` per reference under answer-only masking, the EOS
     appended when the tokenizer emits none (``tokenize_record``'s rule); the
-    number of references dropped because truncation ate the answer."""
+    number of references dropped because truncation ate the answer. ``kept``,
+    when given, receives every record that was encoded (the per-character
+    denominator counts those only)."""
     encs: List[Tuple[List[int], List[int]]] = []
     dropped = 0
     eos = (tokenizer.special_tokens or {}).get("eos_token")
@@ -152,7 +166,40 @@ def answer_encodings(recs: Sequence[QARecord], tokenizer: BaseTokenizer, max_len
             dropped += 1
             continue
         encs.append((list(entry["input_ids"]), list(entry["labels"])))
+        if kept is not None:
+            kept.append(rec)
     return encs, dropped
+
+
+def encoded_text(tokenizer: BaseTokenizer, text: str) -> str:
+    """The text a tokenizer actually encodes: its own normalization, nothing else.
+
+    AraRooPat: ``normalize_text`` (NFKC, then Unicode ``Cf`` format characters
+    dropped). HF-backed tokenizers (native_*, bpe, wordpiece, morpho_bpe's
+    inner BPE): the ``tokenizers`` normalizer when one is set (Qwen3: NFC; the
+    from-scratch BPE: none). Anything else: the text unchanged. Whitespace the
+    tokenizer splits on is not a normalization — it still counts."""
+    from arabic_eval.tokenizers.araroopat import AraRooPatTokenizer, normalize_text
+    if isinstance(tokenizer, AraRooPatTokenizer):
+        return normalize_text(text)
+    hf = getattr(tokenizer, "_hf_tokenizer", None)
+    backend = getattr(hf, "backend_tokenizer", None) if hf is not None else getattr(tokenizer, "_tokenizer", None)
+    normalizer = getattr(backend, "normalizer", None)
+    return normalizer.normalize_str(text) if normalizer is not None else text
+
+
+def per_char_fields(answer_nll_total: float, references: Sequence[str], tokenizer: BaseTokenizer,
+                    ) -> Dict[str, Any]:
+    """Answer NLL per character: Σ NLL ÷ Σ reference characters as encoded,
+    plus the same over the raw character count."""
+    raw = sum(len(r) for r in references)
+    enc = sum(len(encoded_text(tokenizer, r)) for r in references)
+    return {
+        "reference_chars": enc,
+        "reference_chars_raw": raw,
+        "nll_per_answer_char": round(answer_nll_total / enc, 6) if enc else None,
+        "nll_per_answer_char_raw_chars": round(answer_nll_total / raw, 6) if raw else None,
+    }
 
 
 def summarize_eos(p_eos: Sequence[float], ranks: Sequence[int]) -> Dict[str, Any]:
@@ -214,7 +261,7 @@ def answer_stats(model, encs: Sequence[Tuple[List[int], List[int]]], pad_id: int
                 p_eos.append(p_end)
                 ranks.append(int((p > p_end).sum().item()) + 1)
     return {"nll_per_answer_token": round(tot / n, 4) if n else None, "answer_tokens": int(n),
-            **summarize_eos(p_eos, ranks)}
+            "answer_nll_total": round(tot, 6), **summarize_eos(p_eos, ranks)}
 
 
 # --------------------------------------------------------------------------
@@ -308,7 +355,8 @@ def run(cell_dir: Path, *, base: bool, checkpoint: Optional[str], pool: Optional
 
     # (b) held-out answers
     recs = heldout_records(REPO_ROOT / heldout)
-    encs, dropped = answer_encodings(recs, tokenizer, max_length, v1=v1_template)
+    kept: List[QARecord] = []
+    encs, dropped = answer_encodings(recs, tokenizer, max_length, v1=v1_template, kept=kept)
     log.info("held-out: %d references, %d encoded, %d dropped (truncation), template %s",
              len(recs), len(encs), dropped, "v1" if v1_template else f"v{TEMPLATE_VERSION}")
 
@@ -323,6 +371,8 @@ def run(cell_dir: Path, *, base: bool, checkpoint: Optional[str], pool: Optional
     mix["chars_per_token"] = round(cpt, 4)
     mix["loss_per_char"] = round(mix["loss_per_token"] / cpt, 4) if mix["loss_per_token"] is not None else None
     ans = answer_stats(model, encs, pad, device)
+    ans.update(per_char_fields(ans["answer_nll_total"], [r.answer for r in kept], tokenizer))
+    ans["answer_nll_total_source"] = "measured"
     ans["references_dropped_truncation"] = dropped
 
     return {
@@ -350,6 +400,9 @@ def print_table(res: Dict[str, Any]) -> None:
         ("mix tokens scored", m["tokens_scored"]),
         ("answer NLL / token", a["nll_per_answer_token"]),
         ("answer tokens", a["answer_tokens"]),
+        ("answer NLL / char", f"{a['nll_per_answer_char']:.4f}  (Σ NLL {a['answer_nll_total']:.1f} ÷ "
+                              f"{a['reference_chars']} reference chars as encoded; "
+                              f"÷ raw {a['reference_chars_raw']}: {a['nll_per_answer_char_raw_chars']:.4f})"),
         ("P(EOS @ end) mean", a["p_eos_at_end_mean"]),
         ("P(EOS @ end) median", a["p_eos_at_end_median"]),
         ("EOS rank-1 share", a["eos_rank1_share"]),

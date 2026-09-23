@@ -286,9 +286,14 @@ OPENAI_API_KEY=… .venv/bin/python scripts/judge/judge_freeform.py --experiment
 # P(EOS) and EOS rank-1 on the 250 held-out CIDAR references under the current template
 # (--base = the untouched model; --v1-template reproduces pre-2026-09-18 numbers; --pool <dir> restores the
 # old pool-tail rule). Standard-embedding tokenizers only. Prints a table, writes
-# <cell>/diag_heldout_rawtext_v1[_<ckpt>][_base][_v1].json.
+# <cell>/diag_heldout_rawtext_v1[_<ckpt>][_base][_v1].json. Compare answer NLL across tokenizers ONLY through
+# heldout_answers.nll_per_answer_char = answer_nll_total (Σ NLL, EOS included) ÷ reference_chars (Σ len of the
+# references after the tokenizer's own normalization: 72 636 for AraRooPat, 72 705 raw); the per-token NLL
+# divided by a chars/token figure inverted the BPE ranking twice. diag_backfill_per_char.py adds the fields to
+# older JSONs (no GPU, idempotent; the total is rebuilt from the 4-decimal per-token NLL × answer tokens).
 .venv/bin/python scripts/diag_heldout_loss.py --cell outputs/experiments/qwen_native_vs_araroopat/native_qwen3_sft
 .venv/bin/python scripts/diag_heldout_loss.py --cell outputs/experiments/qwen_native_vs_araroopat/native_qwen3_base --base
+.venv/bin/python scripts/diag_backfill_per_char.py [--root outputs/experiments/<exp>] [--dry-run]
 
 # Decode fidelity of a saved AraRooPat tokenizer: round-trip chrF on the 250 held-out references (raw and
 # diacritics-stripped) + exact-match rate on 2 000 distinct corpus words with a mismatch breakdown.

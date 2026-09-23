@@ -166,3 +166,115 @@ def test_pool_dir_and_checkpoint_lookup(tmp_path):
     (cell / "training" / "sft").mkdir(parents=True)
     (cell / "training" / "sft" / "model.safetensors").write_bytes(b"")
     assert D.checkpoint_for(cell, False, None, mc) == str(cell / "training" / "sft")
+
+
+# --------------------------------------------------------------------------
+# answer NLL per character (2026-09-23) + the backfill of older JSONs
+# --------------------------------------------------------------------------
+
+def test_answer_nll_per_char_equals_sum_over_chars_on_tiny_model(tiny_model):
+    tok = _WordTok()
+    recs = _recs(5)
+    kept: list = []
+    encs, dropped = D.answer_encodings(recs, tok, max_length=256, kept=kept)
+    assert dropped == 0 and [r.id for r in kept] == [r.id for r in recs]
+    ans = D.answer_stats(tiny_model, encs, PAD, device="cpu", batch_size=2)
+    fields = D.per_char_fields(ans["answer_nll_total"], [r.answer for r in kept], tok)
+    # independent Σ NLL: one unpadded forward per reference, cross-entropy on the label positions
+    total = 0.0
+    with torch.inference_mode():
+        for ids, labels in encs:
+            logits = tiny_model(input_ids=torch.tensor([ids])).logits[0, :-1].float()
+            tgt = torch.tensor(labels[1:])
+            total += float(torch.nn.functional.cross_entropy(logits, tgt, ignore_index=-100, reduction="sum"))
+    chars = sum(len(r.answer) for r in recs)
+    assert fields["reference_chars"] == fields["reference_chars_raw"] == chars    # no normalizer: identity
+    assert fields["nll_per_answer_char"] == pytest.approx(total / chars, abs=1e-6)
+    assert fields["nll_per_answer_char_raw_chars"] == pytest.approx(total / chars, abs=1e-6)
+    assert ans["answer_nll_total"] == pytest.approx(ans["nll_per_answer_token"] * ans["answer_tokens"], abs=0.01)
+    # only the encoded references count in the denominator
+    kept_short: list = []
+    _, dropped = D.answer_encodings(recs, tok, max_length=8, kept=kept_short)
+    assert dropped == 5 and kept_short == []
+
+
+def test_encoded_text_follows_each_tokenizers_own_normalization():
+    from tokenizers import Tokenizer, models, normalizers
+    from arabic_eval.tokenizers.araroopat import AraRooPatTokenizer
+
+    ref = "​كتاب ﻻ جديد"                       # ZWSP + the lam-alef presentation form
+    assert D.encoded_text(_WordTok(), ref) == ref                # no normalizer → unchanged
+    arp = object.__new__(AraRooPatTokenizer)                     # NFKC + Cf drop, no CAMeL needed
+    assert D.encoded_text(arp, ref) == "كتاب لا جديد"
+    hf = Tokenizer(models.BPE())
+    hf.normalizer = normalizers.NFKC()
+
+    class _BpeLike(_WordTok):                                    # from-scratch BPE: ``_tokenizer``
+        _tokenizer = hf
+
+    assert D.encoded_text(_BpeLike(), ref) == "​كتاب لا جديد"
+
+    class _Backend:                                              # native wrappers: ``_hf_tokenizer.backend_tokenizer``
+        backend_tokenizer = hf
+
+    class _NativeLike(_WordTok):
+        _hf_tokenizer = _Backend()
+
+    assert D.encoded_text(_NativeLike(), ref) == "​كتاب لا جديد"
+    hf_plain = Tokenizer(models.BPE())                           # a BPE without normalizer (ours) → identity
+
+    class _Plain(_WordTok):
+        _tokenizer = hf_plain
+
+    assert D.encoded_text(_Plain(), ref) == ref
+    zwsp = "\u200bكتاب جديد"                                  # the Cf drop alone: one character fewer
+    f = D.per_char_fields(10.0, [zwsp], arp)
+    assert f["reference_chars"] == len(zwsp) - 1 and f["reference_chars_raw"] == len(zwsp)
+    assert f["nll_per_answer_char"] == pytest.approx(10.0 / (len(zwsp) - 1), abs=1e-6)
+
+
+def _backfill_module():
+    s = importlib.util.spec_from_file_location("diag_backfill_per_char", REPO / "scripts" / "diag_backfill_per_char.py")
+    m = importlib.util.module_from_spec(s)
+    s.loader.exec_module(m)  # type: ignore[union-attr]
+    return m
+
+
+def test_backfill_fixture_round_trips_and_is_idempotent(tmp_path, monkeypatch):
+    B = _backfill_module()
+    monkeypatch.setattr(B.D, "build_tokenizer", lambda cfg: _WordTok())
+    heldout = tmp_path / "heldout.jsonl"
+    refs = ["جواب أول هنا", "جواب ثان أطول من الأول", "ثالث"]
+    heldout.write_text("\n".join(json.dumps({"id": f"r{i}", "prompt": "اكتب", "reference": r}, ensure_ascii=False)
+                                 for i, r in enumerate(refs)), encoding="utf-8")
+    cell = tmp_path / "exp" / "cell"
+    cell.mkdir(parents=True)
+    (cell / "config.json").write_text(json.dumps({"tokenizer": {"type": "bpe", "vocab_size": None, "params": {},
+                                                               "save_path": ""}, "model": {}}), encoding="utf-8")
+    old = {"cell": str(cell), "tokenizer": "bpe", "template_version": 2, "heldout": str(heldout), "max_length": 2048,
+           "mix": {"loss_per_char": 0.9},
+           "heldout_answers": {"nll_per_answer_token": 1.5, "answer_tokens": 40, "p_eos_at_end_mean": 0.5,
+                               "references_dropped_truncation": 0, "n": 3}}
+    path = cell / "diag_heldout_rawtext_v1.json"
+    path.write_text(json.dumps(old, ensure_ascii=False, indent=2), encoding="utf-8")
+    assert B.main(["--root", str(tmp_path / "exp"), "--dry-run"]) == 0
+    assert json.loads(path.read_text(encoding="utf-8")) == old                  # dry run writes nothing
+    assert B.main(["--root", str(tmp_path / "exp")]) == 0
+    new = json.loads(path.read_text(encoding="utf-8"))
+    a = new["heldout_answers"]
+    chars = sum(len(r) for r in refs)
+    assert a["answer_nll_total"] == pytest.approx(60.0) and a["reference_chars"] == a["reference_chars_raw"] == chars
+    assert a["nll_per_answer_char"] == pytest.approx(60.0 / chars, abs=1e-6)
+    assert a["answer_nll_total_source"].startswith("backfill")
+    assert {k: v for k, v in new.items() if k != "heldout_answers"} == {k: v for k, v in old.items()
+                                                                           if k != "heldout_answers"}
+    assert all(a[k] == v for k, v in old["heldout_answers"].items())         # nothing recorded is changed
+    first = path.read_bytes()
+    assert B.main(["--root", str(tmp_path / "exp")]) == 0
+    assert path.read_bytes() == first                                         # idempotent
+    # a measured total (a fresh run) is kept; only the derived fields are recomputed
+    new["heldout_answers"].update({"answer_nll_total": 59.0, "answer_nll_total_source": "measured"})
+    path.write_text(json.dumps(new, ensure_ascii=False, indent=2), encoding="utf-8")
+    assert B.main(["--root", str(tmp_path / "exp")]) == 0
+    a = json.loads(path.read_text(encoding="utf-8"))["heldout_answers"]
+    assert a["answer_nll_total"] == 59.0 and a["nll_per_answer_char"] == pytest.approx(59.0 / chars, abs=1e-6)
