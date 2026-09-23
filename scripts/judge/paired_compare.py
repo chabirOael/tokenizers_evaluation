@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Paired judge comparison between two cells of one experiment.
+"""Paired judge comparison between two cells (of one experiment or of two).
 
 Every variant answers the *same* 250 held-out prompts, so the comparison that
 means something is paired: the mean of (B − A) over the shared prompt ids with
@@ -14,6 +14,16 @@ nothing.
 ``--cells A B`` reads ``<experiment>/<cell>/freeform_judge/<judge>.parquet``
 and reports B − A (the first cell is the baseline). ``--sub-scores`` adds the
 same bootstrap for correctness / fluency / instruction_following.
+
+Two experiments (2026-09-23, for pairing a decoding-ablation cell with its
+greedy twin): give ``--experiment`` twice — the baseline is read from the
+first, the cell from the second. Without ``--experiment`` the two cells are
+directory paths.
+
+    .venv/bin/python scripts/judge/paired_compare.py \
+        --experiment outputs/experiments/qwen_native_vs_araroopat \
+        --experiment outputs/experiments/qwen_decoding_ablation \
+        --cells araroopat_3phase_v3_ffstop araroopat_3phase_v3_ffstop_rp12
 """
 from __future__ import annotations
 
@@ -43,19 +53,28 @@ def load_scores(path: Path, field: str = "score") -> Dict[str, float]:
     return out
 
 
-def judge_path(experiment: Path, cell: str, judge: str) -> Path:
-    p = experiment / cell / "freeform_judge" / f"{judge}.parquet"
+def cell_dir(experiment: Optional[Path], cell: str) -> Path:
+    """``<experiment>/<cell>``, or ``cell`` itself as a directory path when no experiment is given."""
+    return Path(cell) if experiment is None else Path(experiment) / cell
+
+
+def judge_path(experiment: Optional[Path], cell: str, judge: str) -> Path:
+    p = cell_dir(experiment, cell) / "freeform_judge" / f"{judge}.parquet"
     if not p.exists():
         raise SystemExit(f"no judge file at {p} — run the judge on that cell first")
     return p
 
 
-def compare(experiment: Path, cell_a: str, cell_b: str, judge: str, *,
-            n_boot: int = 10000, seed: int = 0, sub_scores: bool = False) -> Dict[str, Any]:
+def compare(experiment: Optional[Path], cell_a: str, cell_b: str, judge: str, *,
+            n_boot: int = 10000, seed: int = 0, sub_scores: bool = False,
+            experiment_b: Optional[Path] = None) -> Dict[str, Any]:
+    """B − A; ``experiment_b`` (default: ``experiment``) is where cell B lives."""
+    exp_b = experiment if experiment_b is None else experiment_b
     a = load_scores(judge_path(experiment, cell_a, judge))
-    b = load_scores(judge_path(experiment, cell_b, judge))
+    b = load_scores(judge_path(exp_b, cell_b, judge))
     res: Dict[str, Any] = {
-        "experiment": str(experiment), "judge": judge,
+        "experiment": None if experiment is None else str(experiment),
+        "experiment_cell": None if exp_b is None else str(exp_b), "judge": judge,
         "baseline": cell_a, "cell": cell_b,
         "n_baseline": len(a), "n_cell": len(b),
         "mean_baseline": round(sum(a.values()) / len(a), 4) if a else None,
@@ -66,7 +85,7 @@ def compare(experiment: Path, cell_a: str, cell_b: str, judge: str, *,
         res["sub_scores"] = {}
         for field in SUB_SCORES:
             sa = load_scores(judge_path(experiment, cell_a, judge), field)
-            sb = load_scores(judge_path(experiment, cell_b, judge), field)
+            sb = load_scores(judge_path(exp_b, cell_b, judge), field)
             res["sub_scores"][field] = paired_bootstrap(sa, sb, n_boot=n_boot, seed=seed)
     return res
 
@@ -81,7 +100,9 @@ def format_row(res: Dict[str, Any]) -> str:
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--experiment", required=True, help="experiment directory holding the cells")
+    ap.add_argument("--experiment", action="append", default=[],
+                    help="experiment directory holding the cells; twice = the baseline's, then the cell's; "
+                         "omitted = the two cells are directory paths")
     ap.add_argument("--judge", default="gemma4_31b", help="judge name = the parquet stem")
     ap.add_argument("--cells", nargs=2, required=True, metavar=("BASELINE", "CELL"))
     ap.add_argument("--n-boot", type=int, default=10000)
@@ -90,8 +111,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     ap.add_argument("--json", action="store_true", help="print the full record as JSON")
     args = ap.parse_args(argv)
 
-    res = compare(Path(args.experiment), args.cells[0], args.cells[1], args.judge,
-                  n_boot=args.n_boot, seed=args.seed, sub_scores=args.sub_scores)
+    if len(args.experiment) > 2:
+        ap.error("--experiment takes at most two values (the baseline's folder, then the cell's)")
+    exps = [Path(e) for e in args.experiment]
+    exp_a = exps[0] if exps else None
+    exp_b = exps[-1] if exps else None
+    res = compare(exp_a, args.cells[0], args.cells[1], args.judge,
+                  n_boot=args.n_boot, seed=args.seed, sub_scores=args.sub_scores, experiment_b=exp_b)
     if args.json:
         print(json.dumps(res, ensure_ascii=False, indent=2))
     else:

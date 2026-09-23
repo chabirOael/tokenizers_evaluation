@@ -90,3 +90,24 @@ def test_seed_makes_the_ci_reproducible(experiment):
 def test_format_row_mentions_both_cells(experiment):
     line = pc.format_row(pc.compare(experiment, "cell_a", "cell_b", "j1", n_boot=200, seed=0))
     assert "cell_b" in line and "cell_a" in line and "win/tie/loss" in line
+
+
+def test_two_experiments_pair_a_cell_with_its_twin(tmp_path):
+    """--experiment twice: the baseline from the first folder, the cell from the second (the
+    decoding ablation pairs an rp12 cell with its greedy twin in the main experiment)."""
+    main_exp, abl = tmp_path / "main", tmp_path / "ablation"
+    _judge_file(main_exp / "cell", "j1", [(f"p{i}", 2.0) for i in range(10)])
+    _judge_file(abl / "cell_rp12", "j1", [(f"p{i}", 3.0 if i < 5 else 2.0) for i in range(10)])
+    res = pc.compare(main_exp, "cell", "cell_rp12", "j1", experiment_b=abl)
+    assert res["score"]["delta_mean"] == pytest.approx(0.5) and res["score"]["n"] == 10
+    assert res["experiment"] == str(main_exp) and res["experiment_cell"] == str(abl)
+    # the CLI form, and the bare-path form without --experiment
+    assert pc.main(["--experiment", str(main_exp), "--experiment", str(abl), "--judge", "j1",
+                    "--cells", "cell", "cell_rp12"]) == 0
+    assert pc.main(["--judge", "j1", "--cells", str(main_exp / "cell"), str(abl / "cell_rp12")]) == 0
+    res2 = pc.compare(None, str(main_exp / "cell"), str(abl / "cell_rp12"), "j1")
+    assert res2["score"] == res["score"]
+    with pytest.raises(SystemExit, match="no judge file"):
+        pc.compare(main_exp, "cell", "cell_rp12", "j1")          # one folder: the rp12 cell is not in main
+    with pytest.raises(SystemExit):
+        pc.main(["--experiment", "a", "--experiment", "b", "--experiment", "c", "--cells", "x", "y"])
