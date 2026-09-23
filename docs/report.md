@@ -6,8 +6,8 @@ Working notes for the comprehensive report. Every number below was measured on t
 
 - **Question.** Does a morphological tokenizer (AraRooPat: `[ROOT_x] [PAT_y]` + clitic tokens) beat the native Qwen3 vocabulary on Arabic generation when the 3-phase pipeline is held fixed?
 - **Arms.** A = native Qwen3 tokenizer (vocab 151 936, no training or Phase 3 only); B = AraRooPat (from-scratch vocab, Phase 1 + 2 on the pretraining mix, Phase 3). From 2026-09-22: C = from-scratch BPE-16K, the fair comparator.
-- **Phase 3.** Mixture of 30 000 records at 40 % extractive (TyDiQA-AR + ARCD) / 30 % MCQ (synthetic Arabic-SQuAD) / 30 % free-form (CIDAR, Bactrian-X ar, Aya ar); in loss tokens the free-form share is 80–87 %. Early stop on the extractive `dev` slice.
-- **Free-form eval.** 250 held-out CIDAR instructions (E5 near-duplicate gate 0.93), pure greedy decoding, stop at EOS / template marker / text-level loop, character budget per tokenizer. Metrics: chrF, in-house BERTScore, loop / cap / EOS rates, and a 1–5 judge (`google/gemma-4-31b-it` under vLLM, reference-guided rubric, paired bootstrap against a baseline cell). Held-out loss diagnostic (`scripts/diag_heldout_loss.py`): raw-text LM loss on 120 pool documents and answer NLL / P(EOS) on the 250 references.
+- **Phase 3.** Mixture of 30 000 records at 40 % extractive (TyDiQA-AR + ARCD) / 30 % MCQ (synthetic Arabic-SQuAD) / 30 % free-form (CIDAR, Bactrian-X ar, Aya ar); in loss tokens the free-form share is 80–87 %. Early stop on the extractive `dev` slice until 2026-09-22; since then (§3.6) on a 1 000-record `dev` mixture at the training ratio, scored per token.
+- **Free-form eval.** 250 held-out CIDAR instructions (E5 near-duplicate gate 0.93), pure greedy decoding, stop at EOS / template marker / text-level loop, character budget per tokenizer. Metrics: chrF, in-house BERTScore, loop / cap / EOS rates, and a 1–5 judge (`google/gemma-4-31b-it` under vLLM, reference-guided rubric, paired bootstrap against a baseline cell). Held-out loss diagnostic (`scripts/diag_heldout_loss.py`): raw-text LM loss on 150 held-out FineWeb-2 documents (`rawtext_heldout_v1.jsonl`; until 2026-09-22 the last 120 documents of each cell's own pool — not held out, see §3.6) and answer NLL / P(EOS) on the 250 references; answer NLL per character is Σ NLL ÷ the references' 72 705 characters.
 - **Experiment folder.** `outputs/experiments/qwen_native_vs_araroopat/` (cells listed in §9); superseded cells under `_superseded/`.
 
 ## 1. Timeline
@@ -63,8 +63,8 @@ All 5 marker stops of the control were the model opening its own markdown sub-he
 
 | cell (2 400 chars, exact markers, periodic loop stop) | judge | chrF | loop stop | EOS | cap | mean chars | LM loss nats/char | answer NLL nats/char |
 |---|---|---|---|---|---|---|---|---|
-| native base (untrained) | 2.42 ± 0.09 | 22.94 | 6.8 % | 90.8 % | 2.4 % | 511 | 0.82 | 0.80 |
-| native SFT | 2.28 ± 0.09 | 18.59 | 12.4 % | 87.2 % | 0.4 % | 207 | 0.84 | 0.76 |
+| native base (untrained) | 2.42 ± 0.09 | 22.94 | 6.8 % | 90.8 % | 2.4 % | 511 | 0.82 | 0.81 |
+| native SFT | 2.28 ± 0.09 | 18.59 | 12.4 % | 87.2 % | 0.4 % | 207 | 0.84 | 0.77 |
 
 Paired judge SFT − base: −0.14 [−0.30, +0.02]. Register: the base writes markdown-assistant style (44 % bold, 22 % numbered lists vs 1 % in the references); SFT removed it entirely and learned the references' terse length (207 chars) but not their content (18.8 % of answers ≤ 40 chars).
 
@@ -131,7 +131,7 @@ Step-0 values are uninformative under tied embeddings (all within 1.4 nats of ln
 |---|---|---|---|---|---|
 | vocab / chars per token | 17 074 / 1.96 | 17 184 / 1.92 | 16 000 / 3.33 | 151 936 / 2.30 | 151 936 / 2.30 |
 | LM loss after Phase 2 / SFT (nats/char) ¹ | 1.30 / 1.35 | **0.86 / 0.88** | 0.85 / 0.86 | 0.83 | 0.84 |
-| answer NLL after SFT (nats/char) | 1.27 | **0.81** | 0.64 | 0.80 | 0.76 |
+| answer NLL after SFT (nats/char) ² | 1.31 | **0.81** | 0.85 | 0.81 | 0.77 |
 | P(EOS at end) / EOS rank-1 | 0.49 / 0.88 | 0.68 / 0.88 | 0.60 / 0.86 | 0.42 / 0.76 | 0.64 / 0.91 |
 | judge ± SE | 1.07 ± 0.02 | **2.00 ± 0.08** | 1.99 ± 0.08 | 2.42 ± 0.09 | 2.28 ± 0.09 |
 | paired Δ vs native base | −1.34 [−1.54, −1.17] | −0.41 [−0.59, −0.24] | −0.42 [−0.60, −0.26] | — | −0.14 [−0.30, +0.02] |
@@ -146,6 +146,8 @@ Step-0 values are uninformative under tied embeddings (all within 1.4 nats of ln
 Head to head, AraRooPat v3 − BPE-16K v3 on the same 250 prompts (paired bootstrap, 10 000 resamples): **Δ +0.012 [−0.136, +0.156]**, win / tie / loss 24 / 54 / 22 %.
 
 ¹ Re-measured 2026-09-22 on the held-out `configs/contamination/rawtext_heldout_v1.jsonl` (§3.6). As first reported the row read 1.29 / 1.34 · **0.95 / 0.97** · 0.90 / 0.91 · 0.82 · 0.84, from the last 120 documents of *each cell's own pool* — three different document sets, and for the adapted arms mostly their own training text. The correction closes most of the LM gap to the native model: 0.13 → **0.03** nats/char for AraRooPat v3 after Phase 2, 0.08 → **0.02** for BPE-16K.
+
+² Σ NLL over the 250 held-out references ÷ their 72 705 characters (corrected 2026-09-23, §3.6 *Verification*). As first reported the row read 1.27 · 0.81 · **0.64** · 0.80 · 0.76: the BPE figure divided the per-token NLL by the wrong chars-per-token number. Under the comparable definition AraRooPat v3 (0.81) beats BPE-16K (0.85) on answer NLL.
 
 **Acceptance (thresholds set before the run):** LM loss ≤ 1.00 nats/char after Phase 2 (0.95 ✓) and ≤ 1.05 after SFT (0.97 ✓); answer NLL ≤ 0.90 (0.81 ✓); judge ≥ 2.0 (2.004 ✓, at the line); paired CI vs native base not entirely below −0.5 (✓); **loop stop ≤ 12 % (31.2 % ✗)**; mean answer 150–400 chars (176 ✓); round-trip chrF ≥ 92 diacritics-stripped (98.97 ✓). Seven of eight.
 
@@ -222,7 +224,7 @@ scores Σ NLL / Σ answer tokens per category; one pass is 12 s (1 000 records a
 | loop stop / EOS / cap | **21.2** / 77.6 / 1.2 % | 31.2 / 67.6 / 1.2 % | 19.6 / 75.6 / 4.8 % | 20.8 / 77.6 / 1.6 % | 6.8 / 90.8 / 2.4 % | 12.4 / 87.2 / 0.4 % |
 | mean chars / ≤ 40-char share | 190 / 23 % | 176 / 28 % | 211 / 21 % | 190 / 20 % | 511 / 4 % | 207 / 19 % |
 | raw-text loss (P0 set) | 0.8751 | 0.8794 | 0.8589 | 0.8577 | 0.8260 | 0.8380 |
-| answer NLL (nats/char) | 0.776 | 0.803 | 0.587 | 0.588 | 0.673 | 0.639 |
+| answer NLL (nats/char, Σ NLL ÷ 72 705 reference chars — corrected 2026-09-23, see *Verification*) | **0.787** | 0.814 | 0.845 | 0.847 | 0.807 | 0.766 |
 | P(EOS) / EOS rank-1 | 0.646 / 0.872 | 0.682 / 0.876 | 0.622 / 0.860 | 0.601 / 0.860 | 0.420 / 0.760 | 0.644 / 0.908 |
 
 Paired bootstraps (10 000 resamples, same 250 prompts):
@@ -267,18 +269,22 @@ signal restores 6 000 for both. The mixture metric sits between them, which is w
 three should do.
 
 **Acceptance.** AraRooPat ffstop: judge ≥ 2.004 with the paired CI vs v3 not below 0 — **2.152, [+0.036, +0.260] ✓**;
-answer NLL ≤ 0.803 — **0.776 ✓**; raw-text within +0.03 of its Phase 2 checkpoint (0.8595) — **0.8751, +0.016 ✓**;
+answer NLL ≤ 0.814 — **0.787 ✓**; raw-text within +0.03 of its Phase 2 checkpoint (0.8595) — **0.8751, +0.016 ✓**;
 mean answer 150–400 chars — **190 ✓**; EOS ≥ 67.6 % — **77.6 % ✓**; loop stop below v3's 31.2 % — **21.2 % ✓** but
 **≤ 12 % ✗**. Six of seven. BPE ffstop: judge ≥ 1.992, CI not below 0 — **1.996, [−0.128, +0.136] ✓**; answer NLL
-≤ 0.588 — **0.587 ✓**; raw-text within +0.03 of 0.8461 — **0.8589, +0.013 ✓**; mean 150–400 — **211 ✓**; loop below
+≤ 0.847 — **0.845 ✓**; raw-text within +0.03 of 0.8461 — **0.8589, +0.013 ✓**; mean 150–400 — **211 ✓**; loop below
 20.8 % — **19.6 % ✓**; ≤ 12 % — **✗**; EOS ≥ 77.6 % — **75.6 % ✗**. Five of seven, and it moved on nothing, which is
 what the control was for.
 
 **Loops.** AraRooPat ffstop 53 loop stops (period 1: 5, 2–3: 17, 4–10: 21, > 10: 10; no char-rule stops), 28 % of
-its 112 score-1 rows; BPE ffstop 49 (5 / 18 / 19 / 10), 21 % of 117. Ten AraRooPat loop rows read by hand: the
-shape has changed from v3's period-4 phrase loops of recombined ROOT+PAT tokens to **period-1/2 و-coordination
-runaways** — the model opens a coordinated list and cannot close it (`والفلفل الأسود والفلفل الأحمر والفلفل الأخضر
-والفلفل الأصفر`, `الصيد والصيد`, `الرقص الرقص`). The cut keeps the first copy, so these rows end short.
+its 112 score-1 rows (31 rows); BPE ffstop 49 (6 / 11 / 21 / 11; recounted 2026-09-23 from the dump — the run report
+had 5 / 18 / 19 / 10), 21 % of 117 (24 rows). By period bucket the **shape did not change**: v3's 78 loops were
+13 / 23 / 35 / 7, so the ffstop cell has fewer loops of the same kinds, with period 4–10 still the largest bucket
+(40 % vs 45 %). The ten rows read by hand were mostly short **و-coordination runaways** — the model opens a
+coordinated list and cannot close it (`والفلفل الأسود والفلفل الأحمر والفلفل الأخضر والفلفل الأصفر`, `الصيد والصيد`,
+`الرقص الرقص`) — but the buckets say those (period 1–3, 22 of 53) are not the majority; the run report's claim that
+the loops had turned from phrase loops into coordination runaways is not supported by the counts. The cut keeps the
+first copy, so these rows end short.
 
 **Examples.** AraRooPat: 15 rows gained ≥ 2 judge points, 7 lost ≥ 2. The gains are answers that became complete
 (`cidar-9423`: *الإجابة صحيحة* → *الإجابة الصحيحة : الأشخاص التالية أسماؤهم*, 1 → 5; `cidar-1952`: an 18-character
@@ -293,11 +299,32 @@ with three wrong borders, 5 → 2) or flipped grammar verdicts (`cidar-10118`, 5
 (`all_metrics.json` with `training.sft.eval_history` + `eval_loss_definition`, `data/sft_eval_mixture_manifest.json`,
 `eval_rows/freeform_cidar.parquet`, `freeform_judge/gemma4_31b.parquet`).
 
+**Verification (2026-09-23, Fable session, against the outputs).** Reproduced from the artifacts: every raw-text loss
+of the P0 table (four decimals); the 150 held-out documents absent by exact hash from all nine pool tables and all
+150 beyond the packer's `docs_taken` in the 80 M pool's permutation; the dev sizes and the MCQ ↔ SQuAD dev-id
+equality; the unchanged exclusion list; the eval-mixture composition (400 / 300 / 300 records, 18.1 / 2.5 / 79.4 % of
+loss tokens); restored steps 6 000 / 6 600 and the resize no-op in both logs; judge means, histograms and all seven
+paired bootstraps to three decimals; the counterfactual stops (extractive-only 5 600 / 4 800, free-form-only 6 000 /
+6 000); 105 new and changed tests passing. **One derived column was wrong.** The diagnostic records NLL *per answer
+token*; the run report (and §3.5 before it, for the BPE cell) converted it to nats per character by dividing by a
+chars-per-token figure — the raw-text block's (3.63 for BPE, 2.73 for native, 2.00 for AraRooPat) or the free-form
+task's — which is not the references' (BPE 2.49, native 2.30, AraRooPat 1.96), so BPE and native were flattered.
+The comparable quantity is Σ NLL over the 250 references ÷ their 72 705 characters (the same text, the same
+characters, under each tokenizer's own tokenization): v2 1.306, AraRooPat v3 0.814, AraRooPat ffstop 0.787, BPE v3
+0.847, BPE ffstop 0.845, native base 0.807, native SFT 0.766 (reported: 0.803 / 0.776 / 0.588 / 0.587 / 0.673 /
+0.639; §3.5 had BPE 0.64). The ranking on this measure is native SFT < AraRooPat ffstop < native base < AraRooPat v3
+< BPE ffstop ≈ BPE v3 — AraRooPat beats BPE on answer NLL, the opposite of what §3.5 and §4 first said, and the
+ffstop checkpoint edges the untouched native model. The tables and acceptance lines above carry the corrected
+numbers; the acceptance verdicts do not change. Open: the diagnostic should emit `nll_per_answer_char` and
+`reference_chars` itself (§5 item 10). Also corrected here: the BPE loop-period buckets and the loop-shape claim
+(see *Loops*). The five commits of this stage carry the `Claude Fable 5.1` co-author trailer because the brief
+prescribed it; the code was written by an Opus 5 session.
+
 ## 4. What the campaign established
 
 1. The native model's loops were partly measurement (the first loop rule) and partly a greedy attractor of the base model; under the corrected rules the untrained base loops on 6.8 % of prompts and the SFT arm on 12.4 %. SFT on the 30 000-record mixture learns the references' register and length but not their content: judge 2.28 vs 2.42, CI including zero.
 2. AraRooPat v1/v2 failed for a reason unrelated to morphology: an arbitrary embedding initialization and a 37 M-token budget left the language model at 1.35 nats/char (native 0.83). Informed initialization plus 131 M tokens brought it to 0.88 and the judge from 1.07 to 2.00; answer NLL now equals the untrained native model's. (Loss figures corrected in §3.6; as first measured, 1.34 → 0.97 against a native 0.82.)
-3. At equal adaptation a plain BPE-16K vocabulary ties AraRooPat on the judge and beats it on LM loss (0.86 vs 0.88), answer NLL (0.64 vs 0.81 nats/char), loops (20.8 vs 31.2 %) and generation speed (153 vs 111 chars/s), with 1.7× more text seen per token budget. **Amended by §3.6:** once both arms train on the free-form-aware stop signal, AraRooPat leads the judge (2.152 vs 1.996, paired Δ +0.156 [+0.000, +0.312]) and closes the loop gap (21.2 vs 19.6 %); BPE keeps the answer-NLL and speed advantages. The tie was partly an artefact of AraRooPat having trained on a fifth of the mixture. AraRooPat's measurable advantages are decode fidelity to the written word (99.3 % word round trip) and root conservation (0.379 vs 0.048). Both arms sit 0.4 judge points under the untouched native model; that gap is the cost of re-learning any vocabulary in 131 M tokens — and it is **not** explained by language-model quality, which after the §3.6 correction is within 0.03 nats/char of native for both.
+3. At equal adaptation a plain BPE-16K vocabulary ties AraRooPat on the judge and beats it on LM loss (0.86 vs 0.88), loops (20.8 vs 31.2 %) and generation speed (153 vs 111 chars/s), with 1.7× more text seen per token budget; AraRooPat has the lower answer NLL on the held-out references (0.81 vs 0.85 nats/char — the 0.64 first reported for BPE divided by the wrong chars-per-token figure, corrected 2026-09-23, §3.6 *Verification*). **Amended by §3.6:** once both arms train on the free-form-aware stop signal, AraRooPat leads the judge (2.152 vs 1.996, paired Δ +0.156 [+0.000, +0.312]), closes the loop gap (21.2 vs 19.6 %) and widens its answer-NLL lead (0.787 vs 0.845); BPE keeps the LM-loss and speed advantages. The tie was partly an artefact of AraRooPat having trained on a fifth of the mixture. AraRooPat's measurable advantages are decode fidelity to the written word (99.3 % word round trip) and root conservation (0.379 vs 0.048). Both arms sit 0.4 judge points under the untouched native model; that gap is the cost of re-learning any vocabulary in 131 M tokens — and it is **not** explained by language-model quality, which after the §3.6 correction is within 0.03 nats/char of native for both.
 4. Phase 2 loss is flat from its first fifth in both arms; more raw text at this learning rate is not the next lever.
 5. (§3.6) Two measurement faults were corrected. The raw-text "held-out" loss was read from each cell's *own* pool — training text for the adapted arms, and a different document set per arm; on a properly held-out set the LM gap to native is 0.03 nats/char, not 0.13. And the Phase 3 stop signal carried 12 % of the loss tokens: on one arm it wandered upward at step 1 400 and stopped training at a fifth of the mixture. Neither fault changed a ranking; both changed magnitudes enough to change what the next step should be.
 
@@ -312,6 +339,7 @@ with three wrong borders, 5 → 2) or flipped grammar verdicts (`cidar-10118`, 5
 7. The probe's step-0 gate is uninformative under tied embeddings; read step-N only, or untie the head.
 8. 13 hamza and 1 ى round-trip mismatches remain (corpus-majority canonicalisations).
 9. The free-form eval mixture costs 12 s per pass (33 % overhead at `eval_every_n_steps: 200`). Acceptable, but `eval_every_n_steps: 400` would halve it if a longer phase needs the time.
+10. `scripts/diag_heldout_loss.py` should emit `nll_per_answer_char` (Σ NLL ÷ Σ reference characters) and `reference_chars` next to `nll_per_answer_token`: two reports in a row derived the per-character figure by dividing by a chars-per-token number and got the BPE ranking wrong (§3.6 *Verification*).
 
 ## 6. GPU time (2026-09-22 alone)
 Four training runs 8 h 52 min (1 h 15 lost attempt + 3 h 17 v3 + 0 h 56 lost attempt + 3 h 25 BPE), probe ~35 min, six diagnostics ~6 min, judge passes ~10 min — ≈ 9 h 43 min. Earlier: v1 ~1 h, v2 ~1.5 h (+ 45 min resume), native runs and re-evals ~2 h.
