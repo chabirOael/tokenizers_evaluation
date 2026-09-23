@@ -364,5 +364,103 @@ class TestFilterLatinRecords:
         assert filter_latin_records(recs) == []
 
 
+# --------------------------------------------------------------------------
+# Teacher-answer overlay (distillation, 2026-09-23)
+# --------------------------------------------------------------------------
+
+def _cidar_rows(n: int = 80):
+    return [{"index": i, "instruction": f"اكتب جملة رقم {i}", "output": f"مرجع {i}"} for i in range(n)]
+
+
+def _write_teacher(tmp_path, rows, name="teacher_answers_v1.jsonl"):
+    import json
+    path = tmp_path / name
+    with open(path, "w", encoding="utf-8") as f:
+        for r in rows:
+            f.write(json.dumps(r, ensure_ascii=False) + "\n")
+    return path
+
+
+class TestTeacherOverlay:
+    def _patch(self, monkeypatch, n=80):
+        class _DS(list):
+            pass
+        monkeypatch.setattr("datasets.load_dataset", lambda *a, **k: _DS(_cidar_rows(n)))
+
+    def test_replaces_by_id_and_drops_unmatched(self, tmp_path, monkeypatch):
+        self._patch(monkeypatch)
+        base = fc.load_corpus("cidar", "train")
+        keep = [r.id for r in base[::3]]
+        path = _write_teacher(tmp_path, [{"id": i, "corpus": "cidar", "split": "train", "answer": f"جواب المعلم {i}"}
+                                         for i in keep])
+        over = fc.load_corpus("cidar", "train", teacher_answers=str(path))
+        assert [r.id for r in over] == keep
+        assert all(r.answer == f"جواب المعلم {r.id}" for r in over)
+        info = fc.teacher_overlay_info("cidar", "train")
+        assert info["matched"] == len(keep) and info["dropped_no_answer"] == len(base) - len(keep)
+        assert info["records_before"] == len(base) and info["file_ids_unmatched"] == 0
+        assert len(info["sha256"]) == 64 and info["path"] == str(path)
+
+    def test_prompt_and_other_fields_are_byte_identical(self, tmp_path, monkeypatch):
+        self._patch(monkeypatch)
+        base = {r.id: r for r in fc.load_corpus("cidar", "train")}
+        path = _write_teacher(tmp_path, [{"id": i, "corpus": "cidar", "split": "train", "answer": "نص المعلم"} for i in base])
+        for r in fc.load_corpus("cidar", "train", teacher_answers=str(path)):
+            b = base[r.id]
+            assert _format_qa_prompt(r) == _format_qa_prompt(b)          # the training prompt: our template, unchanged
+            assert (r.question, r.context, r.source, r.prompt_template) == (b.question, b.context, b.source, b.prompt_template)
+            assert _format_qa_full(r) == _format_qa_prompt(b) + "نص المعلم"
+
+    def test_dev_membership_is_unchanged(self, tmp_path, monkeypatch):
+        self._patch(monkeypatch, n=200)
+        train = fc.load_corpus("cidar", "train")
+        dev = fc.load_corpus("cidar", "dev")
+        assert dev, "the fixture needs at least one dev record"
+        rows = [{"id": r.id, "corpus": "cidar", "split": s, "answer": "ج"} for s, rs in (("train", train), ("dev", dev)) for r in rs]
+        path = _write_teacher(tmp_path, rows)
+        assert [r.id for r in fc.load_corpus("cidar", "dev", teacher_answers=str(path))] == [r.id for r in dev]
+        assert [r.id for r in fc.load_corpus("cidar", "train", teacher_answers=str(path))] == [r.id for r in train]
+        assert all(fc.is_dev_record("cidar", r.id) for r in dev)
+
+    def test_unknown_ids_warn_with_the_count(self, tmp_path, monkeypatch, caplog):
+        self._patch(monkeypatch)
+        base = fc.load_corpus("cidar", "train")
+        path = _write_teacher(tmp_path, [{"id": base[0].id, "corpus": "cidar", "split": "train", "answer": "ج"},
+                                         {"id": "cidar-99999", "corpus": "cidar", "split": "train", "answer": "ج"},
+                                         {"id": "cidar-88888", "corpus": "cidar", "split": "train", "answer": "ج"},
+                                         {"id": "bactrian-x", "corpus": "bactrian_x_ar", "split": "train", "answer": "ج"}])
+        with caplog.at_level("WARNING"):
+            over = fc.load_corpus("cidar", "train", teacher_answers=str(path))
+        assert len(over) == 1 and fc.teacher_overlay_info("cidar", "train")["file_ids_unmatched"] == 2
+        assert any("2 teacher answers carry an id" in m for m in caplog.messages)
+
+    def test_a_load_without_the_overlay_clears_its_record(self, tmp_path, monkeypatch):
+        self._patch(monkeypatch)
+        base = fc.load_corpus("cidar", "train")
+        path = _write_teacher(tmp_path, [{"id": base[0].id, "corpus": "cidar", "split": "train", "answer": "ج"}])
+        fc.load_corpus("cidar", "train", teacher_answers=str(path))
+        assert fc.teacher_overlay_info("cidar", "train") is not None
+        assert len(fc.load_corpus("cidar", "train")) == len(base)
+        assert fc.teacher_overlay_info("cidar", "train") is None
+
+    def test_validator_refuses_non_free_form_corpora_and_missing_files(self, tmp_path):
+        from arabic_eval.config import TrainingConfig
+        path = _write_teacher(tmp_path, [])
+        phases = {"embedding_alignment": {"enabled": False, "datasets": ["arabic_squad"], "trainable_parameters": ["*"],
+                                          "learning_rate": 1e-3, "batch_size": 1, "steps": 1},
+                  "warmup": {"enabled": False, "datasets": ["arabic_squad"], "trainable_parameters": ["*"],
+                             "learning_rate": 1e-3, "batch_size": 1, "steps": 1},
+                  "sft": {"enabled": False, "datasets": ["cidar"], "trainable_parameters": ["*"],
+                          "learning_rate": 1e-3, "batch_size": 1, "steps": 1}}
+        ok = TrainingConfig(phases=phases, corpus_params={"cidar": {"teacher_answers": str(path)},
+                                                          "aya_ar": {"include_datasets": ["Aya-Dataset"],
+                                                                     "teacher_answers": str(path)}})
+        assert ok.corpus_params["cidar"]["teacher_answers"] == str(path)
+        with pytest.raises(ValueError, match="free-form corpora only"):
+            TrainingConfig(phases=phases, corpus_params={"tydiqa_arabic": {"teacher_answers": str(path)}})
+        with pytest.raises(ValueError, match="does not exist"):
+            TrainingConfig(phases=phases, corpus_params={"cidar": {"teacher_answers": str(tmp_path / "nope.jsonl")}})
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-v"]))

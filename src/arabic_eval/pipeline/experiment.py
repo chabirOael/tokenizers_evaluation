@@ -109,7 +109,7 @@ def _phase_eval_mixture_loaders(
     if es is None or not es.enabled or getattr(es, "eval_mixture", None) is None:
         return None, None
     from arabic_eval.config import MixtureConfig
-    from arabic_eval.data.sft_mixture import compose_mixture, load_mixture_pools
+    from arabic_eval.data.sft_mixture import compose_mixture, load_mixture_pools, teacher_overlays_for
 
     em = es.eval_mixture
     train_mix = phase_cfg.mixture
@@ -129,6 +129,7 @@ def _phase_eval_mixture_loaders(
         eval_mix, datasets, pools, tokenizer, phase_cfg.max_length, "answer_only",
         batch_size=phase_cfg.batch_size, pool_sizes_before_filter=before,
         clean_latin_rows=phase_cfg.clean_latin_rows, attach_category=True,
+        teacher_overlays=teacher_overlays_for(datasets, "dev"),   # with the overlay the stop signal is NLL on teacher text
     )
     manifest["split"] = "dev"
     manifest["role"] = "early_stop_eval_mixture"

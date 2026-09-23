@@ -79,7 +79,7 @@ import json
 import logging
 import os
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
@@ -466,7 +466,81 @@ def _instruction_record(source: str, rec_id: str, instruction: Optional[str],
     )
 
 
-def _load_cidar(split: str) -> List[QARecord]:
+# --------------------------------------------------------------------------
+# Teacher-answer overlay (``training.corpus_params.<free-form corpus>.teacher_answers``)
+# --------------------------------------------------------------------------
+
+#: What the last overlay did per ``(corpus, split)`` — read by the mixture manifest
+#: (``sft_mixture.teacher_overlays_for``). ``load_corpus`` clears the entry before it
+#: calls a loader, so a load without the overlay never inherits an older record.
+_TEACHER_OVERLAY_LOG: Dict[Tuple[str, str], Dict[str, Any]] = {}
+_TEACHER_FILE_CACHE: Dict[Tuple[str, float, int], Tuple[Dict[str, Dict[str, Any]], str]] = {}
+
+
+def resolve_teacher_answers_path(path: str | Path) -> Path:
+    """A relative path is read from the working directory, else from the repo root."""
+    p = Path(path)
+    if p.is_absolute() or p.exists():
+        return p
+    alt = Path(__file__).resolve().parents[3] / p
+    return alt if alt.exists() else p
+
+
+def _read_teacher_answers(path: str | Path) -> Tuple[Dict[str, Dict[str, Any]], str]:
+    """``({record id: row}, sha256 of the file)``, cached on (path, mtime, size)."""
+    p = resolve_teacher_answers_path(path)
+    st = p.stat()
+    key = (str(p.resolve()), st.st_mtime, st.st_size)
+    if key not in _TEACHER_FILE_CACHE:
+        h = hashlib.sha256()
+        by_id: Dict[str, Dict[str, Any]] = {}
+        with open(p, "rb") as f:
+            for line in f:
+                h.update(line)
+                if line.strip():
+                    row = json.loads(line)
+                    by_id[str(row["id"])] = row
+        _TEACHER_FILE_CACHE[key] = (by_id, h.hexdigest())
+    return _TEACHER_FILE_CACHE[key]
+
+
+def _apply_teacher_answers(records: List[QARecord], path: Optional[str], corpus: str, split: str) -> List[QARecord]:
+    """Sequence-level distillation overlay (2026-09-23): every record whose id is in the
+    teacher file gets the teacher's ``answer`` in place of its reference; every record
+    that is not is **dropped** — the student trains on teacher text only, no reference
+    leaks back in. ``id``, ``question``, ``context``, ``source`` and
+    ``prompt_template`` are untouched, so the ``dev`` partition (by id), the
+    contamination exclusions (by id, applied after this by ``load_corpus``) and the
+    mixture walk (sorted ids, seeded) are unchanged; the training prompt stays our
+    template (``_format_qa_prompt``) — the teacher's chat template never reaches the
+    training text. A file id of this corpus / split that no record carries is a warning
+    with the count. ``path=None`` returns ``records`` unchanged."""
+    if not path:
+        return records
+    by_id, sha = _read_teacher_answers(path)
+    out = [replace(r, answer=by_id[r.id]["answer"]) for r in records if r.id in by_id]
+    have = {r.id for r in records}
+    unmatched = sum(1 for i, row in by_id.items()
+                    if row.get("corpus", corpus) == corpus and row.get("split", split) == split and i not in have)
+    if unmatched:
+        logger.warning("%s/%s: %d teacher answers carry an id no %s/%s record has (%s)",
+                       corpus, split, unmatched, corpus, split, path)
+    _TEACHER_OVERLAY_LOG[(corpus, split)] = {
+        "path": str(path), "sha256": sha, "records_before": len(records), "matched": len(out),
+        "dropped_no_answer": len(records) - len(out), "file_ids_unmatched": unmatched,
+    }
+    logger.info("%s/%s: teacher answers %s — %d of %d records matched, %d without a teacher answer dropped",
+                corpus, split, path, len(out), len(records), len(records) - len(out))
+    return out
+
+
+def teacher_overlay_info(corpus: str, split: str) -> Optional[Dict[str, Any]]:
+    """The overlay record of the last ``load_corpus(corpus, split)`` (``None`` without an overlay)."""
+    info = _TEACHER_OVERLAY_LOG.get((corpus, split))
+    return dict(info) if info is not None else None
+
+
+def _load_cidar(split: str, teacher_answers: Optional[str] = None) -> List[QARecord]:
     """Load arbml/CIDAR (10 000 rows, ``instruction`` / ``output`` / ``index``, train only).
 
     Outputs ship with ``\r\n`` line endings, normalized here. Some
@@ -499,10 +573,10 @@ def _load_cidar(split: str) -> List[QARecord]:
     records = _partition_dev(records, "cidar", split)
     logger.info("cidar/%s: loaded %d records (of %d rows; %d exact duplicates dropped)",
                 split, len(records), len(ds), n_dup)
-    return records
+    return _apply_teacher_answers(records, teacher_answers, "cidar", split)
 
 
-def _load_bactrian_x_ar(split: str) -> List[QARecord]:
+def _load_bactrian_x_ar(split: str, teacher_answers: Optional[str] = None) -> List[QARecord]:
     """Load the Arabic split of MBZUAI/Bactrian-X (67 017 rows: 52 002 Alpaca
     + 15 015 Dolly instructions machine-translated to Arabic, outputs
     generated in Arabic).
@@ -529,7 +603,7 @@ def _load_bactrian_x_ar(split: str) -> List[QARecord]:
             records.append(rec)
     records = _partition_dev(records, "bactrian_x_ar", split)
     logger.info("bactrian_x_ar/%s: loaded %d records (of %d rows)", split, len(records), len(rows))
-    return records
+    return _apply_teacher_answers(records, teacher_answers, "bactrian_x_ar", split)
 
 
 AYA_REPO = "CohereForAI/aya_collection_language_split"
@@ -542,7 +616,8 @@ AYA_DEFAULT_INCLUDE = ("Aya-Dataset", "Dolly-v2 (T)")
 _AYA_CONTEXT_SPLIT = re.compile(r"\n\s*Context:\s*", re.IGNORECASE)
 
 
-def _load_aya_ar(split: str, include_datasets: Sequence[str] = AYA_DEFAULT_INCLUDE) -> List[QARecord]:
+def _load_aya_ar(split: str, include_datasets: Sequence[str] = AYA_DEFAULT_INCLUDE,
+                teacher_answers: Optional[str] = None) -> List[QARecord]:
     """Load an allowlist of sub-datasets of the Aya collection, ``standard_arabic`` config.
 
     Facts the parser encodes (verified on the pinned revision, 2026-09-17):
@@ -590,7 +665,7 @@ def _load_aya_ar(split: str, include_datasets: Sequence[str] = AYA_DEFAULT_INCLU
         )
     records = _partition_dev(records, "aya_ar", split)
     logger.info("aya_ar/%s: loaded %d records %s", split, len(records), seen_names)
-    return records
+    return _apply_teacher_answers(records, teacher_answers, "aya_ar", split)
 
 
 def _aya_cached_subset(cache_path: Path, include: Sequence[str]):
@@ -636,8 +711,10 @@ assert set(_LOADERS) == set(CORPUS_CATEGORY), (set(_LOADERS) ^ set(CORPUS_CATEGO
 def load_corpus(name: str, split: str, exclusions: Any = None, **params: Any) -> List[QARecord]:
     """Resolve a registry name + split to a list of normalized QARecord.
 
-    ``params`` are the corpus' entry of ``training.corpus_params`` (today
-    only ``aya_ar`` takes any: ``include_datasets``). ``exclusions`` is the
+    ``params`` are the corpus' entry of ``training.corpus_params``: ``aya_ar``
+    takes ``include_datasets``, and the three free-form corpora take
+    ``teacher_answers`` (a JSONL of teacher answers by record id — the
+    distillation overlay, ``_apply_teacher_answers``). ``exclusions`` is the
     committed contamination list (``data.contamination.Exclusions``): its
     ids are dropped from the ``train`` / ``dev`` splits, never from an
     official evaluation split.
@@ -648,6 +725,7 @@ def load_corpus(name: str, split: str, exclusions: Any = None, **params: Any) ->
         raise KeyError(
             f"unknown corpus name {name!r}; known names: {sorted(_LOADERS)}"
         ) from None
+    _TEACHER_OVERLAY_LOG.pop((name, split), None)
     records = loader(split, **params)
     if exclusions is not None:
         records = exclusions.apply(name, split, records)

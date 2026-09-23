@@ -54,6 +54,7 @@ from .finetune_corpora import (
     _QATokenizedDataset,
     filter_latin_records,
     load_corpus,
+    teacher_overlay_info,
     tokenize_record,
 )
 
@@ -349,12 +350,17 @@ def compose_mixture(
     pool_sizes_before_filter: Optional[Mapping[str, int]] = None,
     clean_latin_rows: bool = False,
     attach_category: bool = False,
+    teacher_overlays: Optional[Mapping[str, Mapping[str, Any]]] = None,
 ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
     """Draw the phase's training set from per-corpus record pools.
 
     ``pools`` maps each of ``datasets`` to its (already Latin-filtered, if
     requested) records. Returns ``(encodings, manifest)``; the encodings are
     shuffled with ``mixture.seed``.
+
+    ``teacher_overlays`` (``teacher_overlays_for``) adds, per corpus whose pool
+    carries teacher answers, a ``teacher_answers`` block ``{path, sha256, matched,
+    dropped_no_answer}`` next to ``revision``.
 
     ``attach_category`` adds a ``"_category"`` key to every encoding — used by
     the early-stop eval mixture, which scores each category separately. The
@@ -390,6 +396,7 @@ def compose_mixture(
             "planned": plan["allocation"][name],
             **{k: stats[k] for k in ("drawn", "dropped_truncation", "dropped_cut_answer", "kept", "repeated", "loss_tokens", "passes")},
             "revision": PINNED_REVISIONS.get(name),
+            **({"teacher_answers": dict(teacher_overlays[name])} if teacher_overlays and name in teacher_overlays else {}),
             "ids": stats["ids"],
         }
         logger.info(
@@ -485,6 +492,17 @@ def load_mixture_pools(
     return pools, before
 
 
+def teacher_overlays_for(datasets: Sequence[str], split: str = "train") -> Dict[str, Dict[str, Any]]:
+    """The teacher-answer overlay of each corpus' last load (``load_mixture_pools``):
+    ``{corpus: {path, sha256, matched, dropped_no_answer}}``, corpora without one left out."""
+    out: Dict[str, Dict[str, Any]] = {}
+    for name in datasets:
+        info = teacher_overlay_info(name, split)
+        if info is not None:
+            out[name] = {k: info[k] for k in ("path", "sha256", "matched", "dropped_no_answer")}
+    return out
+
+
 def build_mixture_dataloader(
     mixture: MixtureConfig,
     datasets: Sequence[str],
@@ -502,6 +520,7 @@ def build_mixture_dataloader(
     encodings, manifest = compose_mixture(
         mixture, datasets, pools, tokenizer, max_length, loss_target,
         batch_size=batch_size, pool_sizes_before_filter=before, clean_latin_rows=clean_latin_rows,
+        teacher_overlays=teacher_overlays_for(datasets, "train"),
     )
     collator = get_collator(
         tokenizer.embedding_type,

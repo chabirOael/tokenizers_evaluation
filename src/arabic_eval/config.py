@@ -722,6 +722,22 @@ class TrainingConfig(BaseModel):
     def _corpus_params_are_qa_corpora(cls, v):
         if "pretraining_mix" in v:
             raise ValueError("training.corpus_params: 'pretraining_mix' is configured under training.pretraining_mix")
+        # ``teacher_answers`` (the distillation overlay, finetune_corpora._apply_teacher_answers)
+        # replaces reference answers with a teacher's — only free-form answers are written by one.
+        for name, params in v.items():
+            path = (params or {}).get("teacher_answers")
+            if "teacher_answers" not in (params or {}):
+                continue
+            if CORPUS_CATEGORY.get(name) != "free_form":
+                raise ValueError(
+                    f"training.corpus_params.{name}.teacher_answers: the teacher-answer overlay applies to "
+                    f"free-form corpora only ({sorted(n for n, c in CORPUS_CATEGORY.items() if c == 'free_form')}); "
+                    f"{name} is {CORPUS_CATEGORY.get(name)!r}")
+            if path is not None:
+                p = Path(path)
+                if not (p.exists() or (Path(__file__).resolve().parents[2] / p).exists()):
+                    raise ValueError(f"training.corpus_params.{name}.teacher_answers: {path} does not exist "
+                                     f"(scripts/distill/filter_teacher_answers.py writes it)")
         return v
 
     @model_validator(mode="after")

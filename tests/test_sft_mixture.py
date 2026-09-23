@@ -644,3 +644,64 @@ class TestEvalMixture:
                                batch_size=4, attach_category=True)
         assert [e["input_ids"] for e in a] == [e["input_ids"] for e in b]
         assert [e["input_ids"] for e in a] != [e["input_ids"] for e in c]
+
+
+# --------------------------------------------------------------------------
+# Teacher-answer overlay provenance (distillation, 2026-09-23)
+# --------------------------------------------------------------------------
+
+class TestTeacherOverlayManifest:
+    """``training.corpus_params.<free-form corpus>.teacher_answers`` shows up in the
+    training mixture manifest and — with ``eval_mixture`` — in the early-stop one."""
+
+    N = 200
+
+    def _setup(self, tmp_path, monkeypatch):
+        rows = [{"index": i, "instruction": f"اكتب جملة رقم {i}", "output": f"مرجع قصير {i}"} for i in range(self.N)]
+
+        class _DS(list):
+            pass
+        monkeypatch.setattr("datasets.load_dataset", lambda *a, **k: _DS(rows))
+        train = load_corpus("cidar", "train")
+        dev = load_corpus("cidar", "dev")
+        answered = [r for r in train if int(r.id.split("-")[1]) % 2 == 0] + dev
+        path = tmp_path / "teacher_answers_v1.jsonl"
+        with open(path, "w", encoding="utf-8") as f:
+            for r in answered:
+                split = "dev" if fc.is_dev_record("cidar", r.id) else "train"
+                f.write(json.dumps({"id": r.id, "corpus": "cidar", "split": split, "answer": f"جواب المعلم {r.id}"},
+                                   ensure_ascii=False) + "\n")
+        return train, dev, path
+
+    def test_training_manifest_carries_the_overlay(self, tmp_path, monkeypatch):
+        train, _dev, path = self._setup(tmp_path, monkeypatch)
+        n_matched = sum(1 for r in train if int(r.id.split("-")[1]) % 2 == 0)
+        loader, manifest = build_mixture_dataloader(
+            MixtureConfig(total_examples=40, shares={"free_form": 1.0}), ["cidar"], _WordTok(), batch_size=4,
+            max_length=128, loss_target="answer_only", corpus_params={"cidar": {"teacher_answers": str(path)}})
+        block = manifest["datasets"]["cidar"]["teacher_answers"]
+        assert block["path"] == str(path) and len(block["sha256"]) == 64
+        assert block["matched"] == n_matched and block["dropped_no_answer"] == len(train) - n_matched
+        assert manifest["datasets"]["cidar"]["available"] == n_matched
+        assert all(int(i.split("-")[1]) % 2 == 0 for i in manifest["datasets"]["cidar"]["ids"])
+        assert "teacher_answers" in manifest_summary(manifest)["datasets"]["cidar"]
+        # without the overlay the block is absent
+        _loader, plain = build_mixture_dataloader(
+            MixtureConfig(total_examples=40, shares={"free_form": 1.0}), ["cidar"], _WordTok(), batch_size=4,
+            max_length=128, loss_target="answer_only")
+        assert "teacher_answers" not in plain["datasets"]["cidar"]
+
+    def test_eval_mixture_manifest_carries_it_too(self, tmp_path, monkeypatch):
+        from arabic_eval.pipeline.experiment import _phase_eval_mixture_loaders
+        _train, dev, path = self._setup(tmp_path, monkeypatch)
+        assert len(dev) >= 4
+        phase = PhaseConfig(
+            enabled=True, datasets=["cidar"], trainable_parameters=["*"], learning_rate=2e-5, batch_size=2,
+            max_length=128, loss_target="answer_only",
+            mixture={"total_examples": 20, "shares": {"free_form": 1.0}},
+            early_stopping={"enabled": True, "eval_splits": None, "eval_mixture": {"total_examples": 4, "seed": 42}})
+        loaders, manifest = _phase_eval_mixture_loaders(
+            phase, _WordTok(), corpus_params={"cidar": {"teacher_answers": str(path)}})
+        block = manifest["datasets"]["cidar"]["teacher_answers"]
+        assert manifest["split"] == "dev" and block["matched"] == len(dev) and block["dropped_no_answer"] == 0
+        assert loaders and set(loaders) == {"free_form"}
