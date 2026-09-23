@@ -1,4 +1,4 @@
-# Qwen3-4B-Base: native tokenizer vs AraRooPat — campaign record (2026-09-18 → 2026-09-22)
+# Qwen3-4B-Base: native tokenizer vs AraRooPat — campaign record (2026-09-18 → 2026-09-23)
 
 Working notes for the comprehensive report. Every number below was measured on this machine (H100, `Qwen/Qwen3-4B-Base`); the artifact that holds it is named. Free-form numbers are comparable only across cells scored under the same decoding rules — the rule set is stated per table.
 
@@ -8,7 +8,7 @@ Working notes for the comprehensive report. Every number below was measured on t
 - **Arms.** A = native Qwen3 tokenizer (vocab 151 936, no training or Phase 3 only); B = AraRooPat (from-scratch vocab, Phase 1 + 2 on the pretraining mix, Phase 3). From 2026-09-22: C = from-scratch BPE-16K, the fair comparator.
 - **Phase 3.** Mixture of 30 000 records at 40 % extractive (TyDiQA-AR + ARCD) / 30 % MCQ (synthetic Arabic-SQuAD) / 30 % free-form (CIDAR, Bactrian-X ar, Aya ar); in loss tokens the free-form share is 80–87 %. Early stop on the extractive `dev` slice until 2026-09-22; since then (§3.6) on a 1 000-record `dev` mixture at the training ratio, scored per token.
 - **Free-form eval.** 250 held-out CIDAR instructions (E5 near-duplicate gate 0.93), pure greedy decoding, stop at EOS / template marker / text-level loop, character budget per tokenizer. Metrics: chrF, in-house BERTScore, loop / cap / EOS rates, and a 1–5 judge (`google/gemma-4-31b-it` under vLLM, reference-guided rubric, paired bootstrap against a baseline cell). Held-out loss diagnostic (`scripts/diag_heldout_loss.py`): raw-text LM loss on 150 held-out FineWeb-2 documents (`rawtext_heldout_v1.jsonl`; until 2026-09-22 the last 120 documents of each cell's own pool — not held out, see §3.6) and answer NLL / P(EOS) on the 250 references; answer NLL per character is Σ NLL ÷ the references' 72 705 characters — since 2026-09-23 the script emits it itself (`heldout_answers.nll_per_answer_char`, Σ NLL ÷ the characters *as encoded*: 72 636 for AraRooPat, whose normalization drops 70 zero-width format characters and NFKC-expands one, 72 705 for native and BPE; `nll_per_answer_char_raw_chars` divides by 72 705 for every tokenizer), and `scripts/diag_backfill_per_char.py` added both fields to the 19 earlier JSONs (§3.7).
-- **Experiment folder.** `outputs/experiments/qwen_native_vs_araroopat/` (cells listed in §9); superseded cells under `_superseded/`.
+- **Experiment folder.** `outputs/experiments/qwen_native_vs_araroopat/` (cells listed in §9); superseded cells under `_superseded/`. The decoding-ablation cells of §3.7 (eval-only re-runs of existing checkpoints under a repetition penalty) live in `outputs/experiments/qwen_decoding_ablation/`.
 
 ## 1. Timeline
 
@@ -28,6 +28,8 @@ Working notes for the comprehensive report. Every number below was measured on t
 | 09-22 | decode canonicalization, `surface_avg` init, 131 M-token v3, BPE-16K comparator | v3 judge 2.00 (7/8 thresholds), BPE-16K 1.99 — a tie |
 | 09-22 | held-out raw-text set for the loss diagnostic | the old "held-out" loss was each arm's own training pool; LM gap to native 0.13 → 0.03 nats/char |
 | 09-22 | free-form dev slices + token-weighted mixture early stop; Phase 3 re-run of both arms | AraRooPat 5 600 → 24 000 examples, judge 2.00 → **2.15** (Δ +0.15, CI excludes 0); BPE unchanged (+0.004) — the control |
+| 09-23 | the diagnostic emits answer NLL per character; decoding ablation (repetition penalty 1.2 on four checkpoints) | loops 0–1.2 % in every cell, judge not up (AraRooPat −0.30, native base −0.29, CIs below 0); AraRooPat's loop prompts hide no good answer and the penalty halves its article tokens |
+| 09-23 | AraRooPat v4: Phase 3 at 45 000 × 25/15/60, max_length 1 024 | answer NLL 0.788 → **0.766** (= native SFT), judge 2.15 → 2.18 (Δ +0.03, CI spans 0), loops 21.2 → 23.2 %; gate failed, P4 not run |
 
 ## 2. The native arm
 
@@ -320,6 +322,252 @@ numbers; the acceptance verdicts do not change. Open: the diagnostic should emit
 (see *Loops*). The five commits of this stage carry the `Claude Fable 5.1` co-author trailer because the brief
 prescribed it; the code was written by an Opus 5 session.
 
+### 3.7 Decoding ablation and AraRooPat v4 (2026-09-23)
+
+**The hypothesis.** The AraRooPat model has seen too few and too short free-form answers. Two measured facts behind
+it. (1) Exposure was the lever of §3.6: 5 600 → 24 000 mixture examples moved the judge 2.00 → 2.15 and loops
+31.2 → 21.2 %, but 30 000 records at 40/30/30 hold only 9 000 *distinct* free-form records (3 000 per corpus under
+`within_category: equal`) and the dev loss plateaued on one pass over them. The free-form pools after dev slices and
+exclusions are cidar 9 227, bactrian_x_ar 63 636, aya_ar 18 738. (2) At `max_length: 512` the mixture drops
+AraRooPat's long answers: in ffstop's manifest 938 of 10 514 free-form draws (8.9 %) were dropped because 512 tokens
+cut the answer, plus 576 whose prompt left no room for any answer; native SFT dropped 408 of 9 685 (4.2 %) + 277, BPE
+ffstop 268 of 9 446 (2.8 %) + 178. (The brief quoted 8.3 % vs 2.4 %; the manifest numbers above are the ones this
+record uses.) Both are Phase 3 data facts, so v4 resumes from v3's Phase 2 checkpoint and changes only Phase 3.
+Before it, the decoding ablation (P1) and the answer-NLL field (P0).
+
+**P0 — the diagnostic states answer NLL per character itself.** `scripts/diag_heldout_loss.py` now writes, in
+`heldout_answers`, `answer_nll_total` (Σ NLL over the answer tokens, EOS included), `reference_chars` (Σ `len` of
+the scored references *as encoded* — after the tokenizer's own normalization: AraRooPat's NFKC + format-character
+drop gives 72 636, native's NFC and BPE's no-normalizer give 72 705), `reference_chars_raw` (72 705),
+`nll_per_answer_char` = total ÷ as-encoded chars, and `nll_per_answer_char_raw_chars` = total ÷ raw chars; the
+printed table shows both. `scripts/diag_backfill_per_char.py` (no GPU, idempotent) rebuilt the total of the 19
+earlier `diag_heldout_*.json` files of the experiment folder from the recorded per-token NLL (4 decimals) × answer
+tokens and added the fields; a second pass printed `=` for all 19. Over the raw 72 705 characters the backfill
+reproduces §3.6 *Verification* exactly — AraRooPat v3 0.8141, ffstop 0.7873, BPE v3 0.8466, BPE ffstop 0.8450,
+native base 0.8066, native SFT 0.7662, v2 1.3056. Over the as-encoded count AraRooPat's values are 0.001 higher (v3
+0.8149, ffstop 0.7880, v2 1.3068), because 70 zero-width characters it never models leave the denominator; native
+and BPE are unchanged. The rankings do not move. From here on the tables carry the as-encoded field, and the v4
+acceptance line compares like with like (ffstop 0.7880).
+
+**P1 — decoding ablation on the existing checkpoints.** `freeform_cidar` declares two knobs,
+`repetition_penalty` (default 1.0) and `no_repeat_ngram_size` (default 0), in a `decoding` group of its
+`param_spec()`; both generate calls receive them and the dump metadata records them. They are token-level and so
+granularity-dependent — measurement knobs, not a comparison rule. The penalty is HF's formula (CTRL: a logit of a
+token already in the context is divided by the penalty when positive, multiplied when negative; the prompt counts, as
+in HF) applied over each row's context **minus its left padding**: HF's own `RepetitionPenaltyLogitsProcessor`
+penalises every id in `input_ids`, and the native Qwen wrapper pads with the EOS id (151 643), so every padded row of
+a batch would have had its EOS logit penalised and the output would depend on the batch composition (unit test:
+HF's processor changes the EOS logit of a padded row, ours does not; on the tiny test model neither flipped an
+argmax). **Reproduction check:** the AraRooPat ffstop checkpoint re-evaluated under the defaults through the new code
+(`qwen_decoding_ablation/_repro/araroopat_3phase_v3_ffstop_greedy`) equals the twin cell in all 250 rows
+(`generation_raw`, `generation`, stop reason, token count, prompt) — the defaults are byte-identical, and
+`training/sft` is the model the twin scored in-run (restore-best precedes the save), so pairing the ablation cells
+with their twins is valid. Four cells at `repetition_penalty: 1.2` (the value that took the untrained base from 44 %
+to 8 % loops under the v1 template on 2026-09-18), everything else the reference rule set, output
+`outputs/experiments/qwen_decoding_ablation/`, judge `gemma4_31b`:
+
+| cell | greedy: loop / EOS / cap | mean chars | chrF | judge ± SE | off-topic | rp 1.2: loop / EOS / cap | mean chars | chrF | judge ± SE | off-topic | Δ rp − greedy [95 % CI] | win / tie / loss |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| AraRooPat ffstop | 21.2 / 77.6 / 1.2 % | 190 | 17.70 | 2.15 ± 0.09 | 18.0 % | 0.8 / 99.2 / 0.0 % | 157 | 14.26 | 1.85 ± 0.08 | 42.0 % | **−0.30 [−0.46, −0.16]** | 15 / 54 / 31 % |
+| BPE ffstop | 19.6 / 75.6 / 4.8 % | 211 | 16.60 | 2.00 ± 0.08 | 13.2 % | 0.0 / 100.0 / 0.0 % | 166 | 16.47 | 1.97 ± 0.08 | 38.4 % | −0.02 [−0.17, +0.12] | 22 / 55 / 24 % |
+| native SFT | 12.4 / 87.2 / 0.4 % | 207 | 18.59 | 2.28 ± 0.09 | 14.0 % | 0.8 / 99.2 / 0.0 % | 232 | 18.93 | 2.21 ± 0.09 | 26.8 % | −0.07 [−0.23, +0.08] | 21 / 53 / 26 % |
+| native base | 6.8 / 90.8 / 2.4 % | 511 | 22.94 | 2.42 ± 0.09 | 12.8 % | 1.2 / 96.8 / 0.4 % | 562 | 21.94 | 2.13 ± 0.09 | 28.4 % | **−0.29 [−0.43, −0.14]** | 13 / 57 / 30 % |
+
+BERTScore-F1 greedy → rp 1.2: 0.858 → 0.838, 0.847 → 0.849, 0.859 → 0.852, 0.853 → 0.848. The judge's repetition
+flag falls to 0.4–2.4 % in every cell; the sub-scores fall with the mean (AraRooPat correctness −0.38, instruction
+following −0.42; native base fluency −0.43).
+
+*Where the change lands.* Split by whether the greedy row was loop-stopped: AraRooPat's 53 loop rows go 1.62 →
+1.72 (+0.09) while its 197 other rows go 2.29 → 1.88 (−0.41); BPE's 49 loop rows 1.69 → 2.12 (+0.43), other rows
+−0.13; native SFT's 31 loop rows 2.16 → 2.42 (+0.26), other rows −0.12; the base's 17 loop rows −0.24, other rows
+−0.29. On AraRooPat's own 53 loop prompts the other cells score at their usual level (BPE 2.00 greedy / 2.08 rp,
+native SFT 2.25 / 2.32, native base 2.83 / 2.30), so those prompts are not especially hard — AraRooPat scores 1.62
+there, and 1.72 once the loop is broken.
+
+*The granularity confound, measured.* The share of generated words carrying the article (ال / وال / بال / لل) falls
+0.388 → 0.182 for AraRooPat under the penalty (و-prefixed words 0.127 → 0.059) and stays flat for BPE (0.336 →
+0.317), native SFT (0.314 → 0.299) and native base (0.313 → 0.328). One AraRooPat word is `[CLITICP_ال] [ROOT]
+[PAT]`-shaped, so after the first definite noun every later article is a "repeated token"; the decoded nouns lose it
+(`… 2 - الإرسال … 3 - لغة هي …`). That is most of AraRooPat's −0.41 on its non-loop rows.
+
+**Decoding or model?** Both, but the part that matters is the model. The loop *rate* gap is a greedy attractor
+every cell shares: under the penalty it is gone (0.8 % against 0.0 / 0.8 / 1.2 %). But removing it does not recover
+answers for AraRooPat — the rows where it looped hold no good answer behind the loop (1.72 once broken, against 2.08 /
+2.32 for BPE / native SFT on the same prompts), and the penalty itself damages AraRooPat's grammar. For BPE and native
+SFT the loops did hide recoverable answers (+0.43 / +0.26 on those rows) but the penalty costs as much elsewhere, so
+their means do not move. A repetition penalty is therefore neither a fix nor a fair comparison rule; the greedy rule
+stays, and the lever for AraRooPat's loops is the model — P2 is the right bet. Cost: five eval-only runs 19.6 min
+(greedy check 5.4, AraRooPat 2.8, BPE 1.7, native SFT 3.4, native base 6.4), one judge pass 5.9 min incl. cold start.
+
+**P2 — AraRooPat v4: Phase 3 on more and longer free-form data.** `configs/experiments/qwen_araroopat_3phase_v4.yaml`
+→ cell `araroopat_3phase_v4`: v3's Phase 2 checkpoint (`…/araroopat_3phase_v3/training/warmup`), phases 1/2 off, no
+`embedding_init` (the log shows `Vocab size unchanged (17184), skipping resize`), tokenizer
+`araroopat_maxpat40k_v3` loaded, the free-form eval of ffstop. Only the Phase 3 block differs from ffstop:
+
+| | ffstop | v4 |
+|---|---|---|
+| mixture | 30 000 at 40/30/30 | **45 000 at 25/15/60** (11 250 / 6 750 / 27 000; 9 000 per free-form corpus) |
+| max_length / batch × accumulation | 512 / 4 × 4 | **1 024 / 2 × 8** (16 sequences per update in both) |
+| steps (micro) / updates / warm-up | 7 500 / 1 875 / 400 = 100 updates | 22 500 / 2 813 / 800 = 100 updates |
+| early stop | eval_mixture 1 000, every 200, min 500 | eval_mixture 1 000, **every 500, min 1 500** |
+| unchanged | LR 2e-5 cosine, `within_category: equal`, `upsample`, `drop_truncated_answers`, seed 42, patience 5, min_delta 5e-4, restore best | |
+
+*Dry run* (`scripts/plan_sft_mixture.py --config <v4> --tokenizer-path outputs/tokenizers/araroopat_maxpat40k_v3`,
+6 min 38 s on CPU; the run's own mixture log is identical line for line). Drops are *truncation* (the prompt left no
+room for the answer) / *cut answer* (512 or 1 024 tokens cut the answer; `drop_truncated_answers` skips it and tops
+up); the 512 columns are ffstop's manifest, for its smaller quotas:
+
+| corpus | available | planned | drawn | drops at 1 024 | drops at 512 (ffstop) | repeated (1 024 / 512) |
+|---|---|---|---|---|---|---|
+| tydiqa_arabic | 13 610 | 10 700 | 10 920 | 205 / 15 | 1 998 / 230 | 0 / 60 |
+| arcd | 550 | 550 | 560 | 10 / 0 | 135 / 21 | 9 / 118 |
+| arabic_squad_mcq | 45 936 | 6 750 | 6 789 | 38 / 1 | 3 982 / 109 | 0 / 0 |
+| cidar | 9 227 | 9 000 | 9 033 | 0 / 33 | 1 / 138 | 0 / 0 |
+| bactrian_x_ar | 63 636 | 9 000 | 9 151 | 78 / 73 | 112 / 454 | 0 / 0 |
+| aya_ar | 18 738 | 9 000 | 9 637 | 325 / 312 | 463 / 346 | 0 / 0 |
+
+Free-form drop rates: 1.45 % truncation + 1.50 % cut answer of 27 821 draws at 1 024, against 5.48 % + 8.92 % of
+10 514 at 512. **cidar did not run dry** (9 000 kept of 9 033 drawn), so nothing spilled to Bactrian-X / Aya — the
+brief's expectation of a few hundred did not materialise; ARCD repeated 9 records under `upsample`. Loss tokens
+4 503 629 (ffstop 1 431 883): extractive 5.1 %, MCQ 0.6 %, **free-form 94.3 %** (ffstop 17.1 / 2.5 / 80.4 %); per
+answer cidar 145.8, Bactrian-X 196.3, Aya 129.7 tokens. The eval mixture is 250 / 150 / 600 records = 5 554 / 600 /
+93 844 answer tokens (5.6 / 0.6 / 93.8 %). *Memory smoke* (`total_examples: 400`, 200 micro-steps, no stop, no eval,
+no checkpoint; scratchpad config, output `outputs/experiments/_smoke/araroopat_v4_smoke/`): peak **46.5 GB** of 80 GB
+(`nvidia-smi`, 0.5 s sampling), 0.165 s per micro-step — batch 2 × 1 024 fits, the batch-1 fallback was not needed.
+
+*Run* `scripts/run_experiment.py --config configs/experiments/qwen_araroopat_3phase_v4.yaml`, 09:11:02 → 10:32:48
+UTC (1 h 22 min): corpus load + intrinsic metrics 6 min (CPU), mixture build 4.5 min, **Phase 3 62.6 min** (3 754.9 s = 48.9 min
+training + 38 eval passes × 21.6 s = 13.7 min), free-form eval 8.4 min (ffstop ≈ 5 min: longer raw generations, see
+P3). Training cost 73.3 s per 1 000 examples at 1 024 tokens against 43.4 s at 512 (93.9 against 57.6 s with the
+evals). **Stop:** patience ran out at micro-step 20 000; best 1.0979 at **17 500 → 35 000 of the 45 000 examples**
+(≈ 21 000 free-form records, ≈ 2.9 × ffstop's ≈ 7 200). Stop curve (mixture metric per category; this eval set is
+25/15/60 at 1 024 tokens and is not comparable with ffstop's 0.9958):
+
+| micro-step | total | extractive | mcq | free_form |
+|---|---|---|---|---|
+| 1 500 | 1.1525 | 0.1379 | 0.1444 | 1.2190 |
+| 3 000 | 1.1420 | 0.1527 | 0.1128 | 1.2072 |
+| 6 000 | 1.1242 | 0.1338 | 0.0985 | 1.1894 |
+| 10 000 | 1.1069 | 0.1256 | 0.0905 | 1.1715 |
+| 14 000 | 1.1001 | 0.1241 | 0.0807 | 1.1644 |
+| 16 000 | 1.0985 | 0.1201 | 0.0802 | 1.1629 |
+| **17 500** | **1.0979** | 0.1190 | 0.0798 | 1.1623 |
+| 20 000 | 1.0977 | 0.1189 | 0.0799 | 1.1621 |
+
+The free-form loss fell monotonically and flattened from ~14 000 (the last 6 000 micro-steps gained 0.0023); the
+improvements after 17 500 were below `min_delta`.
+
+*Measured* (`scripts/diag_heldout_loss.py --cell …/araroopat_3phase_v4`, 42 s — the first live run of P0's fields;
+judge `gemma4_31b`, 250 verdicts in 27 s, 4.5 min with the cold start; rule set of the reference cells):
+
+| | **AraRooPat v4** | AraRooPat ffstop | BPE ffstop | native base | native SFT |
+|---|---|---|---|---|---|
+| mixture examples restored | **35 000** of 45 000 | 24 000 of 30 000 | 26 400 of 30 000 | — | — |
+| judge ± SE | **2.18 ± 0.09** | 2.15 ± 0.09 | 2.00 ± 0.08 | 2.42 ± 0.09 | 2.28 ± 0.09 |
+| hist 1/2/3/4/5 | 108/66/31/12/33 | 112/67/26/11/34 | 117/71/30/10/22 | 92/69/29/13/47 | 105/60/31/18/36 |
+| judge off-topic / repetition | 16.8 % / 11.6 % | 18.0 % / 16.8 % | 13.2 % / 17.6 % | 12.8 % / 9.6 % | 14.0 % / 15.6 % |
+| chrF / BERTScore-F1 | 18.61 / 0.86 | 17.70 / 0.86 | 16.60 / 0.85 | 22.94 / 0.85 | 18.59 / 0.86 |
+| loop stop / EOS / cap | **23.2** / 76.4 / 0.4 % | 21.2 / 77.6 / 1.2 % | 19.6 / 75.6 / 4.8 % | 6.8 / 90.8 / 2.4 % | 12.4 / 87.2 / 0.4 % |
+| mean chars / ≤ 40-char share | 198 / 19.6 % | 190 / 23.2 % | 211 / 20.8 % | 511 / 4.0 % | 207 / 18.8 % |
+| raw-text loss (nats/char, held-out set) | 0.875 | 0.875 | 0.859 | 0.826 | 0.838 |
+| answer NLL (nats/char, `nll_per_answer_char`, as encoded) | **0.766** | 0.788 | 0.845 | 0.807 | 0.766 |
+| P(EOS) / EOS rank-1 | 0.62 / 0.83 | 0.65 / 0.87 | 0.62 / 0.86 | 0.42 / 0.76 | 0.64 / 0.91 |
+
+Losses are given at three decimals because two would hide the 0.022 answer-NLL gain (v4 0.7664, native SFT
+0.7662, ffstop 0.7880).
+
+Paired bootstraps (10 000 resamples, same 250 prompts):
+
+| pair | Δ | 95 % CI | win / tie / loss |
+|---|---|---|---|
+| AraRooPat v4 − AraRooPat ffstop | +0.03 | [−0.09, +0.16] | 18 / 65 / 17 % |
+| AraRooPat v4 − BPE ffstop | **+0.19** | **[+0.03, +0.35]** | 33 / 46 / 21 % |
+| AraRooPat v4 − native SFT | −0.10 | [−0.25, +0.06] | 21 / 55 / 24 % |
+| AraRooPat v4 − native base | −0.23 | [−0.41, −0.05] | 19 / 49 / 32 % |
+
+Sub-scores vs ffstop: correctness +0.02 [−0.11, +0.16], fluency +0.02 [−0.11, +0.16], **instruction following
++0.18 [+0.03, +0.34]**. The +0.19 over BPE is the first AraRooPat-vs-BPE interval above zero, but it is **not a
+tokenizer finding**: AraRooPat had the v4 Phase 3 and BPE did not (P4 below).
+
+**Acceptance (P2.4).** Loop stop ≤ 12 % and in any case < 21.2 % — **23.2 % ✗** (both); judge ≥ 2.152 with the
+paired CI vs ffstop not entirely below 0 — **2.18, [−0.09, +0.16] ✓**; answer NLL per character ≤ ffstop's
+(0.788 as encoded; 0.787 over the raw 72 705) — **0.766 (raw 0.766) ✓**; raw-text loss within +0.03 of the Phase 2
+checkpoint's 0.8595 — **0.8747, +0.015 ✓**; mean answer 150–500 chars — **198 ✓**; EOS ≥ 77.6 % — **76.4 % ✗**. Four
+of six. **Gate for P4** (paired CI vs ffstop above 0, or loop stop ≤ 15 %): **not passed** — the CI spans zero and
+loops rose. P4 was not run; its two configs are validated and committed.
+
+**What the run says about the hypothesis.** Three times the distinct free-form records, the long-answer tail kept,
+and 35 000 examples restored moved the teacher-forced numbers — answer NLL 0.788 → 0.766 nats/char, *level with
+native SFT* (0.766) — and did not move generation: judge +0.03 (CI spans 0), loops 21.2 → 23.2 %, EOS 77.6 → 76.4 %,
+P(EOS) at the reference end 0.65 → 0.62. So Phase 3 data was not the lever for what the judge scores. The gap to the
+native arms is no longer in how likely the model finds a good answer; at equal answer NLL per character native SFT
+loops on 12.4 % of prompts and AraRooPat on 23.2 %. It sits in free-running generation — the regime P1 probed, where
+AraRooPat's loop prompts hold no recoverable answer behind the loop and a token-level penalty damages its clitics.
+Per the brief the next step is decided from P1 or distillation; P1 rules out a token-level penalty as a fix, so the
+candidates are sequence-level: distillation from the native model (the campaign's planned step 5), or a training-time
+repetition objective of the DITTO kind (Xu et al. 2022, §7) — and, as a cheap measurement before either, a
+decoded-text (word-level) no-repeat constraint that cannot hit clitic tokens.
+
+**P3 — analysis.** *Loops by period bucket* (1 / 2–3 / 4–10 / > 10 words, all by the periodic rule, no char-rule
+stops): v4 **11 / 15 / 16 / 16** (58), ffstop 5 / 17 / 21 / 10 (53), native SFT 4 / 8 / 13 / 6 (31), BPE ffstop
+6 / 11 / 21 / 11 (49), native base 0 / 4 / 6 / 7 (17). v4 has more period-1 runaways and more long-period (> 10
+words) loops, fewer 2–10. Loop rows among the judge-score-1 rows: v4 29 of 108 (27 %), ffstop 31 of 112 (28 %),
+native SFT 13 of 105 (12 %). v4's loop rows run much further before the stop fires — 661 raw characters on average
+against ffstop's 223 (234 kept against 140) — which is why its free-form eval took 8.4 min: 287 generated tokens per
+prompt against 182, at a similar 145 vs 160 tokens/s.
+
+*Loop rate by reference-length tercile* (84 / 83 / 83 prompts; reference median 80 / 219 / 485 chars):
+
+| cell | short | medium | long |
+|---|---|---|---|
+| AraRooPat v4 | 14.3 % | 22.9 % | **32.5 %** |
+| AraRooPat ffstop | 16.7 % | 19.3 % | 27.7 % |
+| BPE ffstop | 10.7 % | 18.1 % | 30.1 % |
+| native SFT | 7.1 % | 13.3 % | 16.9 % |
+| native base | 4.8 % | 4.8 % | 10.8 % |
+
+The long-answer hypothesis predicted v4's gain in the top tercile; the top tercile is where v4 got *worse* (+4.8
+points), the short tercile improved (−2.4). In every cell the loop rate rises with the reference length.
+
+*Answer length by tercile* (mean / median generated chars; ≤ 40-char share):
+
+| cell | short | medium | long | ≤ 40 overall |
+|---|---|---|---|---|
+| AraRooPat v4 | 126 / 62 (31.0 %) | 210 / 111 (16.9 %) | 258 / 204 (10.8 %) | 19.6 % |
+| AraRooPat ffstop | 100 / 57 (35.7 %) | 182 / 107 (22.9 %) | 289 / 222 (10.8 %) | 23.2 % |
+| native base | 322 / 241 (8.3 %) | 574 / 346 (1.2 %) | 640 / 439 (2.4 %) | 4.0 % |
+
+Judge by tercile, v4 / ffstop: short 2.18 / 2.20, medium 2.37 / 2.29, long 2.00 / 1.96.
+
+*Examples* (16 rows gained ≥ 2 judge points, 15 lost ≥ 2 — a wash, as the mean says):
+
+| id | instruction | ffstop answer (judge) | v4 answer (judge) |
+|---|---|---|---|
+| cidar-10118 | حدد ما إذا كانت كلمة المكاسب مبتدأ أو لا في الجملة التالية. شهدت المكاسب القانونية. | كلمة المكاسب مبتدأ في الجملة . (1) | لا ، كلمة المكاسب ليست مبتدأ في الجملة السابقة . (5) |
+| cidar-202 | صف نظام الاقتصاد في سوريا حالياً. | الاقتصاد في سوريا هو نظام اقتصادي محلي . (2) | سوريا لديها نظام اقتصادي مختلط ، حيث يتم دمج القطاع العام والقطاع الخاص … (5) |
+| cidar-246 | اشرح ما هي القوة المركزية؟ | … وتواجه الجسم المتحرك في الدائرة … قوة كهرومغناطيسية أو قوة كهرومغناطيسية (2) | القوة المركزية هي القوة التي تعمل على جسم يتحرك في مدار دائري … وهي موجهة نحو المركز (5) |
+| cidar-1152 | اذكر 4 ميزات لورقة بحث علمي. | four numbered features, complete (5) | two features, then a loop stop: «المحتوى الدقيق والدقيق» (2) |
+| cidar-3388 | صف الأزمة الفلسطينية. | a dated factual account (5) | generic statements repeated in two forms: «واحدة من القضايا الأكثر …» (2) |
+| cidar-3491 | أنشئ جملة مثالية تستخدم الفعل "يبتلع". | يبتلع الثعبان الأسماك الصغيرة في المياه . (5) | ابتلع الماء بسرعة للبقاء رطبا . — past tense, not the verb asked for (2) |
+
+*GPU time (2026-09-23).* P1: five eval-only runs 19.6 min (greedy check 5.4, AraRooPat 2.8, BPE 1.7, native SFT
+3.4, native base 6.4) + judge 5.9 min; smoke 1.3 min (+ a 4-second failed start: `sweep.tasks` may not be empty);
+v4 run 1 h 22 min (Phase 3 62.6, free-form eval 8.4, the rest CPU-bound set-up with the model resident); diagnostic
+0.7 min; judge 4.5 min — **≈ 1 h 54 min**. CPU only: mixture dry run 6.6 min, backfill < 1 min, tests ≈ 4 min.
+
+**Artifacts.** `outputs/experiments/qwen_decoding_ablation/{araroopat_3phase_v3_ffstop,bpe_16k_3phase_v3_ffstop,
+native_qwen3_sft,native_qwen3_base}_rp12/` (`all_metrics.json`, `eval_rows/freeform_cidar.parquet`,
+`freeform_judge/gemma4_31b.parquet`), `qwen_decoding_ablation/_repro/araroopat_3phase_v3_ffstop_greedy/` (the
+reproduction check), `qwen_decoding_ablation/comparison_report.txt`; `outputs/experiments/qwen_native_vs_araroopat/
+araroopat_3phase_v4/` (`all_metrics.json` with `training.sft.eval_history`, `data/sft_mixture_manifest.json`,
+`data/sft_eval_mixture_manifest.json`, `diag_heldout_rawtext_v1.json`, `eval_rows/freeform_cidar.parquet`,
+`freeform_judge/gemma4_31b.parquet`, `training/sft/`); the 19 backfilled `diag_heldout_*.json`. Configs:
+`configs/experiments/ablation_decoding/*.yaml` (five), `qwen_araroopat_3phase_v4.yaml`, `qwen_bpe16k_3phase_v4.yaml`,
+`qwen_native_sft_v4.yaml`. Scripts: `scripts/diag_backfill_per_char.py`, `scripts/judge/paired_compare.py` (two
+`--experiment`), `scripts/diag_heldout_loss.py` (P0 fields). Commits: `4efedb3` (the §3.6 verification edits),
+`e10863c` (P0), `ab2e679` (decoding knobs + ablation configs), `a216601` (`paired_compare.py`), `4e702ce` (v4 + P4
+configs), and the commit carrying this section.
+
 ## 4. What the campaign established
 
 1. The native model's loops were partly measurement (the first loop rule) and partly a greedy attractor of the base model; under the corrected rules the untrained base loops on 6.8 % of prompts and the SFT arm on 12.4 %. SFT on the 30 000-record mixture learns the references' register and length but not their content: judge 2.28 vs 2.42, CI including zero.
@@ -327,24 +575,30 @@ prescribed it; the code was written by an Opus 5 session.
 3. At equal adaptation a plain BPE-16K vocabulary ties AraRooPat on the judge and beats it on LM loss (0.86 vs 0.88), loops (20.8 vs 31.2 %) and generation speed (153 vs 111 chars/s), with 1.7× more text seen per token budget; AraRooPat has the lower answer NLL on the held-out references (0.81 vs 0.85 nats/char — the 0.64 first reported for BPE divided by the wrong chars-per-token figure, corrected 2026-09-23, §3.6 *Verification*). **Amended by §3.6:** once both arms train on the free-form-aware stop signal, AraRooPat leads the judge (2.152 vs 1.996, paired Δ +0.156 [+0.000, +0.312]), closes the loop gap (21.2 vs 19.6 %) and widens its answer-NLL lead (0.787 vs 0.845); BPE keeps the LM-loss and speed advantages. The tie was partly an artefact of AraRooPat having trained on a fifth of the mixture. AraRooPat's measurable advantages are decode fidelity to the written word (99.3 % word round trip) and root conservation (0.379 vs 0.048). Both arms sit 0.4 judge points under the untouched native model; that gap is the cost of re-learning any vocabulary in 131 M tokens — and it is **not** explained by language-model quality, which after the §3.6 correction is within 0.03 nats/char of native for both.
 4. Phase 2 loss is flat from its first fifth in both arms; more raw text at this learning rate is not the next lever.
 5. (§3.6) Two measurement faults were corrected. The raw-text "held-out" loss was read from each cell's *own* pool — training text for the adapted arms, and a different document set per arm; on a properly held-out set the LM gap to native is 0.03 nats/char, not 0.13. And the Phase 3 stop signal carried 12 % of the loss tokens: on one arm it wandered upward at step 1 400 and stopped training at a fifth of the mixture. Neither fault changed a ranking; both changed magnitudes enough to change what the next step should be.
+6. (§3.7) Neither a token-level repetition penalty nor more and longer Phase 3 free-form data closes AraRooPat's generation gap. A penalty of 1.2 removes loops in every cell (0–1.2 %) but lowers the judge (AraRooPat −0.30, native base −0.29, both CIs below 0; BPE and native SFT within noise), doubles the off-topic flags and, being token-level, halves AraRooPat's article and و tokens; the prompts on which AraRooPat loops hold no recoverable answer (1.72 once the loop is broken, against 2.08 / 2.32 for BPE / native SFT on the same prompts). v4 — 35 000 examples of a 25/15/60 mixture at 1 024 tokens, three times the distinct free-form records — brought the answer NLL to native SFT's level (0.766 nats/char both) without moving the judge (+0.03, CI spans 0) or the loops (23.2 %, worst in the longest-reference tercile). At equal likelihood of the references native SFT loops on half as many prompts: the gap is in free-running generation, which points to sequence-level remedies (distillation from the native model, a training-time repetition objective), not to Phase 3 data or token-level decoding. In every cell the loop rate rises with the reference length.
 
 ## 5. Open items and next steps (in the order proposed)
 
 1. ~~Free-form dev slice for Phase 3 early stopping~~ — **done, §3.6.** Cells `araroopat_3phase_v3_ffstop` and `bpe_16k_3phase_v3_ffstop`.
 2. **Register `configs/contamination/rawtext_heldout_v1.jsonl` in `heldout_sets.yaml` before the next pool is built**, so Stage A drops its 150 documents by content. It was deliberately left unregistered during this campaign because registering it moves the held-out fingerprint, hence the pool fingerprint and `exclusions.json`, which would have confounded the Phase 3 re-runs.
-3. Loop-aware decoding ablation on the existing checkpoints (eval only) to measure how much of the loop gap is decoding rather than the model. Still open, and now the *only* acceptance threshold both v3 arms miss (21.2 / 19.6 % against 12 %).
-4. Equal-text ablation: AraRooPat at ~227 M tokens (1.73× the token budget) so both arms see the same Arabic.
-5. Distillation from the native model (attention / logit) for both arms.
-6. A pre-flight check of `qa_blend.share` against the tokenizer's packed QA block count (two Phase 1 runs, 62 min, were lost to it).
-7. The probe's step-0 gate is uninformative under tied embeddings; read step-N only, or untie the head.
-8. 13 hamza and 1 ى round-trip mismatches remain (corpus-majority canonicalisations).
-9. The free-form eval mixture costs 12 s per pass (33 % overhead at `eval_every_n_steps: 200`). Acceptable, but `eval_every_n_steps: 400` would halve it if a longer phase needs the time.
-10. `scripts/diag_heldout_loss.py` should emit `nll_per_answer_char` (Σ NLL ÷ Σ reference characters) and `reference_chars` next to `nll_per_answer_token`: two reports in a row derived the per-character figure by dividing by a chars-per-token number and got the BPE ranking wrong (§3.6 *Verification*).
+3. ~~Loop-aware decoding ablation on the existing checkpoints~~ — **done, §3.7 (P1).** A token-level repetition penalty (1.2) removes the loops in every cell but lowers the judge and, for AraRooPat, strips clitic tokens; it is neither a fix nor a comparison rule. The greedy rule stays.
+4. ~~Phase 3 on more and longer free-form data (AraRooPat v4)~~ — **done, §3.7 (P2).** Answer NLL to native SFT's level, judge and loops unchanged; the gate for the replication failed.
+5. **P4 — the v4 Phase 3 block on BPE-16K and native** (`configs/experiments/qwen_bpe16k_3phase_v4.yaml`, `qwen_native_sft_v4.yaml`, validated, Phase 3 block identical field for field): not run, because v4 did not pass the gate. Worth running only if the v4 block becomes the reference Phase 3 — it did lower answer NLL and raise instruction following (+0.18 [+0.03, +0.34] vs ffstop), and the +0.19 [+0.03, +0.35] of v4 over BPE ffstop is not a tokenizer finding until BPE has had the same block.
+6. Distillation from the native model (attention / logit) for both arms — now the first candidate: at equal answer NLL per character AraRooPat v4 loops on 23.2 % of prompts and native SFT on 12.4 %, so the gap is in free-running generation.
+7. A training-time repetition objective of the DITTO kind (Xu et al. 2022) — the second sequence-level candidate; before it, as a cheap measurement, a decoded-text (word-level) no-repeat constraint that cannot hit clitic tokens.
+8. Equal-text ablation: AraRooPat at ~227 M tokens (1.73× the token budget) so both arms see the same Arabic.
+9. A pre-flight check of `qa_blend.share` against the tokenizer's packed QA block count (two Phase 1 runs, 62 min, were lost to it).
+10. The probe's step-0 gate is uninformative under tied embeddings; read step-N only, or untie the head.
+11. 13 hamza and 1 ى round-trip mismatches remain (corpus-majority canonicalisations).
+12. The free-form eval mixture costs 12 s per pass (33 % overhead at `eval_every_n_steps: 200`). Acceptable, but `eval_every_n_steps: 400` would halve it if a longer phase needs the time. At `max_length: 1024` (v4) a pass is 21.6 s (1 000 records at batch 2); every 500 micro-steps that is 22 % of the phase.
+13. ~~`scripts/diag_heldout_loss.py` should emit `nll_per_answer_char` and `reference_chars`~~ — **done, §3.7 (P0)**, with `scripts/diag_backfill_per_char.py` for the older JSONs.
 
-## 6. GPU time (2026-09-22 alone)
+## 6. GPU time (2026-09-22 onwards)
 Four training runs 8 h 52 min (1 h 15 lost attempt + 3 h 17 v3 + 0 h 56 lost attempt + 3 h 25 BPE), probe ~35 min, six diagnostics ~6 min, judge passes ~10 min — ≈ 9 h 43 min. Earlier: v1 ~1 h, v2 ~1.5 h (+ 45 min resume), native runs and re-evals ~2 h.
 
 §3.6 (2026-09-22 evening): AraRooPat ffstop 42 min end to end (Phase 3 26.9 min incl. 33 evals, free-form eval 5 min), BPE ffstop 36 min (Phase 3 25.9 min, 35 evals, eval 7.6 min), ten raw-text diagnostics ~12 min, judge 2 × 250 verdicts ~1 min plus a 7-minute cold start — **≈ 1 h 40 min**. Non-GPU: the held-out build + two verification scans ~13 min, the two mixture dry runs ~35 min (AraRooPat over the CAMeL bridge).
+
+§3.7 (2026-09-23): five eval-only runs 19.6 min, two judge passes 10.4 min (incl. cold starts), memory smoke 1.3 min, AraRooPat v4 1 h 22 min (Phase 3 62.6 min, free-form eval 8.4 min), diagnostic 0.7 min — **≈ 1 h 54 min**. Non-GPU: the v4 mixture dry run 6.6 min, the per-character backfill < 1 min.
 
 ## 7. References
 - Xu, J. et al. (2022). *Learning to Break the Loop: Analyzing and Mitigating Repetitions for Neural Text Generation* (DITTO). NeurIPS.
@@ -367,5 +621,9 @@ Four training runs 8 h 52 min (1 h 15 lost attempt + 3 h 17 v3 + 0 h 56 lost att
 
 §3.6 artifacts: `configs/contamination/rawtext_heldout_v1.jsonl` (+ `.manifest.json`, sha256 `c6522a4f0050702b…`), `<cell>/diag_heldout_rawtext_v1[_warmup][_base].json` (eight checkpoints of the earlier cells, two of the new ones), `<cell>/data/sft_eval_mixture_manifest.json`, `all_metrics.json["training"]["sft"]["eval_history"]`, `scripts/build_rawtext_heldout.py`, `scripts/judge/paired_compare.py`. The pre-2026-09-22 `diag_heldout_loss*.json` files are kept; they record what the old pool-tail rule measured.
 
+§3.7 artifacts: listed under §3.7 *Artifacts*. Commits: `4efedb3` (the §3.6 verification edits), `e10863c` (answer NLL per character + backfill), `ab2e679` (decoding knobs + ablation configs), `a216601` (`paired_compare.py` across two folders), `4e702ce` (v4 + P4 configs), and the documentation commit of §3.7. The 19 backfilled `diag_heldout_*.json` files now carry `answer_nll_total_source: "backfill: …"`; v4's carries `"measured"`.
+
 ## 9. Cells of `outputs/experiments/qwen_native_vs_araroopat/`
-Current: `native_qwen3_base_m2_c2400`, `native_qwen3_sft_m2_c2400`, `araroopat_3phase_v2`, `araroopat_3phase_v3`, `bpe_16k_3phase_v3`, **`araroopat_3phase_v3_ffstop`**, **`bpe_16k_3phase_v3_ffstop`** (§3.6: the same recipe with the free-form-aware early stop; these are the current best arms of each vocabulary). Older rule sets, kept: `native_qwen3` (untrained base, v1 template), `native_qwen3_base`, `native_qwen3_sft`, `araroopat` (v1). Under `_superseded/`: `native_qwen3_base_after_loop_fix`, `native_qwen3_sft_reeval`, `native_qwen3_{base,sft}_m2_c1200`, the two lost v3 attempts.
+Current: `native_qwen3_base_m2_c2400`, `native_qwen3_sft_m2_c2400`, `araroopat_3phase_v2`, `araroopat_3phase_v3`, `bpe_16k_3phase_v3`, **`araroopat_3phase_v3_ffstop`**, **`bpe_16k_3phase_v3_ffstop`** (§3.6: the same recipe with the free-form-aware early stop), **`araroopat_3phase_v4`** (§3.7: Phase 3 at 45 000 × 25/15/60, max_length 1 024 — judge 2.18, the highest AraRooPat cell but not separable from ffstop; the current best arms of each vocabulary are v4 / ffstop for AraRooPat and ffstop for BPE). Older rule sets, kept: `native_qwen3` (untrained base, v1 template), `native_qwen3_base`, `native_qwen3_sft`, `araroopat` (v1). Under `_superseded/`: `native_qwen3_base_after_loop_fix`, `native_qwen3_sft_reeval`, `native_qwen3_{base,sft}_m2_c1200`, the two lost v3 attempts.
+
+In `outputs/experiments/qwen_decoding_ablation/` (§3.7 P1, eval only, repetition penalty 1.2): `araroopat_3phase_v3_ffstop_rp12`, `bpe_16k_3phase_v3_ffstop_rp12`, `native_qwen3_sft_rp12`, `native_qwen3_base_rp12`; `_repro/araroopat_3phase_v3_ffstop_greedy` (the greedy reproduction check, identical to its twin in 250 of 250 rows).
