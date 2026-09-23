@@ -568,6 +568,42 @@ araroopat_3phase_v4/` (`all_metrics.json` with `training.sft.eval_history`, `dat
 `e10863c` (P0), `ab2e679` (decoding knobs + ablation configs), `a216601` (`paired_compare.py`), `4e702ce` (v4 + P4
 configs), and the commit carrying this section.
 
+**Verification (2026-09-23 evening, Fable session, against the outputs).** Reproduced from the artifacts: the
+backfilled per-character answer NLL of all eight checkpoints (the raw-denominator values equal the §3.6 list to four
+decimals; the "as encoded" values differ only by AraRooPat's 69 dropped format characters); the v4 history (stop at
+20 000, restored 17 500, best 1.0979), the mixture manifest row by row including the 512-window column taken from
+ffstop's manifest and the cut-answer rates 8.9 / 4.2 / 2.8 % (AraRooPat / native / BPE at 512), the resize no-op
+and the config fields; the judge means, histograms and flag rates of v4 and the four penalty cells; all eight paired
+bootstraps; the loop buckets, the loop rate by reference tercile, the answer lengths, the 16 / 15 gains and losses
+and the six example rows; the ablation's loop-row analysis (AraRooPat's 53 loop prompts 1.62 → 1.72 under the
+penalty while its other 197 rows lose 0.41; BPE 2.00 → 2.08, native SFT 2.25 → 2.32, native base 2.83 → 2.30 on
+the same prompts); the greedy reproduction cell (250 of 250 generations identical to ffstop); the penalty processor
+(HF's formula over each row's context with the left padding masked); the P4 configs load and their Phase 3 block is
+byte-equal to v4's; 195 tests pass across the eight listed files. No number had to be corrected. One definition to
+keep in mind: the share of words carrying the article depends on how a prefix is counted — with a regex that allows
+one proclitic before ال it is 0.29 → 0.15 for AraRooPat under the penalty (the run report's count gives 0.39 →
+0.18), BPE 0.32 → 0.30, native 0.30 → 0.28: the same halving for AraRooPat and no change for the others, which is
+the finding.
+
+*Reading, and the hypothesis it leaves.* Two arms with new vocabularies loop on about 20 % of prompts (AraRooPat
+ffstop 21.2, v4 23.2, BPE ffstop 19.6 %) where native SFT loops on 12.4 % — at equal held-out likelihood of the
+references (v4 and native SFT both 0.766 nats/char) and after the data levers (exposure, distinct records, the long
+tail) and the decoding lever have each been tried and measured. What the two from-scratch arms share and the native
+arm does not is a vocabulary whose rows were learned in 131 M tokens and which, under Qwen3's tied embeddings, is
+also the output head. Ivgi et al. (2024) describe repetition as the fallback a model reaches for under uncertainty,
+and the 2026-09-18 self-reinforcement curve showed the greedy attractor closing within a few repetitions once
+entered. The testable form: the from-scratch arms decode from flatter next-token distributions (higher entropy,
+smaller top-1 margin) than the native model on the same prompts, and their loops start where the margin is smallest.
+That is an eval-only measurement on the existing checkpoints (the next-token entropy and top-1 margin along each
+generated answer, per arm, and at loop onset) and it decides between two remedies. If the distributions are flatter,
+the remedy is sequence-level and tokenizer-agnostic: **distillation by teacher-generated text** — the native base
+model (judge 2.42, loops 6.8 %) answers the 27 000 free-form training prompts once (vLLM, the judge environment,
+under an hour), and v4's Phase 3 trains on those answers in place of the references. Logit or attention distillation
+in the usual sense is not available here: the student and the teacher do not share an output vocabulary or a token
+alignment. If the distributions are not flatter, the loop is a property of the *text* the arms learned to write and
+the DITTO-style objective (Xu et al. 2022) is the candidate. Either way the P4 replications stay unrun until a Phase 3
+block is worth making the reference.
+
 ## 4. What the campaign established
 
 1. The native model's loops were partly measurement (the first loop rule) and partly a greedy attractor of the base model; under the corrected rules the untrained base loops on 6.8 % of prompts and the SFT arm on 12.4 %. SFT on the 30 000-record mixture learns the references' register and length but not their content: judge 2.28 vs 2.42, CI including zero.
@@ -584,14 +620,15 @@ configs), and the commit carrying this section.
 3. ~~Loop-aware decoding ablation on the existing checkpoints~~ — **done, §3.7 (P1).** A token-level repetition penalty (1.2) removes the loops in every cell but lowers the judge and, for AraRooPat, strips clitic tokens; it is neither a fix nor a comparison rule. The greedy rule stays.
 4. ~~Phase 3 on more and longer free-form data (AraRooPat v4)~~ — **done, §3.7 (P2).** Answer NLL to native SFT's level, judge and loops unchanged; the gate for the replication failed.
 5. **P4 — the v4 Phase 3 block on BPE-16K and native** (`configs/experiments/qwen_bpe16k_3phase_v4.yaml`, `qwen_native_sft_v4.yaml`, validated, Phase 3 block identical field for field): not run, because v4 did not pass the gate. Worth running only if the v4 block becomes the reference Phase 3 — it did lower answer NLL and raise instruction following (+0.18 [+0.03, +0.34] vs ffstop), and the +0.19 [+0.03, +0.35] of v4 over BPE ffstop is not a tokenizer finding until BPE has had the same block.
-6. Distillation from the native model (attention / logit) for both arms — now the first candidate: at equal answer NLL per character AraRooPat v4 loops on 23.2 % of prompts and native SFT on 12.4 %, so the gap is in free-running generation.
-7. A training-time repetition objective of the DITTO kind (Xu et al. 2022) — the second sequence-level candidate; before it, as a cheap measurement, a decoded-text (word-level) no-repeat constraint that cannot hit clitic tokens.
-8. Equal-text ablation: AraRooPat at ~227 M tokens (1.73× the token budget) so both arms see the same Arabic.
-9. A pre-flight check of `qa_blend.share` against the tokenizer's packed QA block count (two Phase 1 runs, 62 min, were lost to it).
-10. The probe's step-0 gate is uninformative under tied embeddings; read step-N only, or untie the head.
-11. 13 hamza and 1 ى round-trip mismatches remain (corpus-majority canonicalisations).
-12. The free-form eval mixture costs 12 s per pass (33 % overhead at `eval_every_n_steps: 200`). Acceptable, but `eval_every_n_steps: 400` would halve it if a longer phase needs the time. At `max_length: 1024` (v4) a pass is 21.6 s (1 000 records at batch 2); every 500 micro-steps that is 22 % of the phase.
-13. ~~`scripts/diag_heldout_loss.py` should emit `nll_per_answer_char` and `reference_chars`~~ — **done, §3.7 (P0)**, with `scripts/diag_backfill_per_char.py` for the older JSONs.
+6. **Uncertainty diagnostic on the existing checkpoints (eval only, proposed 2026-09-23):** next-token entropy and top-1 margin along the generated answers and at loop onset, per arm (AraRooPat v4 / ffstop, BPE ffstop, native SFT, native base, same 250 prompts). It tests whether the two from-scratch vocabularies decode from flatter distributions than the native model at equal held-out likelihood (§3.7 *Verification*), and it chooses between items 7 and 8.
+7. **Distillation from the native model, sequence-level** (teacher-generated text: the native base model answers the 27 000 free-form training prompts under vLLM, v4's Phase 3 trains on those answers) — the first remedy candidate: at equal answer NLL per character AraRooPat v4 loops on 23.2 % of prompts and native SFT on 12.4 %, so the gap is in free-running generation. Logit / attention distillation is not applicable across two vocabularies without a token alignment.
+8. A training-time repetition objective of the DITTO kind (Xu et al. 2022) — the second sequence-level candidate; before it, as a cheap measurement, a decoded-text (word-level) no-repeat constraint that cannot hit clitic tokens.
+9. Equal-text ablation: AraRooPat at ~227 M tokens (1.73× the token budget) so both arms see the same Arabic.
+10. A pre-flight check of `qa_blend.share` against the tokenizer's packed QA block count (two Phase 1 runs, 62 min, were lost to it).
+11. The probe's step-0 gate is uninformative under tied embeddings; read step-N only, or untie the head.
+12. 13 hamza and 1 ى round-trip mismatches remain (corpus-majority canonicalisations).
+13. The free-form eval mixture costs 12 s per pass (33 % overhead at `eval_every_n_steps: 200`). Acceptable, but `eval_every_n_steps: 400` would halve it if a longer phase needs the time. At `max_length: 1024` (v4) a pass is 21.6 s (1 000 records at batch 2); every 500 micro-steps that is 22 % of the phase.
+14. ~~`scripts/diag_heldout_loss.py` should emit `nll_per_answer_char` and `reference_chars`~~ — **done, §3.7 (P0)**, with `scripts/diag_backfill_per_char.py` for the older JSONs.
 
 ## 6. GPU time (2026-09-22 onwards)
 Four training runs 8 h 52 min (1 h 15 lost attempt + 3 h 17 v3 + 0 h 56 lost attempt + 3 h 25 BPE), probe ~35 min, six diagnostics ~6 min, judge passes ~10 min — ≈ 9 h 43 min. Earlier: v1 ~1 h, v2 ~1.5 h (+ 45 min resume), native runs and re-evals ~2 h.
