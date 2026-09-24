@@ -146,7 +146,9 @@ def _build_freeform_judge_section(
                 name, s.get("n"),
                 f"{mean:.3f} ± {1.96 * se:.3f}" if mean is not None and se is not None else _f(mean),
                 (f"{vs['delta_mean']:+.3f} [{vs['ci_low']:+.3f}, {vs['ci_high']:+.3f}]" if vs.get("delta_mean") is not None
-                 else ("baseline" if name == s.get("baseline") else "—")),
+                 else ("baseline" if name == s.get("baseline")
+                       # a run that judged a subset may not have the baseline's verdicts of this judge
+                       else ("— baseline unjudged" if s.get("vs_baseline_status") == "baseline_not_judged" else "—"))),
                 (f"{100 * vs['win_rate']:.0f} / {100 * vs['tie_rate']:.0f} / {100 * vs['loss_rate']:.0f}"
                  if vs.get("win_rate") is not None else "—"),
                 _f(s.get("correctness_mean")), _f(s.get("fluency_mean")), _f(s.get("instruction_following_mean")),

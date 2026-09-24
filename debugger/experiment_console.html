@@ -362,6 +362,32 @@ table.ev-ch tr.pred td{outline:1px solid var(--accent);outline-offset:-1px}
 .ev-warn{padding:8px 14px;background:var(--warn-soft);color:var(--warn);border-bottom:1px solid var(--line)}
 /* free-form + rating tabs */
 .ff-ar{direction:rtl;text-align:right;font-family:'IBM Plex Sans',sans-serif;font-size:13.5px;line-height:1.7}
+/* compare mode: one column per cell, the anchor marked; panes scroll sideways past ~3 cells */
+.cmp-wrap{overflow-x:auto}
+table.cmp{width:100%;border-collapse:collapse;font-size:12.5px;table-layout:fixed}
+table.cmp th,table.cmp td{border-bottom:1px solid var(--line);padding:6px 8px;text-align:start;vertical-align:top}
+table.cmp th{font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:var(--ink-3);font-weight:600}
+table.cmp th.anchor{color:var(--accent)}
+table.cmp th .tk{display:block;text-transform:none;letter-spacing:0;color:var(--ink-3);font-weight:400}
+table.cmp tr.r{cursor:pointer}
+table.cmp tr.r:hover td{background:var(--sunken)}
+table.cmp tr.r.on td{background:var(--accent-soft)}
+table.cmp td.cmp-gen{min-width:22ch}
+.cmp-clip{display:-webkit-box;-webkit-line-clamp:4;-webkit-box-orient:vertical;overflow:hidden}
+.cmp-foot{margin-top:4px;display:flex;gap:6px;flex-wrap:wrap;font-size:11px;color:var(--ink-3);direction:ltr;text-align:left}
+.cmp-why{margin-top:3px;font-size:11px;color:var(--ink-3);direction:ltr;text-align:left;font-style:italic;
+  display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.cmp-pane .cmp-why{-webkit-line-clamp:unset;display:block;margin-top:6px}
+.cmp-panes{display:flex;gap:12px;overflow-x:auto;align-items:stretch}
+.cmp-pane{flex:1 1 0;min-width:30ch;border:1px solid var(--line);border-radius:8px;padding:8px 10px;background:var(--surface)}
+.cmp-pane.anchor{border-color:var(--accent)}
+.cmp-pane h5{margin:0 0 4px;font-size:12px;font-family:var(--mono)}
+.cmp-cards{display:flex;gap:10px;flex-wrap:wrap}
+.cmp-card{border:1px solid var(--line);border-radius:8px;padding:6px 10px;background:var(--surface);font-size:12px;min-width:16ch}
+.cmp-card.anchor{border-color:var(--accent)}
+.cmp-card b{display:block;font-family:var(--mono);font-size:11.5px;font-weight:600}
+.cmp-card .d{font-family:var(--mono)}
+.cmp-card .up{color:var(--good)} .cmp-card .dn{color:var(--bad)}
 .ff-s1,.ff-s2{color:var(--bad);font-weight:600}
 .ff-s3{color:var(--warn);font-weight:600}
 .ff-s4,.ff-s5{color:var(--good);font-weight:600}
@@ -579,7 +605,13 @@ table.ev-ch tr.pred td{outline:1px solid var(--accent);outline-offset:-1px}
       <button class="btn sm primary" id="ff-judge-toggle" title="score this experiment's generations with one or more LLM judges, as a detached run">judge…</button>
       <button class="btn sm" id="ff-refresh" title="rescan outputs/experiments">↻</button>
     </div>
-    <div class="ev-bar" id="ff-judge-bar" style="display:none">
+    <div class="ev-bar" id="ff-judge-bar" style="display:none;flex-wrap:wrap">
+      <label class="k" title="which tokenizer cells this run scores; the comparison report is still built from every cell">cells</label>
+      <span id="ff-jb-cells" style="display:flex;gap:6px;flex-wrap:wrap;max-width:62%"></span>
+      <span class="hint" style="display:flex;gap:6px">
+        <a href="#" id="ff-jb-cur" title="only the tokenizer selected below">this cell</a>·<a href="#" id="ff-jb-all" title="every cell with generations (the old behaviour)">all</a>·<a href="#" id="ff-jb-none">none</a>·<a href="#" id="ff-jb-unjudged" title="cells without a verdict file for the ticked judges">not judged yet</a>
+      </span>
+      <span style="flex-basis:100%;height:0"></span>
       <label class="k" title="configs/judges/*.yaml; a GPU judge (vLLM) cannot run beside a training run">judges</label>
       <span id="ff-jb-judges" style="display:flex;gap:6px;flex-wrap:wrap"></span>
       <button class="btn sm" id="ff-jb-refresh" title="re-read configs/judges and the readiness checks">↻</button>
@@ -591,11 +623,15 @@ table.ev-ch tr.pred td{outline:1px solid var(--accent);outline-offset:-1px}
       <label class="chip" title="start even while another run is active (API judges do not need the GPU)"><input type="checkbox" id="ff-jb-force"> run concurrently</label>
       <button class="btn sm primary" id="ff-jb-go">start judge run</button>
       <span id="ff-jb-msg" class="chip" style="text-transform:none"></span>
+      <span style="flex-basis:100%;height:0"></span>
+      <span id="ff-jb-plan" class="hint" style="text-transform:none"></span>
     </div>
     <div class="ev-bar">
       <label class="k" for="ff-exp">experiment</label>
       <select id="ff-exp"></select>
-      <label class="k" for="ff-cell">tokenizer</label>
+      <label class="k" for="ff-mode" title="one cell's rows, or several cells' answers to the same prompts side by side">mode</label>
+      <select id="ff-mode"><option value="single">single cell</option><option value="compare">compare cells</option></select>
+      <label class="k" for="ff-cell" id="ff-cell-lbl">tokenizer</label>
       <select id="ff-cell"></select>
       <label class="k" for="ff-judge" title="the judge whose score the score filter, the score sort and the score column refer to">judge</label>
       <select id="ff-judge"></select>
@@ -623,11 +659,31 @@ table.ev-ch tr.pred td{outline:1px solid var(--accent);outline-offset:-1px}
         <option value="chrf_desc">highest chrF first</option>
         <option value="gen_len_desc">longest generation first</option>
         <option value="gen_len_asc">shortest generation first</option>
+        <option value="spread_desc" data-cmp="1">cells disagree most (spread)</option>
+        <option value="delta_desc" data-cmp="1">others beat the anchor most (Δ)</option>
+        <option value="delta_asc" data-cmp="1">anchor beats the others most (Δ)</option>
+        <option value="chrf_delta_desc" data-cmp="1">chrF Δ: others highest</option>
+        <option value="chrf_delta_asc" data-cmp="1">chrF Δ: anchor highest</option>
+        <option value="len_ratio_desc" data-cmp="1">others longest vs the anchor</option>
+        <option value="len_ratio_asc" data-cmp="1">anchor longest vs the others</option>
       </select>
       <input type="text" id="ff-q" placeholder="search instruction / generation / reference…" style="min-width:240px">
       <span class="spacer"></span>
       <label class="k" for="ff-size">per page</label>
       <select id="ff-size"><option>25</option><option selected>50</option><option>100</option><option>250</option></select>
+    </div>
+    <div class="ev-bar" id="ff-cmp-bar" style="display:none;flex-wrap:wrap">
+      <label class="k" title="the cells put side by side; only the prompts they all answer are shown">cells</label>
+      <span id="ff-cmp-cells" style="display:flex;gap:6px;flex-wrap:wrap;max-width:60%"></span>
+      <span class="hint" style="display:flex;gap:6px"><a href="#" id="ff-cmp-all">all</a>·<a href="#" id="ff-cmp-none">none</a></span>
+      <span style="flex-basis:100%;height:0"></span>
+      <label class="k" for="ff-cmp-anchor" title="the reference column; every Δ is measured against it">anchor</label>
+      <select id="ff-cmp-anchor"></select>
+      <label class="k" for="ff-cmp-match" title="which cell a filter must match for the prompt to be shown">filters match</label>
+      <select id="ff-cmp-match"><option value="any">any cell</option><option value="all">all cells</option><option value="anchor">the anchor</option></select>
+      <button class="btn sm" id="ff-cmp-export" title="the shown prompts as CSV, one group of columns per cell">export CSV</button>
+      <span class="spacer"></span>
+      <span id="ff-cmp-note" class="hint" style="text-transform:none"></span>
     </div>
     <div id="ff-note"></div>
     <div class="ev-sum" id="ff-sum"><span class="chip">no selection</span></div>
@@ -2497,6 +2553,7 @@ function wireEvalTab(){
    free-form tab: generations + judge verdicts
    ========================================================================= */
 S.ff = {tree:null, exp:null, cell:null, judge:'', smin:'', smax:'', jflag:'', stop:'', flag:'', stratum:'', q:'',
+  mode:'single', cmp:{cells:null, anchor:'', match:'any', data:null, open:null, detail:null},
         sort:'row', page:1, size:50, data:null, open:null, detail:null, busy:false};
 S.rt = {exp:null, sets:null, set:null, rater:'', items:null, pos:0, agreement:null, mode:'idle'};
 try { S.rt.rater = localStorage.getItem('xc-rater') || ''; } catch(e){}
@@ -2530,6 +2587,7 @@ function renderFfPickers(){
     S.ff.cell);
   const cell = ffCell();
   $('#ff-note').innerHTML = '';
+  if (S.ff.mode === 'compare'){ setFfMode('compare'); return; }         // compare draws its own cell list
   if (!cell.has_generations){
     $('#ff-note').innerHTML = `<div class="ev-warn">${esc(cell.cell)}: ${esc(cell.reason || 'no generations')}</div>`;
     $('#ff-body').innerHTML = '<div class="empty">this tokenizer cannot generate — its task record carries a typed status instead of scores</div>';
@@ -2623,7 +2681,7 @@ function ffActiveFilters(){
 function ffClearFilters(){
   Object.assign(S.ff, {smin:'', smax:'', jflag:'', stop:'', flag:'', stratum:'', q:''});
   for (const id of ['#ff-smin','#ff-smax','#ff-jflag','#ff-stop','#ff-flag','#ff-stratum']) $(id).value = '';
-  $('#ff-q').value = ''; S.ff.page = 1; loadFfRows();
+  $('#ff-q').value = ''; S.ff.page = 1; ffReload();
 }
 function ffPills(r){
   const out = [];
@@ -2735,22 +2793,230 @@ function renderFfPager(d){
     h('button', {class: 'btn sm', disabled: d.page>=d.pages, onclick: () => go(d.page+1)}, 'next ›'),
     h('button', {class: 'btn sm', disabled: d.page>=d.pages, onclick: () => go(d.pages)}, 'last »'));
 }
+/* =========================================================================
+   compare mode: the same prompts, one column per cell
+   ========================================================================= */
+const FF_MAX_COMPARE = 6;      // mirrors MAX_COMPARE_CELLS in tools/freeform_rows_browser.py (the server enforces it)
+function ffCmpDirs(){ const e = ffExperiment(); return e ? e.cells.filter(c => c.has_generations) : []; }
+function ffCmpDefault(){
+  // the viewed cell + its native_* reference. An experiment holds several native cells (one per
+  // generation of the recipe), so prefer the one sharing the most trailing name parts with the
+  // viewed cell — araroopat_3phase_v5_distill pairs with native_qwen3_sft_v5_distill, not native_qwen3.
+  const cells = ffCmpDirs(), cur = cells.find(c => c.cell === S.ff.cell) || cells[0];
+  if (!cur) return [];
+  const tail = (a, b) => { const x = a.split('_').reverse(), y = b.split('_').reverse();
+    let i = 0; while (i < x.length && i < y.length && x[i] === y[i]) i++; return i; };
+  const natives = cells.filter(c => c.cell.startsWith('native_') && c !== cur)
+    .sort((a, b) => tail(b.cell, cur.cell) - tail(a.cell, cur.cell) || a.cell.localeCompare(b.cell));
+  return [cur, natives[0]].filter(Boolean).map(c => c.dir);
+}
+function renderFfCmpBar(){
+  const cells = ffCmpDirs(), sel = S.ff.cmp.cells || [];
+  const box = $('#ff-cmp-cells'); box.innerHTML = '';
+  for (const c of cells){
+    const on = sel.includes(c.dir), full = !on && sel.length >= FF_MAX_COMPARE;
+    const cb = h('input', {type:'checkbox', checked:on, disabled:full, onchange: e => {
+      const next = e.target.checked ? [...(S.ff.cmp.cells||[]), c.dir] : (S.ff.cmp.cells||[]).filter(d => d !== c.dir);
+      S.ff.cmp.cells = next;
+      if (!next.includes(S.ff.cmp.anchor)) S.ff.cmp.anchor = next[0] || '';
+      renderFfCmpBar(); loadFfCompare();
+    }});
+    box.append(h('label', {class:'chip' + (on ? ' accent' : '') + (full ? ' warn' : ''),
+      title:`${c.cell}${c.tokenizer ? ' · '+c.tokenizer : ''} · ${c.n_rows ?? '?'} generations`
+           + (full ? ` — at most ${FF_MAX_COMPARE} cells at a time; untick one first` : '')}, cb, ` ${c.cell}`));
+  }
+  const an = $('#ff-cmp-anchor'); an.innerHTML = '';
+  for (const d of sel) an.append(h('option', {value:d}, d.split('/').pop()));
+  an.value = S.ff.cmp.anchor || sel[0] || '';
+  $('#ff-cmp-match').value = S.ff.cmp.match;
+  const n = sel.length, avail = cells.length;
+  $('#ff-cmp-note').textContent = n < 2 ? 'pick at least two cells'
+    : (n >= FF_MAX_COMPARE && avail > FF_MAX_COMPARE ? `${n} cells — the most that fit side by side; untick one to swap`
+    : (n > 3 ? `${n} columns — the table scrolls sideways` : ''));
+}
+function ffCmpParams(){
+  const p = new URLSearchParams({cells: (S.ff.cmp.cells||[]).join(','), anchor: S.ff.cmp.anchor,
+    match: S.ff.cmp.match, page: S.ff.page, page_size: S.ff.size, sort: S.ff.sort});
+  for (const [k, v] of [['judge',S.ff.judge], ['score_min',S.ff.smin], ['score_max',S.ff.smax], ['jflag',S.ff.jflag],
+                        ['stop',S.ff.stop], ['stratum',S.ff.stratum], ['q',S.ff.q]]) if (v) p.set(k, v);
+  if (S.ff.flag) p.set(S.ff.flag, '1');
+  return p;
+}
+async function loadFfCompare(){
+  const sel = S.ff.cmp.cells || [];
+  if (sel.length < 2){
+    $('#ff-body').innerHTML = '<div class="empty">compare mode: tick at least two cells above</div>';
+    $('#ff-sum').innerHTML = '<span class="chip">no selection</span>'; $('#ff-pager').innerHTML = '';
+    return;
+  }
+  if (S.ff.busy) return;
+  S.ff.busy = true;
+  try {
+    const d = await api('GET', '/api/freeform/compare?' + ffCmpParams().toString());
+    S.ff.cmp.data = d; S.ff.cmp.open = null; S.ff.cmp.detail = null;
+    S.ff.judge = evOptions($('#ff-judge'), d.judges.length ? d.judges.map(j => ({value:j, label:j}))
+      : [{value:'', label:'— no judge yet —'}], d.judge || '');
+    renderFfCmpSummary(d); renderFfCmpTable(d); renderFfCmpPager(d);
+    $('#ff-title').textContent = `${d.n_common} shared prompts · ${d.cells.length} cells · anchor ${d.anchor.split('/').pop()}`;
+  } catch(e){
+    $('#ff-body').innerHTML = `<div class="empty">${esc(e.message)}</div>`; $('#ff-pager').innerHTML = '';
+  } finally { S.ff.busy = false; }
+}
+function renderFfCmpSummary(d){
+  const box = $('#ff-sum'); box.innerHTML = '';
+  box.append(h('span', {class:'chip'}, `${d.total} of ${d.n_common} prompts`));
+  const missing = Object.entries(d.only_in || {}).filter(([, n]) => n);
+  if (missing.length) box.append(h('span', {class:'chip warn', title: missing.map(([c,n]) => `${c.split('/').pop()}: ${n} not in every cell`).join(' · ')},
+    `${missing.reduce((a, [, n]) => a + n, 0)} prompts not shared by all cells`));
+  const cards = h('span', {class:'cmp-cards'});
+  for (const c of d.cells){
+    const s = d.summary[c], anc = c === d.anchor, dl = s.judge_delta_vs_anchor;
+    cards.append(h('div', {class:'cmp-card' + (anc ? ' anchor' : ''), title: anc ? 'the anchor: every Δ is measured against it' : 'Δ = this cell − the anchor, over the shown prompts (descriptive; the CI lives in the judge report)'},
+      h('b', {}, c.split('/').pop() + (anc ? ' ⟵ anchor' : '')),
+      h('span', {class:'d'}, `judge ${ffNum(s.judge_mean, 2)}`),
+      dl == null ? null : h('span', {class:'d ' + (dl > 0 ? 'up' : dl < 0 ? 'dn' : '')}, ` (${dl > 0 ? '+' : ''}${dl.toFixed(2)})`),
+      h('span', {class:'d'}, ` · chrF ${ffNum(s.chrf_mean, 1)} · ${ffNum(s.gen_chars_mean, 0)} chars · loops ${s.hit_loop} · eos ${s.stop.eos}`)));
+  }
+  box.append(cards);
+}
+function renderFfCmpTable(d){
+  const box = $('#ff-body'); box.innerHTML = '';
+  if (!d.prompts.length){ box.innerHTML = '<div class="empty">no prompt matches these filters</div>'; return; }
+  const t = h('table', {class:'cmp'});
+  const head = h('tr', {}, h('th', {style:'width:5.5rem'}, 'id'), h('th', {style:'width:22%'}, 'instruction'));
+  for (const c of d.cells) head.append(h('th', {class: c === d.anchor ? 'anchor' : ''},
+    c.split('/').pop() + (c === d.anchor ? ' ⟵' : ''), h('span', {class:'tk'}, d.tokenizers[c] || '')));
+  t.append(head);
+  for (const p of d.prompts){
+    const tr = h('tr', {class:'r' + (S.ff.cmp.open === p.id ? ' on' : ''), onclick: () => toggleFfCmpRow(p.id)});
+    tr.append(h('td', {class:'mono'}, p.id.replace('cidar-', ''),
+        p.spread ? h('div', {class:'cmp-foot'}, `spread ${p.spread}`) : null),
+      h('td', {class:'ev-ar'}, h('span', {class:'cmp-clip', title:p.instruction}, p.instruction || '—')));
+    for (const c of d.cells){
+      const r = p.cells[c], v = r.verdict;
+      tr.append(h('td', {class:'cmp-gen ev-ar'},
+        h('span', {class:'cmp-clip', title:r.generation}, r.generation || '—'),
+        h('div', {class:'cmp-foot'},
+          h('span', {class: v && v.score!=null ? 'ff-s'+v.score : ''}, v ? (v.score==null ? 'unparsed' : `judge ${v.score}`) : 'no verdict'),
+          ...(v && v.flags ? v.flags.map(f => h('span', {class:'chip warn'}, f)) : []),
+          h('span', {}, `chrF ${ffNum(r.chrf, 1)}`), h('span', {}, `${r.gen_chars} ch`),
+          h('span', {class: r.stop_reason==='cap' || r.stop_reason==='loop' ? 'l-warn' : ''}, r.stop_reason || ''),
+          ...ffPills(r)),
+        // the judge's own words for THIS generation, clipped to two lines (hover for the rest)
+        v && v.rationale ? h('div', {class:'cmp-why', title:v.rationale}, `${d.judge}: ${v.rationale}`) : null));
+    }
+    t.append(tr);
+    if (S.ff.cmp.open === p.id) t.append(ffCmpDetail(p, d));
+  }
+  box.append(h('div', {class:'cmp-wrap'}, t));
+}
+async function toggleFfCmpRow(id){
+  const d = S.ff.cmp.data;
+  if (S.ff.cmp.open === id){ S.ff.cmp.open = null; S.ff.cmp.detail = null; renderFfCmpTable(d); return; }
+  S.ff.cmp.open = id; S.ff.cmp.detail = null; renderFfCmpTable(d);
+  try {                                        // full text of every selected cell: the anchor's record + its siblings
+    S.ff.cmp.detail = await api('GET', '/api/freeform/row?' + new URLSearchParams({cell: d.anchor, id,
+      cells: d.cells.filter(c => c !== d.anchor).map(c => c.split('/').pop()).join(',')}).toString());
+  } catch(e){ S.ff.cmp.detail = {error: e.message}; }
+  if (S.ff.cmp.open === id) renderFfCmpTable(S.ff.cmp.data);
+}
+function ffCmpDetail(p, d){
+  const cols = d.cells.length + 2;
+  const det = S.ff.cmp.detail;
+  const body = h('div', {});
+  body.append(ffBlock('instruction', p.instruction));
+  if (p.context) body.append(ffBlock('input', p.context));      // Element.append(null) would print "null"
+  body.append(ffBlock('reference', p.reference, [h('span', {class:'chip'}, `${p.ref_chars} chars`)]));
+  if (!det) body.append(h('div', {class:'empty'}, 'loading the full answers…'));
+  else if (det.error) body.append(h('div', {class:'empty'}, det.error));
+  else {
+    const full = {[d.anchor]: det.row};
+    for (const a of det.across || []){
+      const dir = d.cells.find(c => c.split('/').pop() === a.cell);
+      if (dir) full[dir] = a;
+    }
+    const panes = h('div', {class:'cmp-panes'});
+    for (const c of d.cells){
+      const r = full[c] || p.cells[c], v = p.cells[c].verdict;      // verdict from the compare payload, text from the row fetch
+      const score = v ? v.score : null;
+      panes.append(h('div', {class:'cmp-pane' + (c === d.anchor ? ' anchor' : '')},
+        h('h5', {}, c.split('/').pop(), c === d.anchor ? ' ⟵ anchor' : ''),
+        h('div', {class:'cmp-foot'},
+          h('span', {class: score!=null ? 'ff-s'+score : ''}, score==null ? 'no verdict' : `judge ${score}`),
+          h('span', {}, `chrF ${ffNum(r.chrf, 1)}`), h('span', {}, `${r.generation ? r.generation.length : 0} ch`),
+          h('span', {}, r.stop_reason || '')),
+        h('pre', {class:'ev-pre ff-ar'}, r.generation || '—'),
+        v && v.flags && v.flags.length ? h('div', {class:'cmp-foot'}, ...v.flags.map(f => h('span', {class:'chip warn'}, f))) : null,
+        v && v.rationale ? h('div', {class:'cmp-why'}, `${d.judge}: ${v.rationale}`) : null,
+        h('button', {class:'btn sm', onclick: e => { e.stopPropagation(); navigator.clipboard?.writeText(r.generation || ''); }}, 'copy')));
+    }
+    body.append(h('div', {class:'ev-h', style:'margin-top:10px'}, h('h4', {}, 'the answers side by side')), panes);
+  }
+  return h('tr', {class:'ev-det'}, h('td', {colspan:cols}, body));
+}
+function renderFfCmpPager(d){
+  const box = $('#ff-pager'); box.innerHTML = '';
+  if (!d.total) return;
+  const go = p => { S.ff.page = p; loadFfCompare(); };
+  box.append(
+    h('button', {class:'btn sm', disabled:d.page<=1, onclick:() => go(1)}, '« first'),
+    h('button', {class:'btn sm', disabled:d.page<=1, onclick:() => go(d.page-1)}, '‹ prev'),
+    h('span', {}, ` page ${d.page} of ${d.pages} · ${d.total} prompts `),
+    h('button', {class:'btn sm', disabled:d.page>=d.pages, onclick:() => go(d.page+1)}, 'next ›'),
+    h('button', {class:'btn sm', disabled:d.page>=d.pages, onclick:() => go(d.pages)}, 'last »'));
+}
+/* the two modes share the filter bar; this is the one entry point the controls call */
+function ffReload(){ S.ff.page = 1; return S.ff.mode === 'compare' ? loadFfCompare() : loadFfRows(); }
+function setFfMode(mode){
+  S.ff.mode = mode === 'compare' ? 'compare' : 'single';
+  const cmp = S.ff.mode === 'compare';
+  $('#ff-mode').value = S.ff.mode;
+  $('#ff-cmp-bar').style.display = cmp ? '' : 'none';
+  $('#ff-cell-lbl').textContent = cmp ? 'tokenizer (of the row list)' : 'tokenizer';
+  for (const o of $$('#ff-sort option')) if (o.dataset.cmp) o.style.display = cmp ? '' : 'none';
+  if (!cmp && $('#ff-sort').selectedOptions[0]?.dataset.cmp){ S.ff.sort = 'row'; $('#ff-sort').value = 'row'; }
+  if (cmp){
+    if (S.ff.cmp.cells === null) S.ff.cmp.cells = ffCmpDefault();
+    if (!S.ff.cmp.cells.includes(S.ff.cmp.anchor)) S.ff.cmp.anchor = S.ff.cmp.cells[0] || '';
+    renderFfCmpBar();
+  }
+  try { localStorage.setItem('xc-ff-mode', S.ff.mode); } catch(e){}
+  ffReload();
+}
 function wireFfTab(){
-  const reload = () => { S.ff.page = 1; loadFfRows(); };
-  $('#ff-exp').onchange = () => { S.ff.exp = evPick('#ff-exp'); S.ff.cell = null; S.ff.judge = ''; S.ff.page = 1; renderFfPickers(); };
+  const reload = () => ffReload();
+  $('#ff-exp').onchange = () => { S.ff.exp = evPick('#ff-exp'); S.ff.cell = null; S.ff.judge = ''; S.ff.page = 1;
+    S.jd.cells = null; S.jd.base = ''; S.ff.cmp.cells = null; S.ff.cmp.anchor = '';                // another experiment, another cell list
+    renderFfPickers(); if (S.jd.open) renderJudgeBar(); };
   $('#ff-cell').onchange = () => { S.ff.cell = evPick('#ff-cell'); S.ff.page = 1; renderFfPickers(); };
   $('#ff-judge').onchange = () => { S.ff.judge = evPick('#ff-judge'); reload(); };
+  $('#ff-mode').onchange = () => setFfMode(evPick('#ff-mode'));
+  $('#ff-cmp-anchor').onchange = () => { S.ff.cmp.anchor = evPick('#ff-cmp-anchor'); reload(); };
+  $('#ff-cmp-match').onchange = () => { S.ff.cmp.match = evPick('#ff-cmp-match'); reload(); };
+  const pickCmp = fn => e => { e.preventDefault(); S.ff.cmp.cells = fn();
+    if (!S.ff.cmp.cells.includes(S.ff.cmp.anchor)) S.ff.cmp.anchor = S.ff.cmp.cells[0] || '';
+    renderFfCmpBar(); ffReload(); };
+  $('#ff-cmp-all').onclick = pickCmp(() => {                      // "all" up to the limit: the anchor first, then the rest in order
+    const dirs = ffCmpDirs().map(c => c.dir), anchor = S.ff.cmp.anchor;
+    return [...(dirs.includes(anchor) ? [anchor] : []), ...dirs.filter(d => d !== anchor)].slice(0, FF_MAX_COMPARE);
+  });
+  $('#ff-cmp-none').onclick = pickCmp(() => []);
+  $('#ff-cmp-export').onclick = () => {
+    if ((S.ff.cmp.cells || []).length < 2){ ffToast('bad', 'pick at least two cells'); return; }
+    window.location = '/api/freeform/compare/export?' + ffCmpParams().toString();
+  };
   for (const [id, key] of [['#ff-smin','smin'], ['#ff-smax','smax'], ['#ff-jflag','jflag'], ['#ff-stop','stop'],
                            ['#ff-flag','flag'], ['#ff-stratum','stratum'], ['#ff-sort','sort']])
     $(id).onchange = () => { S.ff[key] = evPick(id); reload(); };
   $('#ff-size').onchange = () => { S.ff.size = Number(evPick('#ff-size')); reload(); };
+  try { const m = localStorage.getItem('xc-ff-mode'); if (m === 'compare') S.ff.mode = 'compare'; } catch(e){}
   let qT = null;
   $('#ff-q').oninput = () => { clearTimeout(qT); qT = setTimeout(() => { S.ff.q = $('#ff-q').value.trim(); reload(); }, 300); };
   $('#ff-refresh').onclick = () => loadFfTree(true);
 }
 
 /* ---- judge launcher (Free-form tab) ------------------------------------- */
-S.jd = {configs: null, open: false};
+S.jd = {configs: null, open: false, cells: null};   // cells: null = not chosen yet (defaults to the viewed cell)
 async function loadJudgeConfigs(force){
   if (S.jd.configs && !force) return S.jd.configs;
   try { const d = await api('GET', '/api/judge/configs'); S.jd.configs = d.judges || []; }
@@ -2769,19 +3035,76 @@ async function renderJudgeBar(){
       h('input', {type: 'checkbox', value: c.id, disabled: !c.ready, checked: c.ready && !c.gpu}),
       ` ${c.name}`, h('span', {class: 'hint'}, ` ${c.backend}${c.gpu ? ' · GPU' : ''}${c.ready ? '' : ' · not ready'}`)));
   }
-  const exp = ffExperiment();
-  const cells = exp ? exp.cells.filter(c => c.has_generations).map(c => c.cell) : [];
+  renderJudgeCells();
+}
+/* the cells of the selected experiment, with their per-judge verdict state */
+function ffJudgeCells(){ const e = ffExperiment(); return e ? e.cells.filter(c => c.has_generations) : []; }
+function ffTickedJudgeNames(){
+  const ticked = new Set($$('#ff-jb-judges input:checked').map(i => i.value));
+  return (S.jd.configs || []).filter(c => ticked.has(c.id)).map(c => c.name);
+}
+function renderJudgeCells(){
+  const cells = ffJudgeCells();
+  if (S.jd.cells === null) S.jd.cells = S.ff.cell && cells.some(c => c.cell === S.ff.cell) ? [S.ff.cell] : cells.map(c => c.cell);
+  S.jd.cells = S.jd.cells.filter(n => cells.some(c => c.cell === n));
+  const cbox = $('#ff-jb-cells'); cbox.innerHTML = '';
+  const judgeNames = ffTickedJudgeNames();
+  for (const c of cells){
+    const have = new Set((c.judges || []).map(j => j.name));
+    const missing = judgeNames.filter(n => !have.has(n));
+    const state = !judgeNames.length ? '' : (missing.length ? (missing.length === judgeNames.length ? 'new' : 'partial') : 'reuse');
+    const on = S.jd.cells.includes(c.cell);
+    const box = h('input', {type: 'checkbox', checked: on, onchange: e => {   // only this chip's class + the plan move
+      S.jd.cells = e.target.checked ? [...S.jd.cells, c.cell] : S.jd.cells.filter(n => n !== c.cell);
+      chip.classList.toggle('accent', e.target.checked);
+      renderJudgePlan(ffJudgeCells(), ffTickedJudgeNames());
+    }});
+    const chip = h('label', {class: 'chip' + (on ? ' accent' : ''),
+      title: `${c.cell}${c.tokenizer ? ' · ' + c.tokenizer : ''} · ${c.n_rows ?? '?'} generations`
+           + (state === 'reuse' ? ' · already judged: the verdicts are reused unless "overwrite" is ticked'
+           : state === 'new' ? ' · not judged yet by the ticked judges'
+           : state === 'partial' ? ' · judged by some of the ticked judges' : '')},
+      box, ` ${c.cell}`, state ? h('span', {class: 'hint'}, ` ${state}`) : null);
+    cbox.append(chip);
+  }
+  if (!cells.length) cbox.append(h('span', {class: 'chip warn'}, 'no cell with generations'));
   const base = $('#ff-jb-base'); base.innerHTML = '';
   base.append(h('option', {value: ''}, 'auto (native_* cell)'));
-  for (const c of cells) base.append(h('option', {value: c}, c));
+  for (const c of cells) base.append(h('option', {value: c.cell}, c.cell));
+  base.value = S.jd.base || '';
+  renderJudgePlan(cells, judgeNames);
+}
+/* One line saying exactly what the run will do — and the one case where the paired
+   comparison cannot be computed: the baseline is outside the selection and has no
+   verdict file for a ticked judge (the run then records vs_baseline_status:
+   baseline_not_judged instead of a number). */
+function renderJudgePlan(cells, judgeNames){
+  const sel = S.jd.cells, plan = $('#ff-jb-plan'); plan.innerHTML = '';
+  const go = $('#ff-jb-go');
+  go.textContent = `start judge run${sel.length && sel.length !== cells.length ? ` · ${sel.length} cell${sel.length===1?'':'s'}` : ''}`;
+  go.disabled = !sel.length;
+  if (!cells.length) return;
+  if (!sel.length){ plan.append(h('span', {class: 'chip warn'}, 'no cell selected — tick at least one')); return; }
+  const chosen = $('#ff-jb-base').value;
+  const baseName = chosen || (cells.find(c => c.cell.startsWith('native_')) || cells[0]).cell;
+  plan.append(h('span', {}, `will judge ${sel.length} of ${cells.length} cell${cells.length===1?'':'s'}: `),
+    h('span', {class: 'mono'}, sel.join(', ')),
+    h('span', {}, ` · baseline ${baseName}${chosen ? '' : ' (auto)'}`));
+  const baseCell = cells.find(c => c.cell === baseName);
+  const have = new Set(((baseCell || {}).judges || []).map(j => j.name));
+  const lacking = judgeNames.filter(n => !have.has(n));
+  if (baseCell && !sel.includes(baseName) && lacking.length)
+    plan.append(h('span', {class: 'chip warn', style: 'margin-left:8px'},
+      `⚠ no paired comparison for ${lacking.join(', ')} — ${baseName} has no verdicts of ${lacking.length===1?'that judge':'those judges'}; tick it into the selection, or the cells are recorded as baseline_not_judged`));
 }
 async function startJudgeRun(){
   const exp = ffExperiment(); if (!exp){ ffToast('bad', 'pick an experiment'); return; }
   const judges = $$('#ff-jb-judges input:checked').map(i => i.value);
   if (!judges.length){ ffToast('bad', 'pick at least one judge'); return; }
+  if (!(S.jd.cells || []).length){ ffToast('bad', 'pick at least one cell'); return; }
   const msg = $('#ff-jb-msg'); msg.textContent = 'starting…';
   try {
-    const rec = await api('POST', '/api/judge/start', {experiment: exp.dir, judges,
+    const rec = await api('POST', '/api/judge/start', {experiment: exp.dir, judges, cells: S.jd.cells,
       baseline: $('#ff-jb-base').value || null, limit: Number($('#ff-jb-limit').value) || null,
       overwrite: $('#ff-jb-over').checked, force: $('#ff-jb-force').checked});
     msg.innerHTML = '';
@@ -2793,6 +3116,17 @@ function wireJudgeBar(){
   $('#ff-judge-toggle').onclick = () => { S.jd.open = !S.jd.open; renderJudgeBar(); };
   $('#ff-jb-go').onclick = startJudgeRun;
   $('#ff-jb-refresh').onclick = () => { S.jd.configs = null; renderJudgeBar(); };
+  const ffCells = () => ffJudgeCells().map(c => c.cell);
+  const pick = (fn) => e => { e.preventDefault(); S.jd.cells = fn(); renderJudgeCells(); };
+  $('#ff-jb-cur').onclick = pick(() => ffCells().filter(n => n === S.ff.cell));
+  $('#ff-jb-all').onclick = pick(() => ffCells());
+  $('#ff-jb-none').onclick = pick(() => []);
+  $('#ff-jb-unjudged').onclick = pick(() => {
+    const names = ffTickedJudgeNames();
+    return ffJudgeCells().filter(c => names.some(n => !(c.judges || []).some(j => j.name === n))).map(c => c.cell);
+  });
+  $('#ff-jb-judges').addEventListener('change', () => renderJudgeCells());   // the per-cell reuse state follows the judges
+  $('#ff-jb-base').addEventListener('change', () => { S.jd.base = $('#ff-jb-base').value; renderJudgePlan(ffJudgeCells(), ffTickedJudgeNames()); });
 }
 
 /* =========================================================================

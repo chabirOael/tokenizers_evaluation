@@ -2,7 +2,9 @@
 building, verdict parsing (fenced / plain / embedded JSON, prose fallback,
 malformed), the paired statistics, and ``run`` on a fake two-cell sweep with
 a fake backend — judge files, all_metrics merge, baseline deltas, agreement
-between two judges, file reuse, overwrite, limit, report regeneration."""
+between two judges, file reuse, overwrite, limit, report regeneration, and the
+per-cell selection (only those cells judged and rewritten, the baseline read from
+its file, the vs_baseline_status of each case)."""
 from __future__ import annotations
 
 import json
@@ -214,6 +216,47 @@ class TestRun:
         assert rep2["judges"]["fake_a"]["native_llama"]["vs_baseline"]["delta_mean"] == 1.5
         with pytest.raises(ValueError, match="baseline cell"):
             J.run(sweep, [cfg], {"fake_a": FakeBackend()}, baseline="nope")
+
+    def test_cell_selection_judges_and_rewrites_only_those_cells(self, sweep):
+        cfg = J.JudgeConfig(name="fake_a", backend="vllm", model="fake/a")
+        be = FakeBackend()
+        rep = J.run(sweep, [cfg], {"fake_a": be}, cells=["bpe_32k"], regenerate_report=True)
+        assert be.calls == 8                                                    # one cell, not two
+        assert rep["cells_judged"] == ["bpe_32k"] and rep["cells_with_generations"] == ["bpe_32k", "native_llama"]
+        assert list(rep["judges"]["fake_a"]) == ["bpe_32k"]
+        assert not (sweep / "native_llama" / "freeform_judge").exists()          # the baseline was not judged
+        base_am = json.loads((sweep / "native_llama" / "all_metrics.json").read_text(encoding="utf-8"))
+        assert "judge" not in base_am["downstream"]["freeform_cidar"]            # and its metrics were not rewritten
+        s = rep["judges"]["fake_a"]["bpe_32k"]
+        assert s["vs_baseline"] is None and s["vs_baseline_status"] == "baseline_not_judged"
+        assert (sweep / "comparison_report.txt").exists()                        # the report still covers every cell
+        assert "native_llama" in (sweep / "comparison_report.txt").read_text(encoding="utf-8")
+
+    def test_selection_compares_against_a_baseline_it_does_not_judge(self, sweep):
+        cfg = J.JudgeConfig(name="fake_a", backend="vllm", model="fake/a")
+        full = J.run(sweep, [cfg], {"fake_a": FakeBackend()}, regenerate_report=False)   # judges both, writes both files
+        expected = full["judges"]["fake_a"]["bpe_32k"]["vs_baseline"]
+        mtime = (sweep / "native_llama" / "all_metrics.json").stat().st_mtime_ns
+        be = FakeBackend()
+        rep = J.run(sweep, [cfg], {"fake_a": be}, cells=["bpe_32k"], overwrite=True, regenerate_report=False)
+        assert be.calls == 8                                                    # overwrite scoped to the selection
+        s = rep["judges"]["fake_a"]["bpe_32k"]
+        assert s["vs_baseline"] == expected and s["vs_baseline_status"] == "ok"  # baseline scores read from its file
+        assert (sweep / "native_llama" / "all_metrics.json").stat().st_mtime_ns == mtime
+        # the baseline inside its own selection is flagged as such
+        rep2 = J.run(sweep, [cfg], {"fake_a": FakeBackend()}, cells=["native_llama"], regenerate_report=False)
+        assert rep2["judges"]["fake_a"]["native_llama"]["vs_baseline_status"] == "is_baseline"
+
+    def test_unknown_cell_names_the_valid_ones(self, sweep):
+        cfg = J.JudgeConfig(name="fake_a", backend="vllm", model="fake/a")
+        with pytest.raises(ValueError, match="no cell with generations named nope"):
+            J.run(sweep, [cfg], {"fake_a": FakeBackend()}, cells=["nope"])
+        with pytest.raises(ValueError, match="no_gens"):                          # has no generations
+            J.run(sweep, [cfg], {"fake_a": FakeBackend()}, cells=["no_gens"])
+        cells = [sweep / "bpe_32k", sweep / "native_llama"]
+        assert [c.name for c in J.select_cells(cells, None)] == ["bpe_32k", "native_llama"]
+        assert [c.name for c in J.select_cells(cells, [])] == ["bpe_32k", "native_llama"]
+        assert [c.name for c in J.select_cells(cells, ["native_llama", "native_llama"])] == ["native_llama"]
 
     def test_parse_failures_are_counted_not_fatal(self, sweep):
         class Broken:

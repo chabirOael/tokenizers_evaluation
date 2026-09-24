@@ -47,11 +47,17 @@ Routes
     GET  /api/eval/row?path=&position=   one full record
     GET  /api/eval/export?path=&…   the current selection as a CSV download
     GET  /api/judge/configs         configs/judges/*.yaml with backend, model and readiness (venv / API key)
-    POST /api/judge/start           {"experiment", "judges": [names], "baseline", "limit", "overwrite", "force"}
+    POST /api/judge/start           {"experiment", "judges": [names], "cells": [names] (default: all),
+                                     "baseline", "limit", "overwrite", "force"}
                                     → a detached judge run (Runs tab); GPU judges conflict with active runs
     GET  /api/freeform/tree         every free-form generation dump: experiment → cell (+ unsupported cells)
     GET  /api/freeform/rows?cell=&… one cell's generations joined with its judge files, filtered / sorted / paged
-    GET  /api/freeform/row?cell=&id= one full record + the same prompt in the sibling cells
+    GET  /api/freeform/row?cell=&id=&cells=  one full record + the same prompt in the sibling cells
+                                    (``cells``: comma-separated names to restrict the walk to)
+    GET  /api/freeform/compare?cells=&… several cells' answers to the same prompts, side by side
+                                    (anchor, judge, match=any|all|anchor, the filters of /rows, the
+                                    cross-cell sorts, paging) + a per-cell summary over the selection
+    GET  /api/freeform/compare/export?cells=&…   the same selection as a CSV download
     GET  /api/rating/sets?experiment=        blind rating sets of an experiment and who rated what
     POST /api/rating/build          {"experiment", "name", "n_prompts", "variants", "seed", "overwrite"} → the set (blind)
     GET  /api/rating/items?experiment=&set=&rater=   the items (cell hidden) with this rater's ratings
@@ -268,8 +274,14 @@ class Handler(SimpleHTTPRequestHandler):
             self._send_json(freeform_rows.discover(REPO_ROOT))
         elif route == "/api/freeform/rows":
             self._send_json(freeform_rows.query(REPO_ROOT, q.get("cell", ""), q))
+        elif route == "/api/freeform/compare":
+            self._send_json(freeform_rows.compare(REPO_ROOT, _csv_list(q.get("cells")), q))
+        elif route == "/api/freeform/compare/export":
+            name, text = freeform_rows.export_compare_csv(REPO_ROOT, _csv_list(q.get("cells")), q)
+            self._send_csv(name, text)
         elif route == "/api/freeform/row":
-            self._send_json(freeform_rows.row(REPO_ROOT, q.get("cell", ""), q.get("id", "")))
+            self._send_json(freeform_rows.row(REPO_ROOT, q.get("cell", ""), q.get("id", ""),
+                                              _csv_list(q.get("cells")) or None))
         elif route == "/api/rating/sets":
             self._send_json(freeform_rating.list_sets(REPO_ROOT, q.get("experiment", "")))
         elif route == "/api/rating/items":
@@ -325,6 +337,7 @@ class Handler(SimpleHTTPRequestHandler):
                 str(req.get("experiment") or ""), list(req.get("judges") or []),
                 baseline=(str(req["baseline"]) if req.get("baseline") else None),
                 limit=int(lim) if lim not in (None, "", 0, "0") else None,
+                cells=list(req.get("cells") or []) or None,
                 overwrite=bool(req.get("overwrite")), force=bool(req.get("force")))
             log.info("started judge run %s (pid %s): %s", rec["run_id"], rec["pid"], " ".join(rec["argv"]))
             self._send_json(rec, HTTPStatus.ACCEPTED)
@@ -357,6 +370,11 @@ class Handler(SimpleHTTPRequestHandler):
 def _opt_str(req: dict, key: str):
     v = req.get(key)
     return str(v) if v not in (None, "") else None
+
+
+def _csv_list(value) -> list:
+    """A comma-separated query parameter as a list of non-empty items."""
+    return [p for p in (str(value or "").split(",")) if p.strip()]
 
 
 def _assistant_request(req: dict):

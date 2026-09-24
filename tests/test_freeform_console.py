@@ -1,7 +1,7 @@
 """Console back-ends for the free-form eval: the rows browser
 (``tools/freeform_rows_browser.py``: discovery incl. unsupported cells, the
-judge join, filters / sorts / paging / summary, one row across cells) and the
-blind rating set (``tools/freeform_rating.py``: build, hidden cells, balanced
+judge join, filters / sorts / paging / summary, one row across cells, the
+side-by-side compare of several cells) and the blind rating set (``tools/freeform_rating.py``: build, hidden cells, balanced
 variants, disagreement half, submit + progress, agreement vs judges)."""
 from __future__ import annotations
 
@@ -133,7 +133,11 @@ class TestBrowser:
         d = B.row(repo, "outputs/experiments/sweep/native_llama", "cidar-3")
         assert d["row"]["prompt_text"].endswith("الإجابة:") and d["row"]["judges"]["ja"]["rationale"] == "r3"
         assert [a["cell"] for a in d["across"]] == ["bpe_32k"]
-        assert d["across"][0]["tokenizer"] == "bpe" and d["across"][0]["judges"] == {"ja": 1, "jb": 1}
+        assert d["across"][0]["tokenizer"] == "bpe"
+        # the whole verdict, so a compare pane shows every cell's rationale, not only the anchor's
+        assert d["across"][0]["judges"]["ja"]["score"] == 1 and d["across"][0]["judges"]["ja"]["rationale"] == "r3"
+        assert B.row(repo, "outputs/experiments/sweep/native_llama", "cidar-3", cells=[])["across"] == d["across"]
+        assert B.row(repo, "outputs/experiments/sweep/native_llama", "cidar-3", cells=["nope"])["across"] == []
         with pytest.raises(B.FreeformError, match="no row"):
             B.row(repo, "outputs/experiments/sweep/native_llama", "cidar-99")
 
@@ -142,6 +146,105 @@ class TestBrowser:
             B.query(repo, "configs", {})
         with pytest.raises(B.FreeformError):
             B.query(repo, "../..", {})
+
+
+NATIVE = "outputs/experiments/sweep/native_llama"
+BPE = "outputs/experiments/sweep/bpe_32k"
+
+
+class TestCompare:
+    def test_side_by_side_shape_and_anchor(self, repo):
+        d = B.compare(repo, [NATIVE, BPE], {})
+        assert d["cells"] == [NATIVE, BPE] and d["anchor"] == NATIVE and d["judge"] == "ja"
+        assert d["n_common"] == 12 and d["only_in"] == {NATIVE: 0, BPE: 0} and d["total"] == 12
+        assert d["tokenizers"] == {NATIVE: "native_llama", BPE: "bpe"}
+        p0 = d["prompts"][0]
+        assert p0["id"] == "cidar-0" and set(p0["cells"]) == {NATIVE, BPE}
+        # every generation carries the selected judge's whole verdict — the comment is why a
+        # comparison is opened, so it travels with the row instead of a fetch per cell
+        for cell in (NATIVE, BPE):
+            v = p0["cells"][cell]["verdict"]
+            assert v["rationale"] == "r0" and v["score"] is not None and v["parse_ok"] is True
+        assert d["prompts"][1]["cells"][NATIVE]["verdict"]["flags"] == ["repetition"]
+        assert p0["instruction"] == "سؤال 0" and p0["reference"] == "مرجع 0"      # once, not per cell
+        assert p0["cells"][BPE]["chrf"] < p0["cells"][NATIVE]["chrf"]             # the weaker cell, per prompt
+        # per-cell summaries over the selection + a descriptive Δ against the anchor
+        assert d["summary"][NATIVE]["judge_delta_vs_anchor"] is None              # the anchor itself
+        assert d["summary"][BPE]["judge_delta_vs_anchor"] == round(
+            d["summary"][BPE]["judge_mean"] - d["summary"][NATIVE]["judge_mean"], 4)
+        assert d["summary"][NATIVE]["n"] == 12 and d["summary"][NATIVE]["empty"] == 1
+        # the anchor decides the sign; swapping it mirrors the delta
+        back = B.compare(repo, [NATIVE, BPE], {"anchor": BPE})
+        assert back["anchor"] == BPE
+        assert back["summary"][NATIVE]["judge_delta_vs_anchor"] == -d["summary"][BPE]["judge_delta_vs_anchor"]
+
+    def test_only_common_prompts_and_what_is_missing(self, repo):
+        short = _cell(repo, "sweep", "short_cell", "bpe", n=5, judges=[("ja", 0, 0)])
+        d = B.compare(repo, [NATIVE, "outputs/experiments/sweep/short_cell"], {})
+        assert d["n_common"] == 5 and d["total"] == 5
+        assert d["only_in"][NATIVE] == 7 and d["only_in"]["outputs/experiments/sweep/short_cell"] == 0
+        assert d["only_in_ids"][NATIVE][:2] == ["cidar-10", "cidar-11"]            # named, never silently dropped
+        assert short.exists()
+
+    def test_match_modes(self, repo):
+        # cidar-1 is the degenerate row in every cell; a score filter hits different rows per cell
+        any_ = B.compare(repo, [NATIVE, BPE], {"score_min": 5, "match": "any"})["total"]
+        all_ = B.compare(repo, [NATIVE, BPE], {"score_min": 5, "match": "all"})["total"]
+        anc = B.compare(repo, [NATIVE, BPE], {"score_min": 5, "match": "anchor"})["total"]
+        assert any_ >= anc >= all_ and any_ > all_
+        loops = B.compare(repo, [NATIVE, BPE], {"degenerate": "1", "match": "all"})
+        assert [p["id"] for p in loops["prompts"]] == ["cidar-1"]
+        with pytest.raises(B.FreeformError, match="match must be"):
+            B.compare(repo, [NATIVE, BPE], {"match": "either"})
+
+    def test_cross_cell_sorts(self, repo):
+        delta = B.compare(repo, [NATIVE, BPE], {"sort": "delta_desc"})["prompts"]
+        assert delta[0]["delta"] is not None and delta[0]["delta"] >= delta[-1]["delta"]
+        asc = B.compare(repo, [NATIVE, BPE], {"sort": "delta_asc"})["prompts"]
+        assert asc[0]["delta"] == delta[-1]["delta"]
+        spread = B.compare(repo, [NATIVE, BPE], {"sort": "spread_desc"})["prompts"]
+        assert spread[0]["spread"] == max(p["spread"] for p in spread)
+        for s in ("chrf_delta_desc", "len_ratio_desc", "score_asc", "gen_len_desc", "row", "disagree"):
+            assert len(B.compare(repo, [NATIVE, BPE], {"sort": s})["prompts"]) == 12
+        with pytest.raises(B.FreeformError, match="sort must be"):
+            B.compare(repo, [NATIVE, BPE], {"sort": "nope"})
+
+    def test_paging_and_validation(self, repo):
+        d = B.compare(repo, [NATIVE, BPE], {"page_size": 5, "page": 3})
+        assert d["pages"] == 3 and d["page"] == 3 and len(d["prompts"]) == 2
+        with pytest.raises(B.FreeformError, match="at least two cells"):
+            B.compare(repo, [NATIVE], {})
+        with pytest.raises(B.FreeformError, match="at least two cells"):
+            B.compare(repo, [NATIVE, NATIVE], {})                                  # duplicates collapse
+        with pytest.raises(B.FreeformError, match="anchor"):
+            B.compare(repo, [NATIVE, BPE], {"anchor": "outputs/experiments/sweep/charformer"})
+        with pytest.raises(B.FreeformError, match="unknown judge"):
+            B.compare(repo, [NATIVE, BPE], {"judge": "nope"})
+        with pytest.raises(B.FreeformError):                                       # confinement, like query/row
+            B.compare(repo, [NATIVE, "configs"], {})
+        with pytest.raises(B.FreeformError, match="at most"):
+            B.compare(repo, [NATIVE, BPE] + [f"x{i}" for i in range(B.MAX_COMPARE_CELLS)], {})
+
+    def test_a_cell_without_the_judge_reports_no_verdict(self, repo):
+        _cell(repo, "sweep", "unjudged", "bpe", judges=[])
+        d = B.compare(repo, [NATIVE, "outputs/experiments/sweep/unjudged"], {})
+        assert d["judge"] == "ja" and d["judges_per_cell"]["outputs/experiments/sweep/unjudged"] == []
+        s = d["summary"]["outputs/experiments/sweep/unjudged"]
+        assert s["judge_mean"] is None and s["judge_n"] == 0 and s["judge_delta_vs_anchor"] is None
+        cell = d["prompts"][0]["cells"]["outputs/experiments/sweep/unjudged"]
+        assert cell["judges"] == {} and cell["verdict"] is None          # no verdict, never a blank comment
+        # the other judge's verdicts are what `judge=jb` shows
+        assert B.compare(repo, [NATIVE, BPE], {"judge": "jb"})["prompts"][0]["cells"][NATIVE]["verdict"]["rationale"] == "r0"
+
+    def test_export_csv_has_one_column_group_per_cell(self, repo):
+        name, text = B.export_compare_csv(repo, [NATIVE, BPE], {"sort": "spread_desc"})
+        head, *rows = text.splitlines()
+        assert name.startswith("freeform_compare_native_llama_vs_bpe_32k")
+        assert head.startswith("id,stratum,instruction,reference,delta,spread")
+        for cell in ("native_llama", "bpe_32k"):
+            for col in ("generation", "chrf", "judge_score", "judge_rationale", "stop_reason", "gen_chars"):
+                assert f"{cell}.{col}" in head
+        assert len(rows) == 12 and "r0" in text
 
 
 class TestRating:

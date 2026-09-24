@@ -1280,7 +1280,8 @@ class RunManager:
         return cmd
 
     def build_judge_command(self, experiment_rel: str, judge_yamls: Sequence[str], gpu: bool,
-                            baseline: Optional[str], limit: Optional[int], overwrite: bool) -> List[str]:
+                            baseline: Optional[str], limit: Optional[int], overwrite: bool,
+                            cells: Optional[Sequence[str]] = None) -> List[str]:
         """``scripts/judge/run_judge.sh`` (the vLLM venv with its environment) when any judge
         needs the GPU, else ``scripts/judge/judge_freeform.py`` in the main venv."""
         if gpu:
@@ -1290,6 +1291,8 @@ class RunManager:
         cmd += ["--experiment", experiment_rel]
         for y in judge_yamls:
             cmd += ["--judge", str(y)]
+        if cells:
+            cmd += ["--cells", *[str(c) for c in cells]]
         if baseline:
             cmd += ["--baseline", str(baseline)]
         if limit:
@@ -1353,14 +1356,20 @@ class RunManager:
 
     def start_judge(self, experiment: str, judges: Sequence[str], *, baseline: Optional[str] = None,
                     limit: Optional[int] = None, overwrite: bool = False, force: bool = False,
+                    cells: Optional[Sequence[str]] = None,
                     command: Optional[List[str]] = None, env: Optional[Dict[str, str]] = None) -> dict:
         """Launch the free-form judge stage on a finished experiment (or sweep) as
         a detached run: the judge YAMLs are snapshotted into the run dir and the
         script is pointed at the snapshots. A GPU judge (vLLM) conflicts with an
         active run like an experiment does; API-only judges run alongside.
 
+        ``cells`` judges only those cells (default: every cell with generations);
+        the baseline may sit outside the selection — its verdicts are then read
+        from the file a previous run wrote.
+
         ``command`` overrides the launched argv (tests use a stub)."""
         from arabic_eval.judge.freeform_judge import JudgeConfig
+        cells_arg = cells
         exp_dir, cells = judge_cells(self.paths.repo_root, experiment)
         exp_rel = self.paths.rel(exp_dir)
         if not judges:
@@ -1378,17 +1387,23 @@ class RunManager:
             raise ConsoleError(f"duplicate judge names: {names}")
         if baseline and baseline not in cells:
             raise ConsoleError(f"baseline {baseline!r} is not a cell with generations ({', '.join(cells)})")
+        selected = list(dict.fromkeys(str(c) for c in (cells_arg or [])))   # order kept, duplicates dropped
+        unknown = [c for c in selected if c not in cells]
+        if unknown:
+            raise ConsoleError(f"not cells with generations: {', '.join(unknown)} (have: {', '.join(cells)})")
+        judged = selected or cells
         gpu = any(c.backend == "vllm" for _, c in cfgs)
         snapshots = {f"judges/{c.name}.yaml": path.read_text(encoding="utf-8") for path, c in cfgs}
-        request = {"experiment": exp_rel, "judges": names, "baseline": baseline, "limit": limit,
+        request = {"experiment": exp_rel, "judges": names, "cells": judged, "baseline": baseline, "limit": limit,
                    "overwrite": bool(overwrite), "gpu": gpu, "backends": {c.name: c.backend for _, c in cfgs}}
         snapshots["judge.json"] = json.dumps(request, ensure_ascii=False, indent=1) + "\n"
         argv = command or self.build_judge_command(
-            exp_rel, [f"{RUN_DIR_PLACEHOLDER}/judges/{c.name}.yaml" for _, c in cfgs], gpu, baseline, limit, overwrite)
+            exp_rel, [f"{RUN_DIR_PLACEHOLDER}/judges/{c.name}.yaml" for _, c in cfgs], gpu, baseline, limit, overwrite,
+            selected)
         record = {
             "kind": "judge", "config": None,
             "experiment_name": exp_dir.name, "output_dir": exp_rel,
-            "sweep": False, "cells": cells, "tasks": ["freeform_cidar"],
+            "sweep": False, "cells": judged, "cells_available": cells, "tasks": ["freeform_cidar"],
             "tokenizer": "judge", "model": ", ".join(c.model for _, c in cfgs),
             "judges": names, "judge_backends": request["backends"], "judge_models": {c.name: c.model for _, c in cfgs},
             "baseline": baseline, "limit": limit, "overwrite": bool(overwrite), "gpu": gpu,

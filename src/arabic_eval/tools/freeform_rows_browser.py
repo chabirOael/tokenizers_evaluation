@@ -7,7 +7,8 @@ read whole and cached by (path, mtime). ``discover`` lists every cell that
 has generations — and the cells whose task record says
 ``generation_unsupported``, so a sweep shows all its variants; ``query``
 filters / sorts / pages one cell; ``row`` returns one full record plus the
-same prompt's generation in every sibling cell of the experiment (the
+same prompt's generation in the sibling cells of the experiment; ``compare``
+puts several cells' answers to the same prompts side by side (the
 cross-variant view a tokenizer comparison is read by).
 """
 from __future__ import annotations
@@ -25,6 +26,12 @@ GENERATIONS_REL = Path("eval_rows") / f"{TASK}.parquet"
 JUDGE_DIR = "freeform_judge"
 STOP_REASONS = ("eos", "marker", "loop", "cap")     # mirrors generation.STOP_REASONS (torch-free here)
 SORTS = ("row", "score_asc", "score_desc", "chrf_asc", "chrf_desc", "disagree", "gen_len_desc", "gen_len_asc")
+# compare mode adds the cross-cell orders: the signed difference to the anchor cell, the spread
+# over every selected cell (max − min, the convention `disagree` uses over judges), and length.
+COMPARE_SORTS = SORTS + ("delta_desc", "delta_asc", "spread_desc", "chrf_delta_desc", "chrf_delta_asc",
+                         "len_ratio_desc", "len_ratio_asc")
+MATCH_MODES = ("any", "all", "anchor")
+MAX_COMPARE_CELLS = 6
 ROW_FLAGS = ("degenerate", "empty", "latin", "hit_cap", "hit_loop", "char_truncated")
 CLIP = 240
 
@@ -310,15 +317,19 @@ def summarize(rows: Sequence[Dict[str, Any]], judges: Sequence[str]) -> Dict[str
 # one row, across cells
 # ---------------------------------------------------------------------------
 
-def row(repo_root: Path, rel: str, row_id: str) -> Dict[str, Any]:
+def row(repo_root: Path, rel: str, row_id: str, cells: Optional[Sequence[str]] = None) -> Dict[str, Any]:
+    """One full record, plus the same prompt in the sibling cells. ``cells``
+    (names, not paths) restricts the walk — an experiment with 18 cells would
+    otherwise read 18 dumps to fill a table nobody asked for."""
     data = load_cell(repo_root, rel)
     rec = next((r for r in data["rows"] if r["id"] == row_id), None)
     if rec is None:
         raise FreeformError(f"no row {row_id!r} in {rel}")
     cell_dir: Path = data["dir"]
+    want = {str(c) for c in cells} if cells else None
     across: List[Dict[str, Any]] = []
     for sib in sorted(p for p in cell_dir.parent.iterdir() if p.is_dir() and (p / GENERATIONS_REL).exists()):
-        if sib == cell_dir:
+        if sib == cell_dir or (want is not None and sib.name not in want):
             continue
         try:
             sd = load_cell(repo_root, str(sib.relative_to(Path(repo_root))))
@@ -331,5 +342,230 @@ def row(repo_root: Path, rel: str, row_id: str) -> Dict[str, Any]:
                        "generation": srow.get("generation"), "chrf": srow.get("chrf"),
                        "bertscore_f1": srow.get("bertscore_f1"), "stop_reason": srow.get("stop_reason"),
                        **{f: bool(srow.get(f)) for f in ROW_FLAGS},
-                       "judges": {n: (None if v is None else v["score"]) for n, v in (srow.get("judges") or {}).items()}})
+                       # the whole verdict, not just the score: the compare panes show every cell's
+                       # rationale and flags, and a reader must not get more detail for one column
+                       "judges": {n: v for n, v in (srow.get("judges") or {}).items()}})
     return {"cell": rel, "row": rec, "across": across, "metadata": data["metadata"]}
+
+
+# ---------------------------------------------------------------------------
+# several cells, same prompts (compare mode)
+# ---------------------------------------------------------------------------
+
+def _row_matches(r: Dict[str, Any], params: Dict[str, Any], judge: Optional[str]) -> bool:
+    """Whether one cell's record passes the per-row filters (the same rules
+    ``query`` applies, expressed per record so compare can ask them of one
+    cell, of any, or of all)."""
+    smin, smax = _to_int(params.get("score_min")), _to_int(params.get("score_max"))
+    if smin is not None or smax is not None:
+        s = _judge_score(r, judge)
+        if s is None or (smin is not None and s < smin) or (smax is not None and s > smax):
+            return False
+    jflag = params.get("jflag")
+    if jflag:
+        v = (r.get("judges") or {}).get(judge)
+        if not v or not (v["flags"] if jflag == "any" else jflag in v["flags"]):
+            return False
+    if params.get("unparsed"):
+        v = (r.get("judges") or {}).get(judge)
+        if v is not None and v["parse_ok"]:
+            return False
+    stop = params.get("stop")
+    if stop and r.get("stop_reason") != stop:
+        return False
+    for f in ROW_FLAGS:
+        if f in params and params[f] != "" and bool(r.get(f)) != _truthy(params[f]):
+            return False
+    q = (params.get("q") or "").strip()
+    if q and not (q in (r.get("instruction") or "") or q in (r.get("generation") or "")
+                  or q in (r.get("reference") or "") or q == r["id"]):
+        return False
+    return True
+
+
+def _compact_with_verdict(r: Dict[str, Any], judge: Optional[str]) -> Dict[str, Any]:
+    """A table record plus the selected judge's **whole** verdict for this cell
+    — the rationale is the reason a reader opens a comparison at all, so it
+    travels with the row instead of being fetched per cell on expand."""
+    out = _compact(r)
+    v = (r.get("judges") or {}).get(judge) if judge else None
+    out["verdict"] = None if v is None else {
+        "score": v.get("score"), "correctness": v.get("correctness"), "fluency": v.get("fluency"),
+        "instruction_following": v.get("instruction_following"),
+        "flags": v.get("flags") or [], "rationale": v.get("rationale"), "parse_ok": v.get("parse_ok"),
+    }
+    return out
+
+
+def _compare_summary(rows: Sequence[Dict[str, Any]], judge: Optional[str]) -> Dict[str, Any]:
+    """One cell's numbers over the prompts currently shown. Descriptive only —
+    the inferential comparison (bootstrap CI, win/tie/loss) is the judge
+    stage's ``vs_baseline`` and ``scripts/judge/paired_compare.py``."""
+    n = len(rows)
+    scores = [s for r in rows if (s := _judge_score(r, judge)) is not None]
+    return {
+        "n": n,
+        "judge_mean": _mean(scores), "judge_n": len(scores),
+        "chrf_mean": _mean([r.get("chrf") for r in rows]),
+        "bertscore_mean": _mean([r.get("bertscore_f1") for r in rows]),
+        "gen_chars_mean": _mean([r.get("gen_chars") for r in rows]),
+        "stop": {s: sum(1 for r in rows if r.get("stop_reason") == s) for s in STOP_REASONS},
+        **{f: sum(1 for r in rows if r.get(f)) for f in ROW_FLAGS},
+    }
+
+
+def compare(repo_root: Path, cells: Sequence[str], params: Dict[str, Any]) -> Dict[str, Any]:
+    """The same prompts answered by several cells, side by side.
+
+    ``cells`` are cell paths (relative to the repo root); the first one, or
+    ``params['anchor']`` when given, is the **anchor** every Δ is measured
+    against. Only the prompt ids **common to every selected cell** are shown —
+    the ids that are not are reported per cell rather than dropped silently.
+    Filters are the ones of :func:`query`, applied under ``match`` (``any`` /
+    ``all`` / ``anchor``); sorts add the cross-cell orders of
+    ``COMPARE_SORTS``. Every cell's dump is read through the same cache, so a
+    compare of four cells costs four cached reads, not four scans.
+    """
+    names = list(dict.fromkeys(str(c) for c in cells if str(c).strip()))
+    if len(names) < 2:
+        raise FreeformError("compare needs at least two cells")
+    if len(names) > MAX_COMPARE_CELLS:
+        raise FreeformError(f"at most {MAX_COMPARE_CELLS} cells can be compared at once (got {len(names)})")
+    loaded = [load_cell(repo_root, rel) for rel in names]
+    anchor = str(params.get("anchor") or "") or names[0]
+    if anchor not in names:
+        raise FreeformError(f"anchor {anchor!r} is not among the compared cells")
+
+    by_cell = {d["cell"]: {r["id"]: r for r in d["rows"]} for d in loaded}
+    common = set.intersection(*(set(ids) for ids in by_cell.values()))
+    order = [r["id"] for r in by_cell[anchor].values() if r["id"] in common] if anchor in by_cell else sorted(common)
+    only_in = {c: sorted(set(ids) - common) for c, ids in by_cell.items()}
+
+    judges_per_cell = {d["cell"]: [j["name"] for j in d["judges"]] for d in loaded}
+    all_judges = sorted({j for js in judges_per_cell.values() for j in js})
+    judge = params.get("judge") or (all_judges[0] if all_judges else None)
+    if judge and judge not in all_judges:
+        raise FreeformError(f"unknown judge {judge!r}; the selected cells have {all_judges}")
+
+    match = params.get("match") or "any"
+    if match not in MATCH_MODES:
+        raise FreeformError(f"match must be one of {MATCH_MODES}")
+    if params.get("stratum"):
+        order = [i for i in order if by_cell[anchor][i].get("stratum") == params["stratum"]]
+    keep = []
+    for rid in order:
+        hits = [_row_matches(by_cell[c][rid], params, judge) for c in names]
+        ok = hits[names.index(anchor)] if match == "anchor" else (all(hits) if match == "all" else any(hits))
+        if ok:
+            keep.append(rid)
+
+    def _score(rid: str, cell: str) -> Optional[float]:
+        return _judge_score(by_cell[cell][rid], judge)
+
+    def _delta(rid: str) -> Optional[float]:            # other − anchor (two cells: the signed difference)
+        a = _score(rid, anchor)
+        others = [s for c in names if c != anchor and (s := _score(rid, c)) is not None]
+        return None if a is None or not others else float(sum(others) / len(others) - a)
+
+    def _spread(rid: str) -> Optional[float]:           # max − min over every selected cell
+        s = [v for c in names if (v := _score(rid, c)) is not None]
+        return None if len(s) < 2 else float(max(s) - min(s))
+
+    def _chrf_delta(rid: str) -> Optional[float]:
+        a = by_cell[anchor][rid].get("chrf")
+        others = [v for c in names if c != anchor and (v := by_cell[c][rid].get("chrf")) is not None]
+        return None if a is None or not others else float(sum(others) / len(others) - a)
+
+    def _len_ratio(rid: str) -> Optional[float]:
+        a = by_cell[anchor][rid].get("gen_chars") or 0
+        others = [by_cell[c][rid].get("gen_chars") or 0 for c in names if c != anchor]
+        return None if not a or not others else (sum(others) / len(others)) / a
+
+    sort = params.get("sort") or "row"
+    if sort not in COMPARE_SORTS:
+        raise FreeformError(f"sort must be one of {COMPARE_SORTS}")
+    # one value per kept prompt, then one sort: descending flips the value, the id always
+    # breaks ties ascending, and a prompt without the value sorts last in either direction.
+    keyers = {
+        "score": lambda i: _score(i, anchor),
+        "chrf": lambda i: by_cell[anchor][i].get("chrf"),
+        "gen_len": lambda i: by_cell[anchor][i].get("gen_chars"),
+        "disagree": lambda i: _disagreement(by_cell[anchor][i]),
+        "delta": _delta, "spread": _spread, "chrf_delta": _chrf_delta, "len_ratio": _len_ratio,
+    }
+    if sort != "row":
+        base, _, direction = sort.rpartition("_")
+        if not base:                                      # "disagree" / "spread_desc" style
+            base, direction = sort, "desc"
+        rev = direction == "desc"
+        vals = {i: keyers[base](i) for i in keep}
+        keep = sorted(keep, key=lambda i: (vals[i] is None,
+                                           -(vals[i] or 0.0) if rev else (vals[i] or 0.0), i))
+
+    page_size = max(1, min(_to_int(params.get("page_size")) or 25, 200))
+    total = len(keep)
+    pages = max(1, math.ceil(total / page_size))
+    page = max(1, min(_to_int(params.get("page")) or 1, pages))
+    chunk = keep[(page - 1) * page_size: page * page_size]
+
+    prompts = []
+    for rid in chunk:
+        a = by_cell[anchor][rid]
+        prompts.append({
+            "id": rid, "stratum": a.get("stratum"), "instruction": a.get("instruction"),
+            "context": a.get("context"), "reference": a.get("reference"), "ref_chars": a.get("ref_chars"),
+            "delta": _delta(rid), "spread": _spread(rid), "chrf_delta": _chrf_delta(rid), "len_ratio": _len_ratio(rid),
+            "cells": {c: _compact_with_verdict(by_cell[c][rid], judge) for c in names},
+        })
+    selected = {c: [by_cell[c][i] for i in keep] for c in names}
+    summary = {c: _compare_summary(selected[c], judge) for c in names}
+    for c in names:                                      # descriptive Δ over the shown prompts, never a CI
+        a_mean, c_mean = summary[anchor]["judge_mean"], summary[c]["judge_mean"]
+        summary[c]["judge_delta_vs_anchor"] = None if (a_mean is None or c_mean is None or c == anchor) \
+            else round(c_mean - a_mean, 4)
+    return {
+        "cells": names, "anchor": anchor, "judge": judge, "judges": all_judges,
+        "judges_per_cell": judges_per_cell, "match": match, "sort": sort,
+        "n_common": len(common), "only_in": {c: len(ids) for c, ids in only_in.items()},
+        "only_in_ids": {c: ids[:20] for c, ids in only_in.items() if ids},
+        "total": total, "page": page, "pages": pages, "page_size": page_size,
+        "prompts": prompts, "summary": summary,
+        "tokenizers": {d["cell"]: _cell_summary(d["dir"]).get("tokenizer") for d in loaded},
+        "metadata": {d["cell"]: d["metadata"] for d in loaded},
+    }
+
+
+MAX_COMPARE_EXPORT = 500
+
+
+def export_compare_csv(repo_root: Path, cells: Sequence[str], params: Dict[str, Any]) -> Tuple[str, str]:
+    """The compare view as CSV — one row per prompt, one group of columns per
+    cell. The spreadsheet escape hatch for a view someone wants to annotate or
+    paste into an appendix; the dumps themselves stay Parquet."""
+    import csv
+    import io
+    p = dict(params)
+    p["page"], p["page_size"] = 1, MAX_COMPARE_EXPORT
+    data = compare(repo_root, cells, p)
+    names, judge = data["cells"], data["judge"]
+    short = [Path(c).name for c in names]
+    fields = ["id", "stratum", "instruction", "reference", "delta", "spread"]
+    for n in short:
+        fields += [f"{n}.generation", f"{n}.chrf", f"{n}.judge_score", f"{n}.judge_rationale",
+                   f"{n}.stop_reason", f"{n}.gen_chars"]
+    buf = io.StringIO()
+    w = csv.DictWriter(buf, fieldnames=fields, extrasaction="ignore")
+    w.writeheader()
+    for pr in data["prompts"]:
+        rec = {"id": pr["id"], "stratum": pr["stratum"], "instruction": pr["instruction"],
+               "reference": pr["reference"], "delta": pr["delta"], "spread": pr["spread"]}
+        for cell, n in zip(names, short):
+            c = pr["cells"][cell]
+            v = c.get("verdict")
+            rec.update({f"{n}.generation": c["generation"], f"{n}.chrf": c["chrf"],
+                        f"{n}.judge_score": None if not v else v["score"],
+                        f"{n}.judge_rationale": None if not v else v["rationale"],
+                        f"{n}.stop_reason": c["stop_reason"], f"{n}.gen_chars": c["gen_chars"]})
+        w.writerow(rec)
+    name = f"freeform_compare_{'_vs_'.join(short)[:80]}.csv"
+    return name, buf.getvalue()

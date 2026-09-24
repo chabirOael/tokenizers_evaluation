@@ -537,8 +537,13 @@ def _save_all_metrics(cell: Path, data: Dict[str, Any]) -> None:
 
 
 def compact_summary(summary: Dict[str, Any], vs_baseline: Optional[Dict[str, Any]], cfg: JudgeConfig,
-                    baseline_name: Optional[str]) -> Dict[str, Any]:
-    """What goes into all_metrics.json — small enough for the comparison table."""
+                    baseline_name: Optional[str], vs_baseline_status: str = "ok") -> Dict[str, Any]:
+    """What goes into all_metrics.json — small enough for the comparison table.
+
+    ``vs_baseline`` is ``None`` for two different reasons — this cell *is* the
+    baseline, or the baseline carries no verdicts of this judge (possible since
+    a run may judge a subset of the cells). ``vs_baseline_status`` says which:
+    ``ok`` | ``is_baseline`` | ``baseline_not_judged`` | ``no_baseline``."""
     out = {"model": cfg.model, "backend": cfg.backend, "rubric": cfg.rubric, "structured_json": cfg.structured_json,
            "n": summary["n"], "parse_fail_rate": summary["parse_fail_rate"],
            "score_mean": summary["score_mean"], "score_std": summary["score_std"], "score_se": summary["score_se"],
@@ -546,50 +551,106 @@ def compact_summary(summary: Dict[str, Any], vs_baseline: Optional[Dict[str, Any
            **{f"{k}_mean": summary[f"{k}_mean"] for k in SUBSCORES},
            "any_flag_rate": summary["any_flag_rate"], "flag_rates": summary["flag_rates"],
            "score_by_stratum": summary["score_by_stratum"],
-           "baseline": baseline_name, "vs_baseline": vs_baseline}
+           "baseline": baseline_name, "vs_baseline": vs_baseline, "vs_baseline_status": vs_baseline_status}
+    return out
+
+
+def _existing_scores(cell: Path, judge_name: str) -> Optional[Dict[str, float]]:
+    """The verdicts a previous run wrote for *cell*, or ``None``. Lets a run that
+    judges a subset still compare against a baseline it is not re-judging — a
+    file read, never a backend call."""
+    f = judge_file(cell, judge_name)
+    if not f.exists():
+        return None
+    try:
+        return scores_by_id(_read_parquet(f)[0])
+    except Exception as e:  # noqa: BLE001
+        logger.warning("[judge:%s] %s: unreadable verdict file (%s)", judge_name, cell.name, e)
+        return None
+
+
+def select_cells(with_gens: Sequence[Path], names: Optional[Sequence[str]]) -> List[Path]:
+    """The cells to judge: *names* in the order they were given, or every cell
+    with generations when *names* is empty / None. An unknown name is an error
+    naming the valid ones — never a silent skip."""
+    if not names:
+        return list(with_gens)
+    by_name = {c.name: c for c in with_gens}
+    unknown = [n for n in names if n not in by_name]
+    if unknown:
+        raise ValueError(f"no cell with generations named {', '.join(unknown)} "
+                         f"(have: {', '.join(sorted(by_name)) or 'none'})")
+    seen, out = set(), []
+    for n in names:
+        if n not in seen:
+            seen.add(n)
+            out.append(by_name[n])
     return out
 
 
 def run(root: Path | str, cfgs: Sequence[JudgeConfig], backends: Dict[str, JudgeBackend], baseline: Optional[str] = None,
-        limit: Optional[int] = None, overwrite: bool = False, regenerate_report: bool = True) -> Dict[str, Any]:
-    """Judge every cell under ``root`` with every judge, merge the summaries
-    into the cells' ``all_metrics.json`` and regenerate the sweep report."""
+        limit: Optional[int] = None, overwrite: bool = False, regenerate_report: bool = True,
+        cells: Optional[Sequence[str]] = None) -> Dict[str, Any]:
+    """Judge the cells under ``root`` with every judge, merge the summaries into
+    those cells' ``all_metrics.json`` and regenerate the sweep report.
+
+    ``cells`` selects which cells are judged (default: every cell with
+    generations). Only the selected cells are judged and rewritten; the
+    comparison report is still built from **all** cells, and the paired
+    comparison still runs — when the baseline is outside the selection its
+    verdicts are read from the file a previous run wrote."""
     root = Path(root)
-    cells = discover_cells(root)
-    if not cells:
+    all_cells = discover_cells(root)
+    if not all_cells:
         raise FileNotFoundError(f"no cell with all_metrics.json under {root}")
-    with_gens = [c for c in cells if (c / GENERATIONS_FILE).exists()]
+    with_gens = [c for c in all_cells if (c / GENERATIONS_FILE).exists()]
+    selected = select_cells(with_gens, cells)
     base = choose_baseline(with_gens, baseline)
-    report: Dict[str, Any] = {"root": str(root), "cells": [c.name for c in cells],
+    report: Dict[str, Any] = {"root": str(root), "cells": [c.name for c in all_cells],
                               "cells_with_generations": [c.name for c in with_gens],
+                              "cells_judged": [c.name for c in selected],
                               "baseline": base.name if base else None, "judges": {}}
+    if cells:
+        logger.info("judging %d of %d cell(s) with generations: %s",
+                    len(selected), len(with_gens), ", ".join(c.name for c in selected))
     verdicts: Dict[str, Dict[str, List[Dict[str, Any]]]] = {}       # judge → cell → rows
     for cfg in cfgs:
         verdicts[cfg.name] = {}
-        for c in with_gens:
+        for c in selected:
             rows = judge_cell(c, cfg, backends[cfg.name], limit=limit, overwrite=overwrite)
             if rows is not None:
                 verdicts[cfg.name][c.name] = rows
     # summaries + paired comparisons, merged into all_metrics.json
     for cfg in cfgs:
         per_cell: Dict[str, Any] = {}
-        base_scores = scores_by_id(verdicts[cfg.name][base.name]) if base and base.name in verdicts[cfg.name] else None
-        for c in with_gens:
+        if base is None:
+            base_scores, base_status = None, "no_baseline"
+        elif base.name in verdicts[cfg.name]:                       # judged in this run
+            base_scores, base_status = scores_by_id(verdicts[cfg.name][base.name]), "ok"
+        else:                                                       # outside the selection: read its file
+            base_scores = _existing_scores(base, cfg.name)
+            base_status = "ok" if base_scores else "baseline_not_judged"
+            if base_scores is None:
+                logger.warning("[judge:%s] baseline %s has no verdicts — no paired comparison this run",
+                               cfg.name, base.name)
+        for c in selected:
             rows = verdicts[cfg.name].get(c.name)
             if rows is None:
                 continue
             summ = summarize_verdicts(rows)
-            vs = paired_bootstrap(base_scores, scores_by_id(rows)) if base_scores is not None and c.name != base.name else None
-            compact = compact_summary(summ, vs, cfg, base.name if base else None)
+            is_base = base is not None and c.name == base.name
+            vs = paired_bootstrap(base_scores, scores_by_id(rows)) if base_scores is not None and not is_base else None
+            status = "is_baseline" if is_base else base_status
+            compact = compact_summary(summ, vs, cfg, base.name if base else None, status)
             per_cell[c.name] = compact
             am = _load_all_metrics(c)
             task_block = am.setdefault("downstream", {}).setdefault(TASK, {})
             task_block.setdefault("judge", {})[cfg.name] = compact
             _save_all_metrics(c, am)
         report["judges"][cfg.name] = per_cell
-    # judge-judge agreement per cell (every judge file present, not only this run's)
+    # judge-judge agreement of the cells this run touched (every judge file present, not only this run's)
     agreement: Dict[str, Any] = {}
-    for c in with_gens:
+    for c in selected:
         files = sorted((c / JUDGE_DIR).glob("*.parquet")) if (c / JUDGE_DIR).exists() else []
         by_judge = {p.stem: scores_by_id(_read_parquet(p)[0]) for p in files}
         pairs: Dict[str, Any] = {}
@@ -608,9 +669,9 @@ def run(root: Path | str, cfgs: Sequence[JudgeConfig], backends: Dict[str, Judge
             _save_all_metrics(c, am)
             agreement[c.name] = pairs
     report["judge_agreement"] = agreement
-    if regenerate_report and len(cells) > 1 and root not in cells:
+    if regenerate_report and len(all_cells) > 1 and root not in all_cells:   # the report is whole-experiment
         from arabic_eval.evaluation.reporter import generate_report
-        generate_report({c.name: _load_all_metrics(c) for c in cells}, root / "comparison_report.txt")
+        generate_report({c.name: _load_all_metrics(c) for c in all_cells}, root / "comparison_report.txt")
         report["comparison_report"] = str(root / "comparison_report.txt")
     return report
 

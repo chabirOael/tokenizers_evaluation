@@ -8,6 +8,9 @@ the comparison report.
     # API judge (main venv), both judges, explicit baseline cell
     .venv/bin/python scripts/judge/judge_freeform.py --experiment outputs/experiments/<sweep> \
         --judge configs/judges/gpt56_terra_api.yaml --baseline native_llama
+    # re-judge one cell only (the others keep their verdicts and their all_metrics.json)
+    scripts/judge/run_judge.sh --experiment outputs/experiments/<sweep> --judge <yaml> \
+        --cells araroopat_3phase_v5_distill --overwrite
     # look at the prompt for two rows without calling any judge
     .venv/bin/python scripts/judge/judge_freeform.py --experiment <dir> --judge <yaml> --dry-run
 """
@@ -30,6 +33,9 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--experiment", required=True, help="a cell dir (has all_metrics.json) or a sweep dir of cells")
     ap.add_argument("--judge", action="append", required=True, help="judge YAML (repeatable)")
+    ap.add_argument("--cells", nargs="+", default=None, metavar="CELL",
+                    help="judge only these cells (default: every cell with generations). The report is still built "
+                         "from all cells, and the baseline's verdicts are read from its file when it is not selected.")
     ap.add_argument("--baseline", default=None, help="cell name for the paired comparison (default: the native_* cell)")
     ap.add_argument("--limit", type=int, default=None, help="score only the first N generations per cell")
     ap.add_argument("--overwrite", action="store_true", help="re-judge cells that already have this judge's file")
@@ -52,7 +58,7 @@ def main() -> int:
         return 0
     backends = {c.name: make_backend(c) for c in cfgs}
     report = run(args.experiment, cfgs, backends, baseline=args.baseline, limit=args.limit,
-                 overwrite=args.overwrite, regenerate_report=not args.no_report)
+                 overwrite=args.overwrite, regenerate_report=not args.no_report, cells=args.cells)
     print(format_table(report))
     out = Path(args.experiment) / "freeform_judge_report.json"
     with open(out, "w", encoding="utf-8") as f:

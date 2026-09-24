@@ -606,6 +606,8 @@ def test_judge_cells_and_command(tmp_repo: ConsolePaths):
                                                                     "--judge", "b.yaml", "--baseline", "native_llama", "--limit", "10", "--overwrite"]
     api = rm.build_judge_command("outputs/experiments/sw", ["a.yaml"], False, None, None, False)
     assert api[0] == str(paths.python) and api[1].endswith("scripts/judge/judge_freeform.py") and "--overwrite" not in api
+    sel = rm.build_judge_command("outputs/experiments/sw", ["a.yaml"], False, None, None, False, ["bpe_32k"])
+    assert sel[sel.index("--cells") + 1:] == ["bpe_32k"] and "--cells" not in api      # no flag without a selection
 
 
 def test_start_judge_records_snapshots_and_finishes(tmp_repo: ConsolePaths, monkeypatch):
@@ -640,6 +642,33 @@ def test_start_judge_records_snapshots_and_finishes(tmp_repo: ConsolePaths, monk
     assert r["judge"] is True and r["summary"]["api_j"]["bpe_32k"]["delta"] == -1.0 and r["report"].endswith("freeform_judge_report.json")
     # a fresh manager rediscovers the judge run with its kind
     assert RunManager(paths).get(rec["run_id"])["kind"] == "judge"
+
+
+def test_start_judge_with_a_cell_selection(tmp_repo: ConsolePaths, monkeypatch):
+    paths = _judge_repo(tmp_repo)
+    monkeypatch.setenv("TEST_JUDGE_KEY", "k")
+    rm = RunManager(paths)
+    with pytest.raises(ConsoleError, match="not cells with generations: nope"):
+        rm.start_judge("outputs/experiments/sw", ["api_j"], cells=["bpe_32k", "nope"],
+                       command=[sys.executable, "-c", "pass"])
+    with pytest.raises(ConsoleError, match="charformer"):                      # listed, but has no generations
+        rm.start_judge("outputs/experiments/sw", ["api_j"], cells=["charformer"],
+                       command=[sys.executable, "-c", "pass"])
+    rec = rm.start_judge("outputs/experiments/sw", ["api_j"], baseline="native_llama", cells=["bpe_32k", "bpe_32k"],
+                         command=[sys.executable, "-c", "pass"])
+    assert rec["cells"] == ["bpe_32k"] and rec["cells_available"] == ["bpe_32k", "native_llama"]
+    rd = paths.repo_root / "outputs" / "runs" / rec["run_id"]
+    assert json.loads((rd / "judge.json").read_text(encoding="utf-8"))["cells"] == ["bpe_32k"]
+    assert _wait(lambda: rm.get(rec["run_id"])["status"] == "finished")
+    # the real argv carries the selection; the baseline may stay outside it
+    argv = rm.build_judge_command("outputs/experiments/sw", ["a.yaml"], False, "native_llama", None, True, ["bpe_32k"])
+    assert argv[argv.index("--cells") + 1] == "bpe_32k" and argv[argv.index("--baseline") + 1] == "native_llama"
+    # no selection → no flag, every cell judged (the previous behaviour)
+    rec2 = rm.start_judge("outputs/experiments/sw", ["api_j"], command=[sys.executable, "-c", "pass"], force=True)
+    assert rec2["cells"] == ["bpe_32k", "native_llama"]
+    assert json.loads((paths.repo_root / "outputs" / "runs" / rec2["run_id"] / "judge.json").read_text(
+        encoding="utf-8"))["cells"] == ["bpe_32k", "native_llama"]
+    assert _wait(lambda: rm.get(rec2["run_id"])["status"] == "finished")
 
 
 def test_api_only_judge_runs_beside_an_active_run(tmp_repo: ConsolePaths, monkeypatch):
