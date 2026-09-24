@@ -1,0 +1,284 @@
+# MCQ benchmarks under the fixed scorer (2026-09-24, docs/report.md §3.9 / §3.10): AraRooPat v3 Phase 2
+# checkpoint (the 131 M-token adaptation, before any Phase 3).
+# Eval only — every phase disabled, model.name_or_path =
+# outputs/experiments/qwen_native_vs_araroopat/araroopat_3phase_v3/training/warmup (a save_pretrained
+# directory), the tokenizer block = the one araroopat_3phase_v3 was trained with (loaded from load_path,
+# never retrained).
+# One protocol for the six files of this folder (only experiment / tokenizer / model.name_or_path /
+# sweep.tokenizers differ): acva 0-shot, alghafa / arabic_exam / culture_arabic_mmlu 3-shot, max_length 4096
+# for every task (so no row truncates except the same long Arabic-Exam passages for every tokenizer),
+# score_normalization char+pmi, per-row dumps on (cont_tokens = the scored window), intrinsic metrics on
+# (MEI needs RPS and compression). The primary comparison is on the rows no cell truncates
+# (scripts/mcq_compare.py); the full-benchmark numbers are secondary.
+experiment:
+  name: araroopat_3phase_v3_warmup_mcq4096
+  description: AraRooPat v3 Phase 2 checkpoint (no Phase 3) — ACVA / Alghafa / Arabic-Exam / Culture-MMLU, fixed
+    scorer, max_length 4096
+  output_dir: outputs/experiments/qwen_native_vs_araroopat/araroopat_3phase_v3_warmup_mcq4096
+  seed: 42
+  deterministic: true
+  created_at: '2026-09-24T11:34:16+00:00'
+tokenizer:
+  type: araroopat
+  vocab_size: null
+  params:
+    max_roots: 10000
+    max_patterns: 40000
+    min_root_freq: 2
+    min_pattern_freq: 2
+    generator_timeout_ms: 50
+    use_diacritized_surface: false
+    cache_corpus_analysis: true
+    add_bos_eos: true
+    clitic_peeler: true
+    peel_bare_alef: false
+    proper_nouns: unrooted
+    prepositions:
+    - من
+    - إلى
+    - عن
+    - على
+    - في
+    - حتى
+    - منذ
+    - مذ
+    - خلا
+    - عدا
+    - حاشا
+    - متى
+    - لعل
+    - كي
+    - لولا
+    - مع
+    - تجاه
+    - خلال
+    - بلا
+    func_words:
+    - هو
+    - هي
+    - هم
+    - هن
+    - هما
+    - أنا
+    - أنت
+    - أنتم
+    - أنتن
+    - أنتما
+    - نحن
+    - إيا
+    - هذا
+    - هذه
+    - هذان
+    - هاتان
+    - هؤلاء
+    - ذلك
+    - تلك
+    - ذاك
+    - أولئك
+    - الذي
+    - التي
+    - الذين
+    - اللذان
+    - اللتان
+    - اللاتي
+    - اللواتي
+    - اللائي
+    - أن
+    - إن
+    - أو
+    - أم
+    - ثم
+    - بل
+    - لكن
+    - إذا
+    - إذ
+    - حيث
+    - كما
+    - لو
+    - إما
+    - أما
+    - إلا
+    - ألا
+    - بينما
+    - حينما
+    - عندما
+    - كلما
+    - لأن
+    - كأن
+    - ليت
+    - إذن
+    - هكذا
+    - كذا
+    - مثلما
+    - طالما
+    - حسبما
+    - أينما
+    - فيما
+    - ذات
+    - ما
+    - ماذا
+    - لماذا
+    - كيف
+    - أين
+    - هل
+    - أي
+    - كم
+    - أيان
+    - أنى
+    - لا
+    - لم
+    - لن
+    - لما
+    - قد
+    - سوف
+  save_path: outputs/tokenizers/araroopat_maxpat40k_v3
+  load_path: outputs/tokenizers/araroopat_maxpat40k_v3
+model:
+  type: qwen3
+  name_or_path: outputs/experiments/qwen_native_vs_araroopat/araroopat_3phase_v3/training/warmup
+  dtype: bfloat16
+  device: auto
+training:
+  phases:
+    embedding_alignment:
+      enabled: false
+    warmup:
+      enabled: false
+    sft:
+      enabled: false
+evaluation:
+  intrinsic_metrics: true
+  morphological_metrics: true
+  downstream_metrics: true
+  eval_row_dump: true
+  score_normalization: char+pmi
+  num_fewshot: 3
+sweep:
+  tokenizers:
+  - type: araroopat
+    vocab_sizes:
+    - null
+    params:
+      max_roots: 10000
+      max_patterns: 40000
+      min_root_freq: 2
+      min_pattern_freq: 2
+      generator_timeout_ms: 50
+      use_diacritized_surface: false
+      cache_corpus_analysis: true
+      add_bos_eos: true
+      clitic_peeler: true
+      peel_bare_alef: false
+      proper_nouns: unrooted
+      prepositions:
+      - من
+      - إلى
+      - عن
+      - على
+      - في
+      - حتى
+      - منذ
+      - مذ
+      - خلا
+      - عدا
+      - حاشا
+      - متى
+      - لعل
+      - كي
+      - لولا
+      - مع
+      - تجاه
+      - خلال
+      - بلا
+      func_words:
+      - هو
+      - هي
+      - هم
+      - هن
+      - هما
+      - أنا
+      - أنت
+      - أنتم
+      - أنتن
+      - أنتما
+      - نحن
+      - إيا
+      - هذا
+      - هذه
+      - هذان
+      - هاتان
+      - هؤلاء
+      - ذلك
+      - تلك
+      - ذاك
+      - أولئك
+      - الذي
+      - التي
+      - الذين
+      - اللذان
+      - اللتان
+      - اللاتي
+      - اللواتي
+      - اللائي
+      - أن
+      - إن
+      - أو
+      - أم
+      - ثم
+      - بل
+      - لكن
+      - إذا
+      - إذ
+      - حيث
+      - كما
+      - لو
+      - إما
+      - أما
+      - إلا
+      - ألا
+      - بينما
+      - حينما
+      - عندما
+      - كلما
+      - لأن
+      - كأن
+      - ليت
+      - إذن
+      - هكذا
+      - كذا
+      - مثلما
+      - طالما
+      - حسبما
+      - أينما
+      - فيما
+      - ذات
+      - ما
+      - ماذا
+      - لماذا
+      - كيف
+      - أين
+      - هل
+      - أي
+      - كم
+      - أيان
+      - أنى
+      - لا
+      - لم
+      - لن
+      - لما
+      - قد
+      - سوف
+  tasks:
+  - type: acva
+    params:
+      num_fewshot: 0
+      max_length: 4096
+  - type: alghafa
+    params:
+      max_length: 4096
+  - type: arabic_exam
+    params:
+      max_length: 4096
+  - type: culture_arabic_mmlu
+    params:
+      max_length: 4096

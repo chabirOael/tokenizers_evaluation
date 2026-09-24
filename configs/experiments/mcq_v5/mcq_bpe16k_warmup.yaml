@@ -1,0 +1,68 @@
+# MCQ benchmarks under the fixed scorer (2026-09-24, docs/report.md §3.9 / §3.10): BPE-16K v3 Phase 2
+# checkpoint (the 131 M-token adaptation, before any Phase 3).
+# Eval only — every phase disabled, model.name_or_path =
+# outputs/experiments/qwen_native_vs_araroopat/bpe_16k_3phase_v3/training/warmup (a save_pretrained
+# directory), the tokenizer block = the one bpe_16k_3phase_v3 was trained with (loaded from load_path, never
+# retrained).
+# One protocol for the six files of this folder (only experiment / tokenizer / model.name_or_path /
+# sweep.tokenizers differ): acva 0-shot, alghafa / arabic_exam / culture_arabic_mmlu 3-shot, max_length 4096
+# for every task (so no row truncates except the same long Arabic-Exam passages for every tokenizer),
+# score_normalization char+pmi, per-row dumps on (cont_tokens = the scored window), intrinsic metrics on
+# (MEI needs RPS and compression). The primary comparison is on the rows no cell truncates
+# (scripts/mcq_compare.py); the full-benchmark numbers are secondary.
+experiment:
+  name: bpe_16k_3phase_v3_warmup_mcq4096
+  description: BPE-16K v3 Phase 2 checkpoint (no Phase 3) — ACVA / Alghafa / Arabic-Exam / Culture-MMLU, fixed scorer,
+    max_length 4096
+  output_dir: outputs/experiments/qwen_native_vs_araroopat/bpe_16k_3phase_v3_warmup_mcq4096
+  seed: 42
+  deterministic: true
+  created_at: '2026-09-24T11:34:18+00:00'
+tokenizer:
+  type: bpe
+  vocab_size: 16000
+  params:
+    min_frequency: 2
+  save_path: outputs/tokenizers/bpe_16k_v3
+  load_path: outputs/tokenizers/bpe_16k_v3
+model:
+  type: qwen3
+  name_or_path: outputs/experiments/qwen_native_vs_araroopat/bpe_16k_3phase_v3/training/warmup
+  dtype: bfloat16
+  device: auto
+training:
+  phases:
+    embedding_alignment:
+      enabled: false
+    warmup:
+      enabled: false
+    sft:
+      enabled: false
+evaluation:
+  intrinsic_metrics: true
+  morphological_metrics: true
+  downstream_metrics: true
+  eval_row_dump: true
+  score_normalization: char+pmi
+  num_fewshot: 3
+sweep:
+  tokenizers:
+  - type: bpe
+    vocab_sizes:
+    - 16000
+    params:
+      min_frequency: 2
+  tasks:
+  - type: acva
+    params:
+      num_fewshot: 0
+      max_length: 4096
+  - type: alghafa
+    params:
+      max_length: 4096
+  - type: arabic_exam
+    params:
+      max_length: 4096
+  - type: culture_arabic_mmlu
+    params:
+      max_length: 4096
