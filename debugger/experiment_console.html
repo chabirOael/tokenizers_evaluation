@@ -2480,6 +2480,7 @@ function evalRowDetail(r, meta){
     h('th', {title: 'raw sum of log-probabilities'}, 'll'),
     h('th', {title: 'log-likelihood divided by the continuation’s character length'}, 'char'),
     h('th', {title: 'log-likelihood minus the unconditioned log-likelihood'}, 'pmi'),
+    h('th', {title: 'continuation tokens the scorer summed (0 = truncation sentinel); dumps before schema 2 do not record it'}, 'tok'),
     h('th', {}, '')));
   const n = (r.continuations || []).length;
   for (let i = 0; i < n; i++){
@@ -2493,6 +2494,7 @@ function evalRowDetail(r, meta){
       h('td', {class: 'mono'}, r.ll && r.ll[i]!=null ? r.ll[i].toFixed(3) : '—'),
       h('td', {class: 'mono'}, r.score_char && r.score_char[i]!=null ? r.score_char[i].toFixed(3) : '—'),
       h('td', {class: 'mono'}, r.score_pmi && r.score_pmi[i]!=null ? r.score_pmi[i].toFixed(3) : '—'),
+      h('td', {class: 'mono'}, r.cont_tokens && r.cont_tokens[i]!=null ? String(r.cont_tokens[i]) : '—'),
       h('td', {}, ...marks)));
   }
   const kv = h('div', {class: 'kv', style: 'margin-top:10px'});

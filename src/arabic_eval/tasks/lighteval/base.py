@@ -33,6 +33,7 @@ import torch
 import torch.nn.functional as F
 from tqdm import tqdm
 
+from arabic_eval.data.answer_only_masking import continuation_start
 from arabic_eval.evaluation.eval_rows import (
     SENTINEL_LL,
     UNIT_BY_EMBEDDING,
@@ -77,6 +78,30 @@ except ImportError:
 # Core log-likelihood computation (LightEval methodology)
 # ---------------------------------------------------------------------------
 
+class ScoredLogLikelihood(float):
+    """The float ``_compute_loglikelihood`` returns, carrying how it was scored.
+
+    Still a plain ``float`` for every consumer of LightEval's ``loglikelihood``
+    protocol (arithmetic, ``np.argmax``, JSON); the two attributes let the row
+    dump record the scored window without a second encode:
+
+      * ``n_tokens`` — continuation tokens summed (0 for the sentinel);
+      * ``truncated`` — the ``max_length`` cap reached the full encoding, so
+        the continuation may be cut (or, with ``n_tokens == 0``, gone).
+    """
+
+    __slots__ = ("n_tokens", "truncated")
+
+    def __new__(cls, value: float, n_tokens: int = 0, truncated: bool = False):
+        obj = float.__new__(cls, value)
+        obj.n_tokens = int(n_tokens)
+        obj.truncated = bool(truncated)
+        return obj
+
+
+_warned_empty_prefix = False
+
+
 @torch.no_grad()
 def _compute_loglikelihood(
     model: BaseModelAdapter,
@@ -84,40 +109,84 @@ def _compute_loglikelihood(
     context: str,
     continuation: str,
     max_length: int = 512,
-) -> float:
+) -> ScoredLogLikelihood:
     """
     Compute log P(continuation | context) following LightEval's approach.
 
-    The full sequence ``context + continuation`` is encoded once; the model's
-    forward pass yields logits; we sum the log-probabilities of the continuation
-    tokens only (the tokens after ``len(context_tokens)``).
+    ``context`` and ``context + continuation`` are encoded separately; the
+    continuation is the tokens of the full encoding **after the longest common
+    prefix** of the two, once a trailing ``</s>`` has been stripped from each
+    (``answer_only_masking.continuation_start`` — the rule the answer-only
+    training loss uses). One forward pass over the full encoding (without that
+    ``</s>``) yields logits and we sum the log-probabilities of exactly those
+    tokens.
+
+    Scoring window fix (2026-09-24): the window used to be
+    ``full[len(context_ids):]``, which assumed the context encoding is a token
+    prefix of the full one. Every from-scratch tokenizer appends ``</s>`` to a
+    standalone encoding, so that window skipped the first continuation token
+    and scored the trailing ``</s>`` instead (for a single-piece letter under
+    BPE, ``</s>`` alone). For a tokenizer that appends nothing (the native
+    wrappers) the two windows coincide and the sum is unchanged.
 
     CharacterBERT (``character_cnn``) uses word-level logits: the batch is built
     from ``char_ids`` instead of ``input_ids``, but continuation scoring follows
-    the same causal-LM approach using word vocabulary indices.
+    the same causal-LM approach using word vocabulary indices. The prefix is
+    compared on ``(word id, char ids)`` pairs so two different out-of-vocabulary
+    words (the same UNK word id) never count as shared.
     """
+    global _warned_empty_prefix
     full_text = context + continuation
     ctx_enc = tokenizer.encode(context, max_length=max_length, truncation=True, padding=False)
     full_enc = tokenizer.encode(full_text, max_length=max_length, truncation=True, padding=False)
 
-    ctx_len = len(ctx_enc.input_ids)
-    full_len = len(full_enc.input_ids)
+    raw_full_len = len(full_enc.input_ids)
+    truncated = bool(max_length) and raw_full_len >= max_length
+    eos_id = (getattr(tokenizer, "special_tokens", None) or {}).get("eos_token")
+    char_cnn = tokenizer.embedding_type == EmbeddingType.CHARACTER_CNN
 
-    if full_len <= ctx_len:
+    if char_cnn:
+        ctx_keys = [(i, tuple(c)) for i, c in zip(ctx_enc.input_ids, ctx_enc.char_ids)]
+        full_keys = [(i, tuple(c)) for i, c in zip(full_enc.input_ids, full_enc.char_ids)]
+        # The EOS word's key, from whichever encoding still ends in it (a
+        # truncated full encoding has lost its EOS; the context may not have).
+        eos_key = next(
+            (keys[-1] for keys in (full_keys, ctx_keys) if keys and keys[-1][0] == eos_id),
+            None,
+        )
+        kept_keys, k = continuation_start(ctx_keys, full_keys, eos_key)
+        full_len = len(kept_keys)
+    else:
+        full_ids, k = continuation_start(ctx_enc.input_ids, full_enc.input_ids, eos_id)
+        full_len = len(full_ids)
+
+    if full_len <= k:
         # Truncation at ``max_length`` left no room for the continuation, so
         # there is nothing to score. Every choice of such a row returns this
         # same sentinel and the row's argmax is an artifact of the cap, not a
         # decision — ``eval_rows`` flags it as ``all_sentinel``.
-        return SENTINEL_LL
+        return ScoredLogLikelihood(SENTINEL_LL, 0, truncated)
+    if k == 0:
+        # No shared prefix (an empty context under a BOS-less tokenizer, or a
+        # context whose only token merged with the continuation): the first
+        # continuation token has no position to be predicted from.
+        if not _warned_empty_prefix:
+            logger.warning(
+                "scorer: context and context+continuation share no token prefix "
+                "(context=%r) — returning the sentinel; logged once", context[:80],
+            )
+            _warned_empty_prefix = True
+        return ScoredLogLikelihood(SENTINEL_LL, 0, truncated)
 
-    attention_mask = torch.tensor([full_enc.attention_mask], device=model.device)
+    input_ids_list = full_enc.input_ids[:full_len]
+    attention_mask = torch.tensor([full_enc.attention_mask[:full_len]], device=model.device)
 
-    if tokenizer.embedding_type == EmbeddingType.CHARACTER_CNN:
+    if char_cnn:
         # CharacterBERT: input is 3-D char_ids; output logits are over word vocab.
-        char_ids = torch.tensor([full_enc.char_ids], device=model.device)
+        char_ids = torch.tensor([full_enc.char_ids[:full_len]], device=model.device)
         batch = {"char_ids": char_ids, "attention_mask": attention_mask}
     else:
-        input_ids = torch.tensor([full_enc.input_ids], device=model.device)
+        input_ids = torch.tensor([input_ids_list], device=model.device)
         batch = {"input_ids": input_ids, "attention_mask": attention_mask,
                  "labels": input_ids.clone()}
 
@@ -126,13 +195,13 @@ def _compute_loglikelihood(
     log_probs = F.log_softmax(logits[0], dim=-1)       # [seq_len, vocab_size]
 
     # Causal LM: position i predicts position i+1.
-    # Sum log P(token_{ctx_len} … token_{full_len-1}) given their left contexts.
+    # Sum log P(token_k … token_{full_len-1}) given their left contexts.
     total_ll = 0.0
-    for pos in range(ctx_len - 1, full_len - 1):
-        next_tok = full_enc.input_ids[pos + 1]
+    for pos in range(k - 1, full_len - 1):
+        next_tok = input_ids_list[pos + 1]
         total_ll += log_probs[pos, next_tok].item()
 
-    return total_ll
+    return ScoredLogLikelihood(total_ll, full_len - k, truncated)
 
 
 # ---------------------------------------------------------------------------
@@ -332,6 +401,11 @@ class LightEvalModelWrapper:
                     per_config[cfg_key][1] += 1
 
             if row_sink is not None:
+                # ``_compute_loglikelihood`` returns floats that know their
+                # scored window; a stubbed scorer (tests) returns plain floats
+                # and the dump then leaves the two per-choice fields empty.
+                cont_tokens = [getattr(v, "n_tokens", None) for v in log_likelihoods]
+                cont_truncated = [getattr(v, "truncated", None) for v in log_likelihoods]
                 row_sink(build_row_record(
                     row_index=idx,
                     example=ex,
@@ -347,6 +421,8 @@ class LightEvalModelWrapper:
                     pred_idx_pmi=pred_pmi,
                     prompt_units=self._prompt_units(context),
                     max_length=self.max_length,
+                    cont_tokens=None if None in cont_tokens else cont_tokens,
+                    cont_truncated=None if None in cont_truncated else cont_truncated,
                 ))
 
             if predicted == gold:

@@ -379,7 +379,7 @@ EXPORT_FIELDS: Sequence[str] = (
     "row_index", "source_config", "prompt", "question", "context",
     "choices", "continuations", "gold_idx", "gold_text",
     "pred_idx", "pred_text", "correct",
-    "ll", "score_char", "score_pmi", "margin", "decision_margin",
+    "ll", "score_char", "score_pmi", "cont_tokens", "margin", "decision_margin",
     "prompt_units", "n_choices",
     "sentinel", "all_sentinel", "hit_cap", "near_tie", "disagree",
 )

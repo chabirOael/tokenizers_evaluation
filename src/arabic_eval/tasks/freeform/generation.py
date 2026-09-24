@@ -64,6 +64,7 @@ from dataclasses import dataclass, field
 from typing import Any, List, NamedTuple, Optional, Sequence, Tuple
 
 from arabic_eval.data import finetune_corpora as templates
+from arabic_eval.data.answer_only_masking import strip_trailing_eos  # noqa: F401 — re-exported
 from arabic_eval.models.base import BaseModelAdapter
 from arabic_eval.tasks.freeform.metrics import Loop, detect_loop
 from arabic_eval.tokenizers.base import BaseTokenizer, EmbeddingType
@@ -167,15 +168,6 @@ def measure_chars_per_token(tokenizer: BaseTokenizer, texts: Sequence[str]) -> f
 def derive_token_cap(cfg: DecodingConfig, chars_per_token: float) -> int:
     cap = math.ceil(cfg.max_output_chars / max(chars_per_token, 1e-6) * cfg.token_cap_margin) + 8
     return int(min(max(cap, cfg.token_cap_floor), cfg.token_cap_ceiling))
-
-
-def strip_trailing_eos(ids: List[int], eos_id: Optional[int]) -> List[int]:
-    """Every from-scratch tokenizer appends ``</s>`` to a standalone encoding
-    (the LCP masking helper exists for the same reason); a prompt must not end
-    with it or the model is asked to continue past an end-of-text."""
-    if eos_id is not None and ids and ids[-1] == eos_id:
-        return ids[:-1]
-    return ids
 
 
 def truncate_at_marker(text: str, markers: Sequence[str]) -> Tuple[str, bool]:

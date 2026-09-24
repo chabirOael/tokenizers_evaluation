@@ -45,7 +45,10 @@ logger = logging.getLogger("arabic_eval.evaluation.eval_rows")
 # Constants
 # --------------------------------------------------------------------------
 
-SCHEMA_VERSION = 1
+#: 2 (2026-09-24): ``cont_tokens`` per choice, and ``hit_cap`` also set when the
+#: cap reached a continuation's full encoding (1: the prompt's only). Readers
+#: take both versions — a missing column is simply absent from the page.
+SCHEMA_VERSION = 2
 
 #: Value ``_compute_loglikelihood`` returns when truncation left no room for
 #: the continuation (``full_len <= ctx_len``). Every choice scoring this means
@@ -102,7 +105,7 @@ PAGE_COLUMNS: Sequence[str] = (
     "choices", "continuations", "gold_idx", "gold_text",
     "pred_idx", "pred_text", "pred_idx_char", "pred_idx_pmi",
     "correct", "correct_char", "correct_pmi",
-    "ll", "score_char", "score_pmi", "uncond_ll",
+    "ll", "score_char", "score_pmi", "uncond_ll", "cont_tokens",
     "margin", "margin_ll", "decision_margin", "prompt_units", "n_choices",
     "sentinel", "all_sentinel", "hit_cap", "near_tie", "disagree",
 )
@@ -163,6 +166,9 @@ def eval_row_schema(metadata: Optional[Dict[str, Any]] = None):
         pa.field("score_char", pa.list_(pa.float32())),
         pa.field("score_pmi", pa.list_(pa.float32())),
         pa.field("uncond_ll", pa.list_(pa.float32())),
+        # Continuation tokens the scorer summed, per choice (0 = sentinel):
+        # the audit of the scoring window (schema 2). Null when unknown.
+        pa.field("cont_tokens", pa.list_(pa.int16())),
         pa.field("margin", pa.float32()),
         pa.field("margin_ll", pa.float32()),
         pa.field("decision_margin", pa.float32()),
@@ -204,6 +210,8 @@ def build_row_record(
     pred_idx_pmi: Optional[int],
     prompt_units: Optional[int] = None,
     max_length: Optional[int] = None,
+    cont_tokens: Optional[Sequence[int]] = None,
+    cont_truncated: Optional[Sequence[bool]] = None,
 ) -> Dict[str, Any]:
     """Build one dump record.
 
@@ -218,6 +226,11 @@ def build_row_record(
     answer, and therefore 0 whenever it was right (the convention the failure
     reports already use). ``decision_margin`` is ``top1 - top2``: how sure the
     decision was, regardless of correctness. ``near_tie`` keys off the latter.
+
+    ``cont_tokens`` / ``cont_truncated`` are the scorer's per-choice window
+    (``ScoredLogLikelihood.n_tokens`` / ``.truncated``): the first is stored,
+    the second only feeds ``hit_cap`` — the cap touched the row when the
+    prompt reached it *or* when it reached a continuation's full encoding.
     """
     conts = [str(c) for c in continuations]
     lls = [float(v) for v in log_likelihoods]
@@ -261,6 +274,7 @@ def build_row_record(
             None if unconditioned_log_likelihoods is None
             else [float(v) for v in unconditioned_log_likelihoods]
         ),
+        "cont_tokens": None if cont_tokens is None else [int(v) for v in cont_tokens],
         "margin": margin,
         "margin_ll": margin_ll,
         "decision_margin": decision_margin,
@@ -269,8 +283,9 @@ def build_row_record(
         "sentinel": any(sentinel_flags),
         "all_sentinel": bool(sentinel_flags) and all(sentinel_flags),
         "hit_cap": bool(
-            prompt_units is not None and max_length is not None
-            and prompt_units >= max_length
+            (prompt_units is not None and max_length is not None
+             and prompt_units >= max_length)
+            or (cont_truncated is not None and any(cont_truncated))
         ),
         "near_tie": decision_margin is not None and decision_margin < NEAR_TIE_MARGIN,
         "disagree": (
