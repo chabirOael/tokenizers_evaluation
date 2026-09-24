@@ -20,6 +20,10 @@ the prompts agree), and reports per task and per cell:
     phrases on every row, e.g. ``هو رأي ايجابي``) and the five **choice-text**
     MCQ sub-configs (per-row answer phrases). Every Alghafa sub-config scores
     the choice text (LightEval's official prompt; no letter scoring);
+  * for the fixed-label groups (ACVA; Alghafa's true/false and sentiment
+    sub-configs) the predicted-label shares under char and PMI against the gold
+    shares, flagging a class collapse (one label on >= 90 % of rows) — Alghafa
+    shuffles the choice order per row, so a position histogram cannot show it;
   * MEI from ``all_metrics.json``.
 
 For every ``--pairs A:B``: the accuracy difference A − B on the intersection
@@ -73,8 +77,18 @@ ALGHAFA_FIXED_LABEL = frozenset({
 
 MAX_MD_SUBCONFIGS = 12
 
+#: A group of rows whose continuations are drawn from at most this many distinct
+#: texts is a fixed-label group (ACVA's صح / خطأ, Alghafa's sentiment labels);
+#: its predicted-label shares are reported, because a scorer that picks one label
+#: on almost every row (class collapse) scores the label's base rate, and Alghafa
+#: shuffles the choice order per row, so a position histogram cannot show it.
+MAX_FIXED_LABELS = 4
+#: A predicted-label share at or above this is flagged as a collapse.
+COLLAPSE_SHARE = 0.9
+
 COLUMNS = ("row_index", "source_config", "prompt", "correct_char", "correct_pmi",
-           "hit_cap", "all_sentinel", "sentinel", "near_tie", "cont_tokens")
+           "hit_cap", "all_sentinel", "sentinel", "near_tie", "cont_tokens",
+           "continuations", "gold_idx", "pred_idx_char", "pred_idx_pmi")
 
 
 # ---------------------------------------------------------------------------
@@ -106,6 +120,15 @@ def load_dump(cell_dir: Path, task: str) -> Optional[Dict[str, Any]]:
         return arr[order]
 
     prompts = tbl.column("prompt").to_pylist()
+    conts = tbl.column("continuations").to_pylist()
+
+    def labels(idx_name):
+        if idx_name not in have:
+            return None
+        idx = tbl.column(idx_name).to_pylist()
+        return np.asarray([c[i].strip() if i is not None and 0 <= i < len(c) else None
+                           for c, i in zip(conts, idx)], dtype=object)[order]
+
     return {
         "path": path,
         "meta": meta,
@@ -120,6 +143,10 @@ def load_dump(cell_dir: Path, task: str) -> Optional[Dict[str, Any]]:
         "sentinel": col("sentinel", bool, fill=False),
         "near_tie": col("near_tie", bool, fill=False),
         "cont_tokens": col("cont_tokens"),
+        "label_set": np.asarray([frozenset(c.strip() for c in cs) for cs in conts], dtype=object)[order],
+        "gold_label": labels("gold_idx"),
+        "pred_label_char": labels("pred_idx_char"),
+        "pred_label_pmi": labels("pred_idx_pmi"),
     }
 
 
@@ -151,6 +178,50 @@ def mean_cont_tokens(d: Dict[str, Any], mask: np.ndarray) -> Optional[float]:
         return None
     vals = [t for row in ct[mask] if row is not None for t in row if t]
     return round(float(np.mean(vals)), 4) if vals else None
+
+
+def fixed_label_groups(d: Dict[str, Any]) -> Dict[str, np.ndarray]:
+    """Row masks of the fixed-label groups of a task: the whole task when all its
+    rows draw their continuations from <= MAX_FIXED_LABELS texts (ACVA), else each
+    sub-config that does (Alghafa's true/false and sentiment ones)."""
+    labels_all = frozenset().union(*d["label_set"]) if len(d["label_set"]) else frozenset()
+    if 0 < len(labels_all) <= MAX_FIXED_LABELS:
+        return {"_all": np.ones(len(d["label_set"]), dtype=bool)}
+    out = {}
+    sub = d["source_config"]
+    if sub is None:
+        return out
+    for cfg in sorted(set(sub.tolist())):
+        m = sub == cfg
+        labels = frozenset().union(*d["label_set"][m])
+        if 0 < len(labels) <= MAX_FIXED_LABELS:
+            out[cfg] = m
+    return out
+
+
+def label_shares(d: Dict[str, Any], mask: np.ndarray) -> Optional[Dict[str, Any]]:
+    """Gold and predicted label shares (char, PMI) over ``mask``, with the top
+    predicted label per normalization and a collapse flag."""
+    n = int(mask.sum())
+    if not n or d.get("gold_label") is None:
+        return None
+
+    def shares(arr):
+        if arr is None:
+            return None
+        vals, counts = np.unique(np.asarray([str(v) for v in arr[mask]], dtype=object), return_counts=True)
+        return {str(k): round(float(c) / n, 4) for k, c in zip(vals.tolist(), counts.tolist())}
+
+    out: Dict[str, Any] = {"n": n, "gold": shares(d["gold_label"])}
+    for norm in ("char", "pmi"):
+        sh = shares(d.get(f"pred_label_{norm}"))
+        out[norm] = sh
+        if sh:
+            top = max(sh.items(), key=lambda kv: kv[1])
+            out[f"top_{norm}"] = {"label": top[0], "share": top[1],
+                                  "gold_share": (out["gold"] or {}).get(top[0], 0.0),
+                                  "collapse": top[1] >= COLLAPSE_SHARE}
+    return out
 
 
 def mcnemar_exact_p(only_a: int, only_b: int) -> Optional[float]:
@@ -265,6 +336,9 @@ def compare(experiment: Path, cells: Sequence[str], tasks: Sequence[str] = TASKS
                                "acc_pmi_int": _acc(m & keep, d["correct_pmi"]),
                                "mean_cont_tokens": mean_cont_tokens(d, m)}
                 rec["per_subconfig"] = by
+            fl = fixed_label_groups(d)
+            if fl:
+                rec["label_shares"] = {g: label_shares(d, m & keep) for g, m in fl.items()}
             if groups:
                 rec["groups"] = {
                     g: {"rows": int(m.sum()), "rows_int": int((m & keep).sum()),
@@ -360,6 +434,25 @@ def to_markdown(res: Dict[str, Any]) -> str:
                 g = r["groups"]
                 lines.append(f"| {c} | {_f(g['fixed_label']['acc_char_int'])} | {_f(g['fixed_label']['acc_pmi_int'])} | "
                              f"{_f(g['choice_text']['acc_char_int'])} | {_f(g['choice_text']['acc_pmi_int'])} |")
+            lines.append("")
+        if any("label_shares" in r for r in t["cells"].values()):
+            gnames = sorted({g for r in t["cells"].values() for g in r.get("label_shares", {})})
+            lines.append("Fixed-label groups, intersection rows — the most-predicted label and its share under "
+                         f"char / PMI (gold share of that label in brackets; ⚠ = share ≥ {COLLAPSE_SHARE:.0%}, "
+                         "a class collapse that scores the label's base rate):")
+            lines.append("")
+            lines.append("| cell | " + " | ".join("all rows" if g == "_all" else g for g in gnames) + " |")
+            lines.append("|---|" + "---|" * len(gnames))
+
+            def _top(ls, norm):
+                t_ = (ls or {}).get(f"top_{norm}")
+                if not t_:
+                    return "—"
+                return f"{t_['label']} {t_['share']:.2f} [{t_['gold_share']:.2f}]{' ⚠' if t_['collapse'] else ''}"
+            for c, r in t["cells"].items():
+                ls = r.get("label_shares", {})
+                lines.append(f"| {c} | " + " | ".join(
+                    f"{_top(ls.get(g), 'char')} / {_top(ls.get(g), 'pmi')}" for g in gnames) + " |")
             lines.append("")
         if t["pairs"]:
             lines.append("| A − B | norm | n | acc A | acc B | Δ | 95 % CI | only A | only B | McNemar p |")

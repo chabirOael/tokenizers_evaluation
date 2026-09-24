@@ -173,3 +173,42 @@ def test_cli_writes_md_and_json(exp):
 def test_missing_dump_is_reported_not_fatal(exp):
     res = mc.compare(exp, ["A", "B"], ["acva", "arabic_exam"])
     assert res["tasks"]["arabic_exam"] == {"missing": ["A", "B"]}
+
+
+def _label_record(i: int, conts, gold: int, pred_char: int, pred_pmi: int, cfg: str):
+    n = len(conts)
+    sc = [-2.0] * n; sc[pred_char] = -1.0
+    sp = [-2.0] * n; sp[pred_pmi] = -1.0
+    return build_row_record(
+        row_index=i, example={"question": f"q{i}", "choices": [c.strip() for c in conts], "_source_config": cfg},
+        prompt=f"prompt {i}", continuations=conts, log_likelihoods=[-1.0] * n, scores_char=sc, scores_pmi=sp,
+        unconditioned_log_likelihoods=[-0.5] * n, gold_idx=gold, pred_idx=pred_pmi, pred_idx_char=pred_char,
+        pred_idx_pmi=pred_pmi, prompt_units=10, max_length=MAXLEN, cont_tokens=[1] * n,
+        cont_truncated=[False] * n)
+
+
+def test_label_collapse_is_read_by_label_text_not_position(tmp_path):
+    """Alghafa shuffles the choice order per row: a cell that always picks the
+    same *label* spreads evenly over positions. The diagnostic must see it."""
+    rows = []
+    for i in range(20):
+        conts = [" ايجابي", " سلبي"] if i % 2 == 0 else [" سلبي", " ايجابي"]
+        gold = i % 4 // 2                   # half the golds each label
+        pos_pos = conts.index(" ايجابي")
+        rows.append(_label_record(i, conts, gold, pred_char=gold, pred_pmi=pos_pos, cfg=FIXED))
+    for i in range(20, 24):                 # a choice-text sub-config: not a fixed-label group
+        conts = [f" جواب{i}{k}" for k in range(4)] + [f" بديل{i}"]
+        rows.append(_label_record(i, conts, 0, 0, 0, cfg=CHOICE))
+    _write(tmp_path, "X", "alghafa", rows)
+    res = mc.compare(tmp_path, ["X"], ["alghafa"])
+    ls = res["tasks"]["alghafa"]["cells"]["X"]["label_shares"]
+    assert set(ls) == {FIXED}
+    assert ls[FIXED]["top_pmi"] == {"label": "ايجابي", "share": 1.0,
+                                    "gold_share": pytest.approx(0.5), "collapse": True}
+    assert ls[FIXED]["top_char"]["collapse"] is False
+    assert "⚠" in mc.to_markdown(res)
+
+
+def test_whole_task_fixed_labels_is_one_group(exp):
+    res = mc.compare(exp, ["A", "B"], ["acva"])
+    assert set(res["tasks"]["acva"]["cells"]["B"]["label_shares"]) == {"_all"}
