@@ -288,7 +288,9 @@ def test_schema_bundle_has_registries_and_presets():
     # task params come from the tasks' param_spec(), not from configs/tasks/*.yaml (generated documentation)
     assert "tasks" not in b["presets"]
     names = [s["name"] for s in b["task_params"]["acva"]]
-    assert names == ["dataset_name", "dataset_config", "cache_dir", "max_length", "seed", "clean_latin_rows", "num_fewshot"]
+    assert names == ["dataset_name", "dataset_config", "cache_dir", "max_length", "seed", "clean_latin_rows", "num_fewshot",
+                     "rows_file"]
+    assert [s["name"] for s in b["task_params"]["arabic_exam"]][-2:] == ["rows_file", "label_rotation"]
     assert {s["name"] for s in b["task_params"]["freeform_cidar"]} >= {"max_output_chars", "stop_markers", "loop_stop", "heldout_path"}
 
 
