@@ -18,6 +18,8 @@ experiment:
   seed: 42
   deterministic: true
   created_at: '2026-09-24T11:34:18+00:00'
+  runs:
+    - {started_at: "2026-09-25T01:31:11+00:00", run_id: mcq_v5_chain_mcq_bpe16k_warmup, source: cli}
 tokenizer:
   type: bpe
   vocab_size: 16000
