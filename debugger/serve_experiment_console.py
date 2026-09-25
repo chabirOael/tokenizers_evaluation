@@ -46,6 +46,12 @@ Routes
                                     (outcome, scoring, subconfig, flags, q, sort, page, page_size)
     GET  /api/eval/row?path=&position=   one full record
     GET  /api/eval/export?path=&…   the current selection as a CSV download
+    GET  /api/eval/compare/tree     every experiment's benchmarks with the cells that scored each
+    GET  /api/eval/compare?cells=&task=&…   the same benchmark rows in several cells, side by side
+                                    (anchor, scoring, match=any|all|anchor, agreement, clean_only,
+                                    the filters of /rows, the cross-cell sorts, paging)
+    GET  /api/eval/compare/row?cells=&task=&row_index=   one shared row in full, per cell
+    GET  /api/eval/compare/export?cells=&task=&…   the same comparison as a CSV download
     GET  /api/judge/configs         configs/judges/*.yaml with backend, model and readiness (venv / API key)
     POST /api/judge/start           {"experiment", "judges": [names], "cells": [names] (default: all),
                                      "baseline", "limit", "overwrite", "force"}
@@ -267,6 +273,17 @@ class Handler(SimpleHTTPRequestHandler):
             self._send_json(eval_rows.row(REPO_ROOT, q.get("path", ""), int(q.get("position") or 0)))
         elif route == "/api/eval/export":
             name, text = eval_rows.export_csv(REPO_ROOT, q.get("path", ""), q)
+            self._send_csv(name, text)
+        elif route == "/api/eval/compare/tree":
+            self._send_json(eval_rows.compare_tree(REPO_ROOT))
+        elif route == "/api/eval/compare":
+            self._send_json(eval_rows.compare(REPO_ROOT, _csv_list(q.get("cells")), q.get("task", ""), q))
+        elif route == "/api/eval/compare/row":
+            self._send_json(eval_rows.compare_row(REPO_ROOT, _csv_list(q.get("cells")),
+                                                  q.get("task", ""), q.get("row_index") or 0))
+        elif route == "/api/eval/compare/export":
+            name, text = eval_rows.export_compare_csv(REPO_ROOT, _csv_list(q.get("cells")),
+                                                      q.get("task", ""), q)
             self._send_csv(name, text)
         elif route == "/api/judge/configs":
             self._send_json({"judges": judge_configs(PATHS)})

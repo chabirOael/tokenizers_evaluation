@@ -11,6 +11,10 @@ Three layers, each pinned where it can actually go wrong:
      empty eval still leaves a readable file carrying the schema.
   §3 browser — discovery over a sweep-shaped tree, query paging, CSV export,
      and the path guard.
+  §4 compare — several cells on one benchmark: the row_index join and what it
+     leaves out, the agreement filters (McNemar's cells for a pair), the
+     truncation-free intersection, the cross-cell sorts, and the guards that
+     keep a comparison from looking more comparable than it is.
 
 Everything runs offline: the model is a mocked log-likelihood and the
 tokenizer a stub, so no GPU, no network, no benchmark download.
@@ -641,3 +645,339 @@ class TestReaderGuards:
         f = EvalRowFile(_make_dump(tmp_path, n=8))
         with pytest.raises(ValueError, match="outside the file"):
             f.rows([0, 99])
+
+
+# ===========================================================================
+# §4. Compare — the same benchmark rows, several cells side by side
+# ===========================================================================
+
+def _compare_tree(tmp_path: Path, *, cells=None, task: str = "stub_bench") -> Path:
+    """A sweep of hand-built cells, so every cross-cell case is reachable.
+
+    ``cells`` maps a cell name to a spec: ``preds`` (one predicted index per
+    row, gold is always ``i % 4``), optional ``flags`` (row index → dict of
+    flag overrides), ``rows`` (the ``row_index`` values this cell holds, for
+    the partial-dump case), ``pmi`` (False writes a char-only dump) and
+    ``meta`` (metadata overrides).
+    """
+    cells = cells or {}
+    repo = tmp_path / "repo"
+    base = repo / "outputs" / "experiments" / "cmp_demo"
+    for name, spec in cells.items():
+        row_ids = spec.get("rows", list(range(8)))
+        preds = spec["preds"]
+        meta = {"task": task, "dataset_name": "stub/bench", "n_examples": len(row_ids),
+                "score_normalization": "char+pmi" if spec.get("pmi", True) else "char",
+                "primary": "pmi" if spec.get("pmi", True) else "char",
+                "max_length": 512, "num_fewshot": 0, "unit": "tokens",
+                "tokenizer_class": name, "clean_latin_rows": False}
+        meta.update(spec.get("meta") or {})
+        cell_dir = base / name
+        with EvalRowWriter(cell_dir / "eval_rows" / f"{task}.parquet", metadata=meta) as w:
+            for pos, row_index in enumerate(row_ids):
+                gold = row_index % 4
+                pred = preds[pos % len(preds)]
+                lls = [-5.0] * 4
+                lls[pred] = -1.0                      # the pick, under every normalization
+                rec = build_row_record(
+                    row_index=row_index,
+                    example={"question": f"سؤال {row_index}",
+                             "choices": [f"خيار{j}" for j in range(4)],
+                             "_source_config": f"sub_{row_index % 2}"},
+                    prompt=f"السؤال: سؤال {row_index}\nالإجابة:",
+                    continuations=[" أ", " ب", " ج", " د"],
+                    log_likelihoods=lls,
+                    scores_char=lls,
+                    scores_pmi=lls if spec.get("pmi", True) else None,
+                    unconditioned_log_likelihoods=None,
+                    gold_idx=gold, pred_idx=pred,
+                    pred_idx_char=pred, pred_idx_pmi=pred if spec.get("pmi", True) else None,
+                    prompt_units=spec.get("units", 10) + row_index,
+                    max_length=512,
+                    cont_tokens=[spec.get("cont_tokens", 1)] * 4,
+                )
+                rec.update((spec.get("flags") or {}).get(row_index, {}))
+                w.write(rec)
+        (cell_dir / "config.json").write_text(json.dumps({
+            "tokenizer": {"type": name, "vocab_size": 16000},
+            "model": {"name_or_path": "Qwen/Qwen3-4B-Base"},
+        }), encoding="utf-8")
+    return repo
+
+
+def _dirs(*names: str) -> List[str]:
+    return [f"outputs/experiments/cmp_demo/{n}" for n in names]
+
+
+class TestCompareTree:
+    def test_lists_benchmarks_with_the_cells_that_scored_them(self, tmp_path: Path):
+        repo = _compare_tree(tmp_path, cells={"a": {"preds": [0]}, "b": {"preds": [1]}})
+        exp = browser.compare_tree(repo)["experiments"][0]
+        assert exp["experiment"] == "cmp_demo" and exp["n_comparable"] == 1
+        task = exp["tasks"][0]
+        assert task["task"] == "stub_bench" and task["n_cells"] == 2
+        assert [c["cell"] for c in task["cells"]] == ["a", "b"]
+        assert all(c["available"] and c["reason"] is None for c in task["cells"])
+
+    def test_a_dump_still_being_written_says_so_instead_of_vanishing(self, tmp_path: Path):
+        repo = _compare_tree(tmp_path, cells={"a": {"preds": [0]}, "b": {"preds": [1]}})
+        # A live writer: the file exists with no footer, and a progress file beside it.
+        live = repo / "outputs/experiments/cmp_demo/c/eval_rows"
+        w = EvalRowWriter(live / "stub_bench.parquet", metadata={"task": "stub_bench"})
+        w.write(_record())
+        task = browser.compare_tree(repo)["experiments"][0]["tasks"][0]
+        entry = next(c for c in task["cells"] if c["cell"] == "c")
+        assert entry["available"] is False and "still being evaluated" in entry["reason"]
+        assert task["n_cells"] == 2                    # the other two can still be compared
+        w.close()
+
+
+class TestCompare:
+    def test_shape_anchor_and_per_cell_columns(self, tmp_path: Path):
+        repo = _compare_tree(tmp_path, cells={
+            "araroopat": {"preds": [0, 1, 2, 3]},      # right on every row: gold == row % 4
+            "bpe": {"preds": [0]},                     # right only when gold is 0
+        })
+        d = browser.compare(repo, _dirs("araroopat", "bpe"), "stub_bench", {"page_size": 10})
+        assert d["task"] == "stub_bench"
+        assert d["anchor"].endswith("/araroopat")      # first cell by default
+        assert d["n_common"] == 8 and d["total"] == 8 and len(d["rows"]) == 8
+        assert [c["cell"].split("/")[-1] for c in d["cells"]] == ["araroopat", "bpe"]
+        assert [c["tokenizer"] for c in d["cells"]] == ["araroopat", "bpe"]
+        acc = {c["cell"].split("/")[-1]: c["summary"]["accuracy"] for c in d["cells"]}
+        assert acc == {"araroopat": 1.0, "bpe": 0.25}
+        row = d["rows"][0]
+        assert set(row["cells"]) == set(_dirs("araroopat", "bpe"))
+        block = row["cells"][_dirs("araroopat")[0]]
+        assert block["correct"] is True and block["question_match"] is True
+        assert block["prompt_units"] == 10 and block["cont_tokens_gold"] == 1
+
+    def test_anchor_can_be_chosen_and_must_be_selected(self, tmp_path: Path):
+        repo = _compare_tree(tmp_path, cells={"a": {"preds": [0]}, "b": {"preds": [1]}})
+        d = browser.compare(repo, _dirs("a", "b"), "stub_bench", {"anchor": _dirs("b")[0]})
+        assert d["anchor"] == _dirs("b")[0]
+        with pytest.raises(browser.EvalRowsError, match="not one of the compared cells"):
+            browser.compare(repo, _dirs("a", "b"), "stub_bench", {"anchor": "outputs/experiments/cmp_demo/z"})
+
+    def test_only_shared_rows_are_compared_and_the_rest_counted(self, tmp_path: Path):
+        repo = _compare_tree(tmp_path, cells={
+            "full": {"preds": [0], "rows": list(range(8))},
+            "partial": {"preds": [0], "rows": [0, 1, 2, 9]},     # 9 is in no other cell
+        })
+        d = browser.compare(repo, _dirs("full", "partial"), "stub_bench", {})
+        assert d["n_common"] == 3 and d["total"] == 3
+        assert [r["row_index"] for r in d["rows"]] == [0, 1, 2]
+        only = {c["cell"].split("/")[-1]: c["only_in"] for c in d["cells"]}
+        assert only == {"full": 5, "partial": 1}
+
+    def test_agreement_filters_are_the_mcnemar_cells(self, tmp_path: Path):
+        # gold is row % 4 over 8 rows: golds 0,1,2,3,0,1,2,3
+        repo = _compare_tree(tmp_path, cells={
+            "a": {"preds": [0, 1, 0, 0]},   # right on golds 0,1 → rows 0,1,4,5
+            "b": {"preds": [0, 0, 2, 0]},   # right on golds 0,2 → rows 0,2,4,6
+        })
+        cells = _dirs("a", "b")
+        totals = {}
+        for mode in browser.AGREEMENTS:
+            totals[mode] = browser.compare(repo, cells, "stub_bench", {"agreement": mode})["total"]
+        assert totals == {"all": 8, "agree_correct": 2, "agree_wrong": 2,
+                          "disagree": 4, "only_anchor": 2, "anchor_wrong": 2}
+        d = browser.compare(repo, cells, "stub_bench", {})
+        assert d["pair"] == {"anchor": cells[0], "other": cells[1],
+                             "both": 2, "only_anchor": 2, "only_other": 2, "neither": 2}
+        assert d["correct_hist"] == [2, 4, 2]          # 0, 1, 2 cells correct
+        # and the rows the filter returns are the ones it names
+        only_a = browser.compare(repo, cells, "stub_bench", {"agreement": "only_anchor"})
+        for row in only_a["rows"]:
+            assert row["cells"][cells[0]]["correct"] and not row["cells"][cells[1]]["correct"]
+
+    def test_three_cells_report_a_histogram_and_no_pair(self, tmp_path: Path):
+        repo = _compare_tree(tmp_path, cells={
+            "a": {"preds": [0, 1, 2, 3]}, "b": {"preds": [0]}, "c": {"preds": [1]}})
+        d = browser.compare(repo, _dirs("a", "b", "c"), "stub_bench", {})
+        assert d["pair"] is None
+        assert sum(d["correct_hist"]) == 8 and len(d["correct_hist"]) == 4
+        assert d["agreement_counts"]["agree_correct"] + d["agreement_counts"]["agree_wrong"] \
+            + d["agreement_counts"]["disagree"] == 8
+
+    def test_clean_only_is_the_truncation_free_intersection(self, tmp_path: Path):
+        """The rule ``mcq_compare.py`` calls the intersection: a row any cell
+        truncated leaves the comparison for every cell."""
+        repo = _compare_tree(tmp_path, cells={
+            "a": {"preds": [0], "flags": {1: {"hit_cap": True}}},
+            "b": {"preds": [0], "flags": {2: {"sentinel": True, "all_sentinel": True}}},
+        })
+        cells = _dirs("a", "b")
+        assert browser.compare(repo, cells, "stub_bench", {})["total"] == 8
+        d = browser.compare(repo, cells, "stub_bench", {"clean_only": "1"})
+        assert d["total"] == 6 and d["clean_only"] is True
+        assert 1 not in [r["row_index"] for r in d["rows"]]
+        assert 2 not in [r["row_index"] for r in d["rows"]]
+
+    def test_match_modes_combine_the_single_cell_filters(self, tmp_path: Path):
+        repo = _compare_tree(tmp_path, cells={
+            "a": {"preds": [0, 1, 0, 0]},              # wrong on rows 2,3,6,7
+            "b": {"preds": [0, 0, 2, 0]},              # wrong on rows 1,3,5,7
+        })
+        cells = _dirs("a", "b")
+        got = {m: browser.compare(repo, cells, "stub_bench", {"outcome": "wrong", "match": m})["total"]
+               for m in browser.MATCH_MODES}
+        assert got == {"any": 6, "all": 2, "anchor": 4}
+
+    def test_cross_cell_sorts(self, tmp_path: Path):
+        repo = _compare_tree(tmp_path, cells={
+            "a": {"preds": [0, 1, 2, 3], "units": 10},
+            "b": {"preds": [0], "units": 40},          # a much longer prompt per row
+        })
+        cells = _dirs("a", "b")
+        for sort in browser.COMPARE_SORTS:
+            d = browser.compare(repo, cells, "stub_bench", {"sort": sort, "page_size": 8})
+            assert d["total"] == 8 and d["sort"] == sort
+        rows = browser.compare(repo, cells, "stub_bench", {"sort": "row"})["rows"]
+        assert [r["row_index"] for r in rows] == sorted(r["row_index"] for r in rows)
+        diff = browser.compare(repo, cells, "stub_bench", {"sort": "disagree"})["rows"]
+        assert diff[0]["agreement"] == "disagree"      # the rows they answered differently first
+        # the length axis: b's prompt is longer on every row, so the ratio is > 1
+        ratios = [r["units_ratio"] for r in
+                  browser.compare(repo, cells, "stub_bench", {"sort": "units_ratio_desc"})["rows"]]
+        assert ratios == sorted(ratios, reverse=True) and ratios[0] > 1
+
+    def test_paging_and_subconfig_facets(self, tmp_path: Path):
+        repo = _compare_tree(tmp_path, cells={"a": {"preds": [0]}, "b": {"preds": [1]}})
+        cells = _dirs("a", "b")
+        seen = []
+        for page in (1, 2):
+            d = browser.compare(repo, cells, "stub_bench", {"page_size": 5, "page": page})
+            assert d["pages"] == 2
+            seen += [r["row_index"] for r in d["rows"]]
+        assert sorted(seen) == list(range(8))
+        facets = browser.compare(repo, cells, "stub_bench", {})["subconfigs"]
+        assert {f["name"]: f["n_rows"] for f in facets} == {"sub_0": 4, "sub_1": 4}
+        filtered = browser.compare(repo, cells, "stub_bench", {"subconfig": "sub_0"})
+        assert filtered["total"] == 4
+
+    def test_scoring_applies_to_every_cell_and_names_the_one_that_cannot(self, tmp_path: Path):
+        repo = _compare_tree(tmp_path, cells={
+            "withpmi": {"preds": [0], "pmi": True},
+            "nopmi": {"preds": [0], "pmi": False},
+        })
+        cells = _dirs("withpmi", "nopmi")
+        assert browser.compare(repo, cells, "stub_bench", {"scoring": "char"})["total"] == 8
+        with pytest.raises(browser.EvalRowsError, match="nopmi.*pmi-normalised|pmi-normalised"):
+            browser.compare(repo, cells, "stub_bench", {"scoring": "pmi"})
+
+    def test_metadata_differences_are_reported_not_hidden(self, tmp_path: Path):
+        repo = _compare_tree(tmp_path, cells={
+            "a": {"preds": [0]},
+            "b": {"preds": [0], "meta": {"max_length": 4096, "unit": "chars"}},
+        })
+        warnings = browser.compare(repo, _dirs("a", "b"), "stub_bench", {})["warnings"]
+        assert any("max_length differs" in w for w in warnings)
+        assert any("different units" in w and "not comparable" in w for w in warnings)
+
+    def test_a_row_join_that_lands_on_another_question_is_flagged(self, tmp_path: Path):
+        repo = _compare_tree(tmp_path, cells={"a": {"preds": [0]}, "b": {"preds": [0]}})
+        # Rewrite one cell's dump with a different question on row 3, keeping row_index.
+        import pyarrow.parquet as pq
+        path = repo / "outputs/experiments/cmp_demo/b/eval_rows/stub_bench.parquet"
+        tbl = pq.read_table(path)
+        qs = tbl.column("question").to_pylist()
+        qs[3] = "سؤال آخر تمامًا"
+        import pyarrow as pa
+        tbl = tbl.set_column(tbl.schema.get_field_index("question"), tbl.schema.field("question"),
+                             pa.array(qs, type=pa.string()))
+        pq.write_table(tbl, path)
+        d = browser.compare(repo, _dirs("a", "b"), "stub_bench", {"page_size": 8})
+        flagged = [r["row_index"] for r in d["rows"]
+                   if r["cells"][_dirs("b")[0]]["question_match"] is False]
+        assert flagged == [3]
+
+    def test_validation(self, tmp_path: Path):
+        repo = _compare_tree(tmp_path, cells={f"c{i}": {"preds": [0]} for i in range(7)})
+        names = [f"c{i}" for i in range(7)]
+        with pytest.raises(browser.EvalRowsError, match="at least two cells"):
+            browser.compare(repo, _dirs("c0"), "stub_bench", {})
+        with pytest.raises(browser.EvalRowsError, match="at most 6"):
+            browser.compare(repo, _dirs(*names), "stub_bench", {})
+        for params, msg in (({"match": "nope"}, "match must be"),
+                            ({"agreement": "nope"}, "agreement must be"),
+                            ({"sort": "nope"}, "sort must be"),
+                            ({"scoring": "nope"}, "unknown scoring")):
+            with pytest.raises(browser.EvalRowsError, match=msg):
+                browser.compare(repo, _dirs("c0", "c1"), "stub_bench", params)
+        with pytest.raises(browser.EvalRowsError, match="not a benchmark name"):
+            browser.compare(repo, _dirs("c0", "c1"), "../secrets", {})
+        with pytest.raises(browser.EvalRowsError, match="fewer than two cells"):
+            browser.compare(repo, _dirs("c0", "nope"), "other_bench", {})
+
+    def test_a_cell_without_the_benchmark_is_set_aside_with_its_reason(self, tmp_path: Path):
+        repo = _compare_tree(tmp_path, cells={"a": {"preds": [0]}, "b": {"preds": [1]}})
+        d = browser.compare(repo, _dirs("a", "b", "ghost"), "stub_bench", {})
+        assert [c["cell"].split("/")[-1] for c in d["cells"]] == ["a", "b"]
+        assert d["unavailable"] == [{"cell": _dirs("ghost")[0],
+                                     "reason": "no stub_bench dump in this cell"}]
+
+
+class TestCompareRowAndExport:
+    def test_row_detail_carries_each_cell_prompt_and_scores(self, tmp_path: Path):
+        repo = _compare_tree(tmp_path, cells={"a": {"preds": [0], "units": 10},
+                                              "b": {"preds": [1], "units": 30}})
+        got = browser.compare_row(repo, _dirs("a", "b"), "stub_bench", 3)
+        assert got["row_index"] == 3 and got["anchor"] == _dirs("a")[0]
+        a, b = got["cells"][_dirs("a")[0]], got["cells"][_dirs("b")[0]]
+        assert a["prompt"] == b["prompt"] and a["prompt_match"] and b["prompt_match"]
+        assert a["prompt_units"] == 13 and b["prompt_units"] == 33
+        assert len(a["ll"]) == 4 and a["metadata"]["task"] == "stub_bench"
+        missing = browser.compare_row(repo, _dirs("a", "b"), "stub_bench", 999)
+        assert all(c["missing"] for c in missing["cells"].values())
+
+    def test_export_has_one_column_group_per_cell(self, tmp_path: Path):
+        repo = _compare_tree(tmp_path, cells={"a": {"preds": [0, 1, 2, 3]}, "b": {"preds": [0]}})
+        name, text = browser.export_compare_csv(repo, _dirs("a", "b"), "stub_bench",
+                                                {"agreement": "only_anchor"})
+        assert name == "cmp_demo_stub_bench_compare.csv"
+        rows = list(csv.DictReader(io.StringIO(text)))
+        assert len(rows) == browser.compare(repo, _dirs("a", "b"), "stub_bench",
+                                            {"agreement": "only_anchor"})["total"]
+        for cell in ("a", "b"):
+            assert f"{cell}.pred_text" in rows[0] and f"{cell}.correct" in rows[0]
+        assert all(r["a.correct"] == "True" and r["b.correct"] == "False" for r in rows)
+        assert all(r["agreement"] == "disagree" for r in rows)
+
+
+class TestNonMcqDumps:
+    """``eval_rows/`` also holds the free-form generation dump, which has no
+    scored choices. Listing it as a benchmark made the browser raise on the
+    first click, so it is reported as what it is instead."""
+
+    def test_a_dump_without_scored_choices_is_not_a_benchmark(self, tmp_path: Path):
+        import pyarrow as pa
+        import pyarrow.parquet as pq
+
+        repo = _compare_tree(tmp_path, cells={"a": {"preds": [0]}, "b": {"preds": [1]}})
+        rows_dir = repo / "outputs/experiments/cmp_demo/a/eval_rows"
+        pq.write_table(pa.table({"id": ["cidar-1"], "generation": ["نص"]}),
+                       rows_dir / "freeform_cidar.parquet")
+        cell = next(c for c in browser.discover(repo)["experiments"][0]["cells"] if c["cell"] == "a")
+        assert [t["task"] for t in cell["tasks"]] == ["stub_bench"]
+        assert cell["other_dumps"] == [{
+            "task": "freeform_cidar",
+            "path": "outputs/experiments/cmp_demo/a/eval_rows/freeform_cidar.parquet",
+            "n_rows": 1,
+            "reason": "not an MCQ row dump — the Free-form tab reads this one",
+        }]
+        # and it is not offered as something to compare
+        tasks = browser.compare_tree(repo)["experiments"][0]["tasks"]
+        assert [t["task"] for t in tasks] == ["stub_bench"]
+
+    def test_a_cell_holding_only_such_a_dump_still_appears(self, tmp_path: Path):
+        import pyarrow as pa
+        import pyarrow.parquet as pq
+
+        repo = _compare_tree(tmp_path, cells={"a": {"preds": [0]}, "b": {"preds": [1]}})
+        solo = repo / "outputs/experiments/cmp_demo/gen_only/eval_rows"
+        solo.mkdir(parents=True)
+        pq.write_table(pa.table({"id": ["cidar-1"], "generation": ["نص"]}), solo / "freeform_cidar.parquet")
+        cells = {c["cell"]: c for c in browser.discover(repo)["experiments"][0]["cells"]}
+        assert cells["gen_only"]["tasks"] == []
+        assert [o["task"] for o in cells["gen_only"]["other_dumps"]] == ["freeform_cidar"]

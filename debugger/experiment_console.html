@@ -388,6 +388,12 @@ table.cmp td.cmp-gen{min-width:22ch}
 .cmp-card b{display:block;font-family:var(--mono);font-size:11.5px;font-weight:600}
 .cmp-card .d{font-family:var(--mono)}
 .cmp-card .up{color:var(--good)} .cmp-card .dn{color:var(--bad)}
+/* eval-rows compare: the per-cell prompt pane scrolls, the table stays scannable */
+.evc-pre{margin:6px 0 0;padding:8px 10px;background:var(--sunken);border-radius:8px;white-space:pre-wrap;
+  word-break:break-word;font-family:var(--mono);font-size:11.5px;max-height:240px;overflow:auto;direction:rtl;text-align:right}
+.evc-ans{font-family:'IBM Plex Sans',sans-serif;direction:rtl;text-align:right;font-size:13px}
+.evc-ok{color:var(--good)} .evc-no{color:var(--bad)}
+table.cmp td.evc-cell{min-width:14ch}
 .ff-s1,.ff-s2{color:var(--bad);font-weight:600}
 .ff-s3{color:var(--warn);font-weight:600}
 .ff-s4,.ff-s5{color:var(--good);font-weight:600}
@@ -551,10 +557,14 @@ table.cmp td.cmp-gen{min-width:22ch}
     </div>
 
     <div class="ev-bar">
+      <label class="k" for="ev-mode">mode</label>
+      <select id="ev-mode"><option value="single">single cell</option><option value="compare">compare cells</option></select>
       <label class="k" for="ev-exp">experiment</label>
       <select id="ev-exp"></select>
-      <label class="k" for="ev-cell">tokenizer</label>
-      <select id="ev-cell"></select>
+      <span id="ev-cell-wrap" style="display:contents">
+        <label class="k" for="ev-cell">tokenizer</label>
+        <select id="ev-cell"></select>
+      </span>
       <label class="k" for="ev-task">benchmark</label>
       <select id="ev-task"></select>
       <label class="k" for="ev-scoring" title="which normalization decides the prediction, and therefore the outcome">scoring</label>
@@ -588,6 +598,40 @@ table.cmp td.cmp-gen{min-width:22ch}
       <span class="spacer"></span>
       <label class="k" for="ev-size">per page</label>
       <select id="ev-size"><option>25</option><option>50</option><option>100</option><option>200</option></select>
+    </div>
+
+    <div class="ev-bar" id="ev-cmp-bar" style="display:none;flex-wrap:wrap">
+      <label class="k">cells</label>
+      <span id="ev-cmp-cells" style="display:flex;gap:6px;flex-wrap:wrap;max-width:62%"></span>
+      <span class="hint" style="display:flex;gap:6px"><a href="#" id="ev-cmp-all">all</a>·<a href="#" id="ev-cmp-none">none</a></span>
+      <span class="spacer"></span>
+      <label class="k" for="ev-cmp-anchor" title="the cell every cross-cell number is measured against">anchor</label>
+      <select id="ev-cmp-anchor"></select>
+    </div>
+    <div class="ev-bar" id="ev-cmp-bar2" style="display:none;flex-wrap:wrap">
+      <label class="k" for="ev-cmp-agree" title="which rows to show, by how the cells answered them">rows where</label>
+      <select id="ev-cmp-agree">
+        <option value="all">any outcome</option>
+        <option value="disagree">the cells differ</option>
+        <option value="agree_correct">every cell is right</option>
+        <option value="agree_wrong">every cell is wrong</option>
+        <option value="only_anchor">only the anchor is right</option>
+        <option value="anchor_wrong">the anchor is wrong, another is right</option>
+      </select>
+      <label class="chip" title="drop every row any cell truncated (hit the cap, or scored a sentinel) — the restriction scripts/mcq_compare.py calls the intersection, so the accuracy below is that script's primary number"><input type="checkbox" id="ev-cmp-clean"> no cell truncated</label>
+      <label class="k" for="ev-cmp-match" title="how the filters in the bars above apply across cells: keep a row when it matches in any cell, in every cell, or in the anchor">filters match</label>
+      <select id="ev-cmp-match"><option value="any">any cell</option><option value="all">all cells</option><option value="anchor">the anchor</option></select>
+      <label class="k" for="ev-cmp-sort">sort</label>
+      <select id="ev-cmp-sort">
+        <option value="row">row order</option>
+        <option value="disagree">where they differ first</option>
+        <option value="margin_spread_desc">widest confidence gap first</option>
+        <option value="anchor_uncertain">anchor's closest call first</option>
+        <option value="anchor_confident">anchor's most decisive first</option>
+        <option value="units_ratio_desc">longest prompt vs the anchor first</option>
+      </select>
+      <button class="btn sm" id="ev-cmp-export" title="the shown rows as CSV, one group of columns per cell">export CSV</button>
+      <span id="ev-cmp-note" class="hint" style="text-transform:none"></span>
     </div>
 
     <div id="ev-note"></div>
@@ -2251,7 +2295,10 @@ const EV_FLAGS = [
 ];
 S.ev = {tree: null, exp: null, cell: null, task: null, path: null, scoring: 'primary',
         outcome: 'all', sub: '', flag: '', q: '', qp: false, sort: 'row',
-        page: 1, size: 25, data: null, open: null, inv: false, busy: false};
+        page: 1, size: 25, data: null, open: null, inv: false, busy: false,
+        mode: 'single',
+        cmp: {tree: null, task: null, cells: null, anchor: '', agree: 'all', clean: false,
+              match: 'any', sort: 'row', data: null, open: null, detail: null, busy: false}};
 
 function evPick(id){ return $(id).value; }
 function evOptions(sel, items, value){
@@ -2303,7 +2350,16 @@ function renderEvalPickers(){
   $('#ev-qp').checked = S.ev.qp;
 
   $('#ev-note').innerHTML = '';
-  if (!task){ $('#ev-body').innerHTML = '<div class="empty">this cell has no dumps</div>'; return; }
+  if (!task){
+    const other = (cell.other_dumps || []).map(o => `${o.task} (${(o.n_rows||0).toLocaleString()} rows)`).join(', ');
+    $('#ev-sum').innerHTML = '<span class="chip">no scored rows here</span>';
+    $('#ev-pager').innerHTML = '';
+    $('#ev-body').innerHTML = other
+      ? `<div class="empty">this cell has no MCQ row dump.<br><br>What it does hold — <code>${esc(other)}</code> — `
+        + 'is generated text, not scored choices: the <b>Free-form</b> tab reads it.</div>'
+      : '<div class="empty">this cell has no dumps</div>';
+    return;
+  }
   if (task.in_progress){
     S.ev.path = null; S.ev.data = null;
     $('#ev-note').innerHTML = `<div class="ev-warn">${esc(task.task)} is still being evaluated — `
@@ -2315,6 +2371,9 @@ function renderEvalPickers(){
   }
   const notes = [];
   if (task.error) notes.push(`unreadable dump: ${esc(task.error)}`);
+  for (const o of cell.other_dumps || [])
+    notes.push(`this cell also holds <code>${esc(o.task)}</code> (${(o.n_rows||0).toLocaleString()} rows) — `
+      + `${esc(o.reason)}`);
   // A dump built with --max-rows covers part of the benchmark. The archived
   // accuracy in all_metrics.json was measured over the whole thing, so say so
   // rather than let the two numbers sit side by side as if comparable.
@@ -2527,10 +2586,35 @@ function renderEvalPager(d){
     h('button', {class: 'btn sm', disabled: d.page>=d.pages, onclick: () => go(d.pages)}, 'last »'));
 }
 function wireEvalTab(){
-  const reload = (resetPage) => { if (resetPage) S.ev.page = 1; loadEvalRows(); };
-  $('#ev-exp').onchange = () => { S.ev.exp = evPick('#ev-exp'); S.ev.cell = null; S.ev.task = null; S.ev.sub = ''; S.ev.page = 1; renderEvalPickers(); };
+  const cmp = () => S.ev.mode === 'compare';
+  const reload = (resetPage) => { if (resetPage) S.ev.page = 1; cmp() ? loadEvcRows() : loadEvalRows(); };
+  const repick = () => cmp() ? renderEvcPickers() : renderEvalPickers();
+  $('#ev-mode').onchange = () => evSetMode(evPick('#ev-mode'));
+  $('#ev-cmp-anchor').onchange = () => { S.ev.cmp.anchor = evPick('#ev-cmp-anchor'); reload(true); };
+  $('#ev-cmp-agree').onchange = () => { S.ev.cmp.agree = evPick('#ev-cmp-agree'); reload(true); };
+  $('#ev-cmp-match').onchange = () => { S.ev.cmp.match = evPick('#ev-cmp-match'); reload(true); };
+  $('#ev-cmp-sort').onchange = () => { S.ev.cmp.sort = evPick('#ev-cmp-sort'); reload(true); };
+  $('#ev-cmp-clean').onchange = () => { S.ev.cmp.clean = $('#ev-cmp-clean').checked; reload(true); };
+  $('#ev-cmp-all').onclick = e => { e.preventDefault();
+    const task = (evcExp() || {tasks: []}).tasks.find(t => t.task === S.ev.cmp.task);
+    const all = ((task || {}).cells || []).filter(c => c.available).map(c => c.dir);
+    S.ev.cmp.cells = all.slice(0, EV_MAX_COMPARE);
+    if (!S.ev.cmp.cells.includes(S.ev.cmp.anchor)) S.ev.cmp.anchor = S.ev.cmp.cells[0] || '';
+    S.ev.page = 1; evcBarSync(); loadEvcRows();
+    if (all.length > EV_MAX_COMPARE) $('#ev-cmp-note').textContent =
+      `${all.length} cells have this benchmark — showing the first ${EV_MAX_COMPARE}, the most that fit side by side`;
+  };
+  $('#ev-cmp-none').onclick = e => { e.preventDefault();
+    S.ev.cmp.cells = []; S.ev.cmp.anchor = '';
+    evcBarSync(); loadEvcRows();
+  };
+  $('#ev-cmp-export').onclick = () => {
+    if ((S.ev.cmp.cells || []).length < 2) return;
+    window.open('/api/eval/compare/export?' + evcParams().toString(), '_blank');
+  };
+  $('#ev-exp').onchange = () => { S.ev.exp = evPick('#ev-exp'); S.ev.cell = null; S.ev.task = null; S.ev.sub = ''; S.ev.page = 1; S.ev.cmp.cells = null; repick(); };
   $('#ev-cell').onchange = () => { S.ev.cell = evPick('#ev-cell'); S.ev.task = null; S.ev.page = 1; renderEvalPickers(); };
-  $('#ev-task').onchange = () => { S.ev.task = evPick('#ev-task'); S.ev.sub = ''; S.ev.page = 1; renderEvalPickers(); };
+  $('#ev-task').onchange = () => { S.ev.task = evPick('#ev-task'); S.ev.sub = ''; S.ev.page = 1; repick(); };
   $('#ev-scoring').onchange = () => { S.ev.scoring = evPick('#ev-scoring'); reload(true); };
   $('#ev-sub').onchange = () => { S.ev.sub = evPick('#ev-sub'); reload(true); };
   $('#ev-flag').onchange = () => { S.ev.flag = evPick('#ev-flag'); reload(true); };
@@ -2544,11 +2628,400 @@ function wireEvalTab(){
     $$('#ev-outcome button').forEach(x => x.classList.toggle('on', x===b));
     reload(true);
   });
-  $('#ev-refresh').onclick = () => { S.ev.tree = null; loadEvalTree(); };
+  $('#ev-refresh').onclick = () => { S.ev.tree = null; S.ev.cmp.tree = null;
+    S.ev.mode === 'compare' ? loadEvalCompareTree() : loadEvalTree(); };
   $('#ev-export').onclick = () => {
+    if (S.ev.mode === 'compare'){
+      if ((S.ev.cmp.cells || []).length >= 2) window.open('/api/eval/compare/export?' + evcParams().toString(), '_blank');
+      return;
+    }
     if (!S.ev.path) return;
     window.open('/api/eval/export?' + evParams().toString(), '_blank');
   };
+}
+
+/* ---- compare mode: the same benchmark rows, several cells side by side ----
+   The row-level counterpart of scripts/mcq_compare.py. That script owns the
+   numbers (accuracy on the truncation-free intersection, a paired bootstrap
+   CI, the McNemar counts); this owns the rows they are made of, so "it got
+   this one right and the other didn't" is one click from the two prompts.
+   Everything shown here is descriptive — no interval is computed on the page.
+   ------------------------------------------------------------------------- */
+const EV_MAX_COMPARE = 6;
+const EVC_AGREE = {agree_correct: 'every cell right', agree_wrong: 'every cell wrong', disagree: 'they differ'};
+
+const evShort = dir => String(dir || '').split('/').pop();
+function evcExp(){
+  const tree = (S.ev.cmp.tree || []).filter(e => e.n_comparable);
+  return tree.find(e => e.experiment === S.ev.exp) || tree[0] || null;
+}
+
+async function loadEvalCompareTree(){
+  if (!S.ev.cmp.tree){
+    try { S.ev.cmp.tree = (await api('GET', '/api/eval/compare/tree')).experiments || []; }
+    catch(e){ $('#ev-body').innerHTML = `<div class="empty">${esc(e.message)}</div>`; return; }
+  }
+  renderEvcPickers();
+}
+
+// Which two cells to open on: the one the single view was showing, plus the
+// sibling whose name shares the most trailing parts with it — an ablation's
+// twin, or the matching native arm. The pair a reader wants first, almost
+// always; anything else is two clicks away.
+function evcDefaultCells(cells){
+  const avail = (cells || []).filter(c => c.available);
+  if (avail.length < 2) return avail.map(c => c.dir);
+  const first = avail.find(c => c.cell === S.ev.cell) || avail[0];
+  const tail = s => s.split('_').reverse();
+  const shared = c => { const a = tail(first.cell), b = tail(c.cell); let n = 0;
+    while (n < a.length && n < b.length && a[n] === b[n]) n++; return n; };
+  const partner = avail.filter(c => c !== first).map(c => [shared(c), c]).sort((x, y) => y[0] - x[0])[0][1];
+  return [first.dir, partner.dir];
+}
+
+function renderEvcPickers(){
+  const tree = (S.ev.cmp.tree || []).filter(e => e.n_comparable);
+  if (!tree.length){
+    $('#ev-body').innerHTML = '<div class="empty">no benchmark is scored by two or more cells yet.<br><br>'
+      + 'A comparison needs the same <code>eval_rows/&lt;benchmark&gt;.parquet</code> in at least two cells '
+      + 'of one experiment directory.</div>';
+    $('#ev-sum').innerHTML = '<span class="chip">nothing to compare</span>';
+    $('#ev-cmp-cells').innerHTML = ''; $('#ev-pager').innerHTML = ''; $('#ev-note').innerHTML = '';
+    $('#ev-title').textContent = '';
+    return;
+  }
+  S.ev.exp = evOptions($('#ev-exp'), tree.map(e => ({value: e.experiment,
+    label: `${e.experiment} (${e.n_comparable} comparable benchmark${e.n_comparable === 1 ? '' : 's'})`})), S.ev.exp);
+  const exp = evcExp();
+  const tasks = exp.tasks.filter(t => t.n_cells >= 2);
+  S.ev.task = evOptions($('#ev-task'), tasks.map(t => ({value: t.task,
+    label: `${t.task} (${t.n_cells} cells)`})), S.ev.task);
+  const task = tasks.find(t => t.task === S.ev.task) || tasks[0];
+  S.ev.cmp.task = task ? task.task : null;
+  const cells = task ? task.cells : [];
+  const ok = new Set(cells.filter(c => c.available).map(c => c.dir));
+  let picked = (S.ev.cmp.cells || []).filter(d => ok.has(d));
+  if (picked.length < 2) picked = evcDefaultCells(cells);
+  S.ev.cmp.cells = picked;
+  if (!picked.includes(S.ev.cmp.anchor)) S.ev.cmp.anchor = picked[0] || '';
+  $('#ev-scoring').value = S.ev.scoring;
+  $('#ev-q').value = S.ev.q; $('#ev-qp').checked = S.ev.qp; $('#ev-size').value = String(S.ev.size);
+  evOptions($('#ev-flag'), EV_FLAGS.map(([v, l]) => ({value: v, label: l})), S.ev.flag);
+  renderEvcBar(cells);
+  loadEvcRows();
+}
+
+// The chips are built once per benchmark and then *updated in place*: a
+// checkbox that rebuilt its own list would detach the element that fired the
+// change (losing focus mid-selection, and breaking automation).
+let EVC_CHIPS = {cells: [], els: {}};
+
+function renderEvcBar(cells){
+  const box = $('#ev-cmp-cells'); box.innerHTML = '';
+  EVC_CHIPS = {cells: cells || [], els: {}};
+  for (const c of cells || []){
+    if (!c.available){
+      box.append(h('span', {class: 'chip warn', title: c.reason || 'cannot be compared'},
+        `${c.cell} — ${c.reason && c.reason.startsWith('still') ? 'running' : 'unavailable'}`));
+      continue;
+    }
+    const cb = h('input', {type: 'checkbox', onchange: e => {
+      const next = e.target.checked ? [...(S.ev.cmp.cells || []), c.dir]
+                                    : (S.ev.cmp.cells || []).filter(d => d !== c.dir);
+      S.ev.cmp.cells = next;
+      if (!next.includes(S.ev.cmp.anchor)) S.ev.cmp.anchor = next[0] || '';
+      S.ev.page = 1; evcBarSync(); loadEvcRows();
+    }});
+    const label = h('label', {class: 'chip'}, cb, ` ${c.cell}`);
+    EVC_CHIPS.els[c.dir] = {label, cb, cell: c};
+    box.append(label);
+  }
+  evcBarSync();
+}
+
+function evcBarSync(){
+  const sel = S.ev.cmp.cells || [], full = sel.length >= EV_MAX_COMPARE;
+  for (const [dir, {label, cb, cell}] of Object.entries(EVC_CHIPS.els)){
+    const on = sel.includes(dir);
+    cb.checked = on; cb.disabled = !on && full;
+    label.classList.toggle('accent', on);
+    label.classList.toggle('warn', cb.disabled);
+    label.title = `${cell.cell}${cell.tokenizer ? ' · ' + cell.tokenizer : ''} · ${(cell.n_rows || 0).toLocaleString()} rows`
+      + (cb.disabled ? ` — at most ${EV_MAX_COMPARE} cells at a time; untick one first` : '');
+  }
+  const an = $('#ev-cmp-anchor'); an.innerHTML = '';
+  for (const d of sel) an.append(h('option', {value: d}, evShort(d)));
+  an.value = S.ev.cmp.anchor || sel[0] || '';
+  $('#ev-cmp-agree').value = S.ev.cmp.agree;
+  $('#ev-cmp-match').value = S.ev.cmp.match;
+  $('#ev-cmp-sort').value = S.ev.cmp.sort;
+  $('#ev-cmp-clean').checked = S.ev.cmp.clean;
+  const n = sel.length, avail = (EVC_CHIPS.cells || []).filter(c => c.available).length;
+  $('#ev-cmp-note').textContent = n < 2 ? 'pick at least two cells'
+    : (n >= EV_MAX_COMPARE && avail > EV_MAX_COMPARE
+        ? `${n} cells — the most that fit side by side; untick one to swap`
+        : (n > 3 ? `${n} columns — the table scrolls sideways` : ''));
+}
+
+function evcParams(){
+  const p = new URLSearchParams({cells: (S.ev.cmp.cells || []).join(','), task: S.ev.cmp.task || '',
+    anchor: S.ev.cmp.anchor, scoring: S.ev.scoring, match: S.ev.cmp.match,
+    agreement: S.ev.cmp.agree, sort: S.ev.cmp.sort, page: S.ev.page, page_size: S.ev.size});
+  if (S.ev.cmp.clean) p.set('clean_only', '1');
+  if (S.ev.outcome !== 'all') p.set('outcome', S.ev.outcome);
+  if (S.ev.sub) p.set('subconfig', S.ev.sub);
+  if (S.ev.flag) p.set('flags', S.ev.flag);
+  if (S.ev.q){ p.set('q', S.ev.q); if (S.ev.qp) p.set('search_prompt', '1'); }
+  return p;
+}
+
+async function loadEvcRows(){
+  const sel = S.ev.cmp.cells || [];
+  if (sel.length < 2 || !S.ev.cmp.task){
+    $('#ev-body').innerHTML = '<div class="empty">compare mode: tick at least two cells above</div>';
+    $('#ev-sum').innerHTML = '<span class="chip">no selection</span>';
+    $('#ev-pager').innerHTML = ''; return;
+  }
+  if (S.ev.cmp.busy) return;
+  S.ev.cmp.busy = true;
+  try {
+    const d = await api('GET', '/api/eval/compare?' + evcParams().toString());
+    S.ev.cmp.data = d; S.ev.cmp.open = null; S.ev.cmp.detail = null;
+    renderEvalSubconfigs(d); renderEvcNote(d); renderEvcSummary(d); renderEvcTable(d); renderEvcPager(d);
+    const m = (d.cells[0] || {}).metadata || {};
+    $('#ev-title').textContent = `${d.task} · ${d.n_common.toLocaleString()} shared rows · ${d.cells.length} cells`
+      + ` · anchor ${evShort(d.anchor)} · max_length ${m.max_length} · ${m.num_fewshot || 0}-shot`;
+  } catch(e){
+    $('#ev-body').innerHTML = `<div class="empty">${esc(e.message)}</div>`; $('#ev-pager').innerHTML = '';
+  } finally { S.ev.cmp.busy = false; }
+}
+
+function renderEvcNote(d){
+  const notes = (d.warnings || []).map(w => `<div class="ev-warn">${esc(w)}</div>`);
+  for (const u of d.unavailable || [])
+    notes.push(`<div class="ev-warn">${esc(evShort(u.cell))} is not in this comparison — ${esc(u.reason)}</div>`);
+  const mismatched = (d.rows || []).filter(r => Object.values(r.cells || {}).some(c => c.question_match === false));
+  if (mismatched.length)
+    notes.push(`<div class="ev-warn">${mismatched.length} row(s) on this page hold a different question in `
+      + 'different cells. The join is by <code>row_index</code>; a mismatch means these dumps are not of the '
+      + 'same benchmark rows, and no cross-cell number over them means anything.</div>');
+  $('#ev-note').innerHTML = notes.join('');
+}
+
+function renderEvcSummary(d){
+  const box = $('#ev-sum'); box.innerHTML = '';
+  const chip = (label, cls, title, onclick) => h('span',
+    {class: 'chip' + (cls ? ' ' + cls : '') + (onclick ? ' act' : ''), title: title || '',
+     onclick: onclick || undefined}, label);
+  box.append(chip(`${d.n_selected.toLocaleString()} of ${d.n_common.toLocaleString()} shared rows`,
+    d.n_selected ? '' : 'warn',
+    'rows every selected cell scored, after the filters — the population every number in this strip describes'));
+  if (d.agreement !== 'all')
+    box.append(chip(`showing ${d.total.toLocaleString()} · ${$('#ev-cmp-agree').selectedOptions[0].textContent}`,
+      'accent', 'the accuracies and counts in this strip stay over the whole selection, so they remain readable '
+      + 'while you browse a subset', () => { S.ev.cmp.agree = 'all'; S.ev.page = 1;
+        $('#ev-cmp-agree').value = 'all'; loadEvcRows(); }));
+  const missing = (d.cells || []).filter(c => c.only_in);
+  if (missing.length)
+    box.append(chip(`${missing.reduce((a, c) => a + c.only_in, 0).toLocaleString()} rows not shared by all cells`,
+      'warn', missing.map(c => `${evShort(c.cell)}: ${c.only_in} rows no other cell holds`).join(' · ')));
+  if (d.clean_only)
+    box.append(chip('truncation-free rows only', 'good',
+      'every row any cell truncated is dropped — the intersection scripts/mcq_compare.py reports as primary'));
+
+  // Agreement: for two cells this is McNemar's 2x2, and each cell of it is a filter.
+  const set = (key) => { S.ev.cmp.agree = key; S.ev.page = 1; $('#ev-cmp-agree').value = key; loadEvcRows(); };
+  const counts = d.agreement_counts || {};
+  if (d.pair){
+    const p = d.pair;
+    box.append(chip(`both right ${p.both.toLocaleString()}`, 'good', 'rows every cell answered correctly', () => set('agree_correct')));
+    box.append(chip(`only ${evShort(p.anchor)} ${p.only_anchor.toLocaleString()}`, 'accent',
+      'rows only the anchor got right — one of McNemar’s two discordant counts', () => set('only_anchor')));
+    box.append(chip(`only ${evShort(p.other)} ${p.only_other.toLocaleString()}`, 'accent',
+      'rows only the other cell got right — the other discordant count', () => set('anchor_wrong')));
+    box.append(chip(`neither ${p.neither.toLocaleString()}`, 'bad', 'rows no cell got right', () => set('agree_wrong')));
+  } else {
+    box.append(chip(`${EVC_AGREE.agree_correct} ${(counts.agree_correct || 0).toLocaleString()}`, 'good', '', () => set('agree_correct')));
+    box.append(chip(`${EVC_AGREE.disagree} ${(counts.disagree || 0).toLocaleString()}`, 'warn', '', () => set('disagree')));
+    box.append(chip(`${EVC_AGREE.agree_wrong} ${(counts.agree_wrong || 0).toLocaleString()}`, 'bad', '', () => set('agree_wrong')));
+  }
+
+  const anchorAcc = ((d.cells.find(c => c.cell === d.anchor) || {}).summary || {}).accuracy;
+  const cards = h('span', {class: 'cmp-cards'});
+  for (const c of d.cells){
+    const s = c.summary || {}, isAnchor = c.cell === d.anchor;
+    const delta = (!isAnchor && s.accuracy != null && anchorAcc != null) ? s.accuracy - anchorAcc : null;
+    const unit = (c.metadata || {}).unit || 'tokens';
+    cards.append(h('div', {class: 'cmp-card' + (isAnchor ? ' anchor' : ''),
+      title: (isAnchor ? 'the anchor: every Δ is measured against it'
+        : 'Δ = this cell − the anchor (descriptive; for a CI run scripts/mcq_compare.py)')
+        + ' — over the rows the filters select, not only the ones on this page'},
+      h('b', {}, evShort(c.cell) + (isAnchor ? ' ⟵ anchor' : '')),
+      h('span', {class: 'd'}, `acc ${evPct(s.accuracy)}`),
+      delta == null ? null : h('span', {class: 'd ' + (delta > 0 ? 'up' : delta < 0 ? 'dn' : '')},
+        ` (${delta > 0 ? '+' : ''}${(delta * 100).toFixed(1)} pt)`),
+      h('span', {class: 'd'}, ` · ${c.tokenizer || '?'} · prompt ${s.prompt_units_mean ?? '?'} ${unit}`
+        + ` · truncated ${s.all_sentinel || 0} · close ${s.near_tie || 0}`)));
+  }
+  box.append(cards);
+  box.append(chip('paired CI / McNemar →', '', 'The page stays descriptive. For the interval and the exact test:\n'
+    + `.venv/bin/python scripts/mcq_compare.py --experiment ${(d.cells[0] || {}).cell.split('/').slice(0, -1).join('/')}`
+    + ` --cells ${d.cells.map(c => evShort(c.cell)).join(' ')} --pairs ${evShort(d.anchor)}:${evShort((d.cells.find(c => c.cell !== d.anchor) || {}).cell || '')}`));
+}
+
+function renderEvcTable(d){
+  const box = $('#ev-body'); box.innerHTML = '';
+  if (!d.rows.length){ box.innerHTML = '<div class="empty">no row matches these filters</div>'; return; }
+  const t = h('table', {class: 'cmp'});
+  const hdr = h('tr', {},
+    h('th', {style: 'width:6rem', title: 'row_index in the benchmark, and how many cells got it right'}, '#'),
+    h('th', {style: 'width:24%'}, 'question'),
+    h('th', {style: 'width:7rem'}, 'expected'));
+  for (const c of d.cells)
+    hdr.append(h('th', {class: c.cell === d.anchor ? 'anchor' : ''}, evShort(c.cell),
+      h('span', {class: 'tk'}, `${c.tokenizer || '?'} · ${evPct((c.summary || {}).accuracy)}`)));
+  t.append(hdr);
+  for (const r of d.rows){
+    const cls = r.agreement === 'agree_correct' ? 'good' : r.agreement === 'agree_wrong' ? 'bad' : 'warn';
+    const open = S.ev.cmp.open === r.row_index;
+    const tr = h('tr', {class: 'r' + (open ? ' on' : ''), onclick: () => toggleEvcRow(r.row_index)});
+    tr.append(
+      h('td', {class: 'mono'}, String(r.row_index), ' ',
+        h('span', {class: 'chip ' + cls, title: EVC_AGREE[r.agreement]}, `${r.n_correct}/${r.n_cells}`)),
+      h('td', {class: 'ev-ar'}, h('span', {class: 'cmp-clip', title: r.question}, r.question || '—'),
+        r.source_config && r.source_config !== '_default'
+          ? h('div', {class: 'cmp-foot'}, h('span', {}, r.source_config)) : null),
+      h('td', {class: 'ev-ar', style: 'color:var(--good)'}, r.gold_text || '—'));
+    for (const c of d.cells){
+      const b = r.cells[c.cell] || {};
+      const td = h('td', {class: 'evc-cell'});
+      if (b.missing){ td.append(h('span', {class: 'hint'}, 'not in this cell')); tr.append(td); continue; }
+      td.append(h('div', {class: 'evc-ans ' + (b.correct ? 'evc-ok' : 'evc-no')}, b.pred_text || '—'));
+      const foot = h('div', {class: 'cmp-foot'});
+      if (b.decision_margin != null)
+        foot.append(h('span', {title: 'top1 − top2: how sure the pick was'}, `d ${b.decision_margin.toFixed(2)}`));
+      if (b.prompt_units != null)
+        foot.append(h('span', {title: `prompt length in ${(c.metadata || {}).unit || 'tokens'}`}, `${b.prompt_units}`));
+      if (b.cont_tokens_gold != null)
+        foot.append(h('span', {title: 'tokens the gold continuation cost this tokenizer'}, `gold ${b.cont_tokens_gold}t`));
+      for (const pill of evFlagPills({...b, ...(b.flags || {})})) foot.append(pill);
+      td.append(foot);
+      tr.append(td);
+    }
+    t.append(tr);
+    if (open) t.append(evcDetailRow(d, r));
+  }
+  box.append(h('div', {class: 'cmp-wrap'}, t));
+}
+
+function toggleEvcRow(rowIndex){
+  if (S.ev.cmp.open === rowIndex){ S.ev.cmp.open = null; S.ev.cmp.detail = null; renderEvcTable(S.ev.cmp.data); return; }
+  S.ev.cmp.open = rowIndex; S.ev.cmp.detail = null;
+  renderEvcTable(S.ev.cmp.data);
+  const p = new URLSearchParams({cells: (S.ev.cmp.cells || []).join(','), task: S.ev.cmp.task,
+                                row_index: String(rowIndex)});
+  api('GET', '/api/eval/compare/row?' + p.toString())
+    .then(det => { if (S.ev.cmp.open === rowIndex){ S.ev.cmp.detail = det; renderEvcTable(S.ev.cmp.data); } })
+    .catch(e => { if (S.ev.cmp.open === rowIndex){ S.ev.cmp.detail = {error: e.message}; renderEvcTable(S.ev.cmp.data); } });
+}
+
+function evcDetailRow(d, r){
+  const span = 3 + d.cells.length;
+  const det = S.ev.cmp.detail;
+  if (!det) return h('tr', {class: 'ev-det'}, h('td', {colspan: span}, h('div', {class: 'hint'}, 'loading the prompts…')));
+  if (det.error) return h('tr', {class: 'ev-det'}, h('td', {colspan: span}, h('div', {class: 'empty'}, det.error)));
+  const head = h('div', {class: 'ev-h'},
+    h('h4', {}, 'the same row in each cell'),
+    h('span', {class: 'chip'}, `expected ${r.gold_text || '—'}`),
+    h('span', {class: 'spacer'}),
+    h('button', {class: 'btn sm', onclick: e => { e.stopPropagation(); S.ev.inv = !S.ev.inv; renderEvcTable(d); }}, '¶ spaces'));
+  const panes = h('div', {class: 'cmp-panes'});
+  for (const c of d.cells) panes.append(evcPane(c, (det.cells || {})[c.cell] || {}, c.cell === d.anchor, d.scoring));
+  return h('tr', {class: 'ev-det'}, h('td', {colspan: span}, h('div', {}, head, panes)));
+}
+
+function evcPane(cellBlock, rec, isAnchor, scoring){
+  const pane = h('div', {class: 'cmp-pane' + (isAnchor ? ' anchor' : '')});
+  pane.append(h('h5', {}, evShort(cellBlock.cell) + (isAnchor ? ' ⟵ anchor' : '')));
+  if (rec.missing || !rec.prompt){
+    pane.append(h('div', {class: 'hint'}, rec.reason || 'this row is not in this cell’s dump'));
+    return pane;
+  }
+  const meta = rec.metadata || {}, unit = meta.unit || 'tokens';
+  const pred = scoring === 'char' ? rec.pred_idx_char : scoring === 'pmi' ? rec.pred_idx_pmi : rec.pred_idx;
+  const ok = pred != null && pred === rec.gold_idx;
+  const chips = h('div', {class: 'cmp-foot'});
+  chips.append(h('span', {class: 'chip ' + (ok ? 'good' : 'bad')}, ok ? 'correct' : 'wrong'));
+  chips.append(h('span', {class: 'chip', title: 'prompt length in this tokenizer’s own units, after the cap'},
+    `${rec.prompt_units ?? '?'} ${unit} / cap ${meta.max_length}`));
+  for (const pill of evFlagPills(rec)) chips.append(pill);
+  if (rec.prompt_match === false)
+    chips.append(h('span', {class: 'chip bad', title: 'this cell’s prompt for this row differs from the anchor’s — '
+      + 'the row_index join is not pointing at the same question'}, 'prompt differs'));
+  pane.append(chips);
+  pane.append(evcChoices(rec, scoring, meta));
+  pane.append(h('pre', {class: 'evc-pre'},
+    S.ev.inv ? evShowInvisibles(rec.prompt) : document.createTextNode(rec.prompt)));
+  return pane;
+}
+
+function evcChoices(rec, scoring, meta){
+  // The deciding column is the one the selected scoring uses; "primary" is
+  // whichever normalization the dump itself made primary.
+  const which = scoring === 'primary' ? (meta.primary || 'char') : scoring;
+  const scores = which === 'pmi' ? rec.score_pmi : which === 'char' ? rec.score_char : rec.ll;
+  const pred = scoring === 'char' ? rec.pred_idx_char : scoring === 'pmi' ? rec.pred_idx_pmi : rec.pred_idx;
+  const t = h('table', {class: 'ev-ch'});
+  t.append(h('tr', {}, h('th', {}, '#'), h('th', {}, 'scored'),
+    h('th', {title: `the score argmax used (${which})`}, which),
+    h('th', {title: 'raw sum of log-probabilities'}, 'll'),
+    h('th', {title: 'continuation tokens the scorer summed (0 = truncation sentinel)'}, 'tok'),
+    h('th', {}, '')));
+  const conts = rec.continuations || [];
+  for (let i = 0; i < conts.length; i++){
+    const marks = [];
+    if (i === rec.gold_idx) marks.push(h('span', {class: 'chip good'}, 'gold'));
+    if (i === pred) marks.push(h('span', {class: 'chip ' + (i === rec.gold_idx ? 'good' : 'bad')}, 'picked'));
+    t.append(h('tr', {class: (i === rec.gold_idx ? 'gold ' : '') + (i === pred ? 'pred' : '')},
+      h('td', {class: 'mono'}, String(i)),
+      h('td', {class: 'ev-ar'}, h('span', {class: 'ev-clip', title: conts[i]}, conts[i])),
+      h('td', {class: 'mono'}, scores && scores[i] != null ? scores[i].toFixed(3) : '—'),
+      h('td', {class: 'mono'}, rec.ll && rec.ll[i] != null ? rec.ll[i].toFixed(2) : '—'),
+      h('td', {class: 'mono'}, rec.cont_tokens && rec.cont_tokens[i] != null ? String(rec.cont_tokens[i]) : '—'),
+      h('td', {}, ...marks)));
+  }
+  return t;
+}
+
+function renderEvcPager(d){
+  const box = $('#ev-pager'); box.innerHTML = '';
+  if (!d.total) return;
+  const go = p => { S.ev.page = p; loadEvcRows(); };
+  const jump = h('input', {type: 'number', min: 1, max: d.pages, value: d.page, style: 'width:5.5rem',
+    onchange: e => go(Math.max(1, Math.min(d.pages, Number(e.target.value) || 1)))});
+  box.append(
+    h('button', {class: 'btn sm', disabled: d.page <= 1, onclick: () => go(1)}, '« first'),
+    h('button', {class: 'btn sm', disabled: d.page <= 1, onclick: () => go(d.page - 1)}, '‹ prev'),
+    h('span', {}, 'page '), jump,
+    h('span', {}, ` of ${d.pages.toLocaleString()} · ${d.total.toLocaleString()} rows`),
+    h('button', {class: 'btn sm', disabled: d.page >= d.pages, onclick: () => go(d.page + 1)}, 'next ›'),
+    h('button', {class: 'btn sm', disabled: d.page >= d.pages, onclick: () => go(d.pages)}, 'last »'));
+}
+
+function evSetMode(mode){
+  S.ev.mode = mode === 'compare' ? 'compare' : 'single';
+  const cmp = S.ev.mode === 'compare';
+  $('#ev-cell-wrap').style.display = cmp ? 'none' : 'contents';
+  $('#ev-cmp-bar').style.display = cmp ? '' : 'none';
+  $('#ev-cmp-bar2').style.display = cmp ? '' : 'none';
+  // the single-cell sort has no meaning across cells; the compare bar has its own
+  $('#ev-sort').style.display = cmp ? 'none' : '';
+  const lbl = document.querySelector('label[for="ev-sort"]');
+  if (lbl) lbl.style.display = cmp ? 'none' : '';
+  $('#ev-mode').value = S.ev.mode;
+  S.ev.page = 1;
+  $('#ev-note').innerHTML = '';
+  if (cmp) loadEvalCompareTree(); else { S.ev.cmp.data = null; loadEvalTree(); }
 }
 
 /* =========================================================================
@@ -3483,7 +3956,7 @@ function setView(v){
   document.body.classList.toggle('runs-open', !!S.runsOpen && v === 'runs');
   $('#runs-panel').style.display = (S.runsOpen && v === 'runs') ? '' : 'none';
   if (v==='runs') pollRuns();
-  if (v==='eval') loadEvalTree();
+  if (v==='eval') S.ev.mode === 'compare' ? loadEvalCompareTree() : loadEvalTree();
   if (v==='freeform') loadFfTree();
   if (v==='rate') loadRtTab();
 }

@@ -383,13 +383,61 @@ It reloads the cell's tokenizer and phase checkpoint and re-runs only the
 scoring. Because scoring is deterministic it also re-checks the archived
 accuracy and says whether it reproduces.
 
+The free-form generation dump lives in the same directory and is **not** a
+benchmark here: `freeform_cidar.parquet` has no `row_index` and no correctness
+column, so every filter and aggregate of this tab is undefined on it (one click
+used to raise). It is listed per cell as an *other dump* pointing at the
+**Free-form** tab, which reads it with the metrics that do apply.
+
+### Compare mode (2026-09-25)
+
+The *mode* selector switches the tab from one cell's rows to **the same
+benchmark rows in several cells, side by side** — the rows behind the numbers
+`scripts/mcq_compare.py` prints. The pickers become experiment → **benchmark** →
+2–6 **cells** (the default pair is the cell the single view was on plus the
+sibling whose name shares the most trailing parts with it), and one column per
+cell holds its answer, its `top1 − top2` margin, its prompt length *in its own
+units* and its flags.
+
+| Element | What it does |
+|---|---|
+| **cells / anchor** | tick the cells (at most six — beyond that the table stops being readable). The **anchor** is the cell every cross-cell number is measured against. A cell whose dump is still being written, or which never scored this benchmark, is listed with the reason instead of being dropped. |
+| **rows where** | the cross-cell outcome filter: any outcome, they differ, every cell right, every cell wrong, **only the anchor right**, **the anchor wrong and another right**. With two cells the last two are exactly McNemar's discordant counts. |
+| **no cell truncated** | drop every row any cell truncated (`hit_cap` or a sentinel anywhere) — the restriction `mcq_compare.py` calls the intersection. With it ticked, the accuracies shown are that script's primary numbers. |
+| **filters match** | how the ordinary filters (outcome, sub-config, flag, search) apply across cells: `any cell`, `all cells`, `the anchor`. "Which rows did any variant get wrong" and "which did they all get wrong" are different questions. |
+| **sort** | row order, *where they differ first*, widest `decision_margin` spread, the anchor's closest call / most decisive, and *longest prompt vs the anchor* (the tokenizer-length axis). |
+| **summary strip** | the shared-row count, the agreement breakdown — for two cells the 2×2 `both / only A / only B / neither`, each clickable as a filter — and one card per cell with its accuracy, its Δ against the anchor, mean prompt length and truncation count. These describe the rows the filters select **before** the agreement filter, so browsing "only the anchor got this right" still shows what the cells score overall. |
+| **row detail** | one pane per cell: that cell's exact prompt (the `¶ spaces` toggle applies to every pane), its length against the cap, its flags, and its per-choice table with the deciding score, the raw log-likelihood and the **tokens the scorer summed** per choice. This is where a letter continuation costing AraRooPat three tokens and native Qwen3 one is visible side by side. |
+| **Export CSV** | the shown rows with one column group per cell (`<cell>.pred_text`, `.correct`, `.margin`, `.decision_margin`, `.prompt_units`, `.cont_tokens_gold`, the flags). |
+
+Cells are joined on **`row_index`** — the position of the example in the
+benchmark's own eval list, which is the only identity a dump carries and is
+tokenizer-independent. Only the row indexes **every** selected cell holds are
+compared; what a cell holds beyond that is counted in the strip. Because a
+join on an integer can silently point at two different questions, each page
+compares every cell's question against the anchor's and paints a red note if
+they differ, and the metadata that has to agree (`dataset_name`, `max_length`,
+`num_fewshot`, `score_normalization`, the primary normalization, the length
+unit) is diffed and reported the same way — a difference is a warning, not a
+refusal, exactly as `mcq_compare.py` flags a cell whose dumps used another
+`max_length`.
+
+Everything here is descriptive. The paired bootstrap CI and the exact McNemar
+test stay in `scripts/mcq_compare.py`, and the strip carries the command with
+the current cells filled in. Checked against it on the v5 MCQ cells
+(`arabic_exam`, AraRooPat vs native SFT): the same intersection size (14 114),
+the same per-cell accuracy under char and PMI (0.551 / 0.621 and 0.557 / 0.596)
+and the same discordant counts (1 396 / 2 386 and 1 761 / 2 302).
+
 Routes: `GET /api/schema`, `GET /api/configs`, `GET /api/configs/get?path=`,
 `GET /api/configs/results?path=`, `POST /api/config/validate`, `POST /api/config/render`,
 `POST /api/config/parse`, `POST /api/configs/save`, `GET /api/runs`, `GET /api/runs/<id>`,
 `GET /api/runs/<id>/log?offset=`, `POST /api/runs/start`, `POST /api/runs/<id>/cancel`,
 `GET /api/gpu`, `GET /api/text?path=` (files under `outputs/` only),
 `GET /api/eval/tree`, `GET /api/eval/describe?path=`, `GET /api/eval/rows?path=&…`,
-`GET /api/eval/row?path=&position=`, `GET /api/eval/export?path=&…`, `GET /api/assistant/configs`, `POST /api/assistant/chat` (SSE), `POST /api/assistant/preview`.
+`GET /api/eval/row?path=&position=`, `GET /api/eval/export?path=&…`,
+`GET /api/eval/compare/tree`, `GET /api/eval/compare?cells=&task=&…`,
+`GET /api/eval/compare/row?cells=&task=&row_index=`, `GET /api/eval/compare/export?cells=&task=&…`, `GET /api/assistant/configs`, `POST /api/assistant/chat` (SSE), `POST /api/assistant/preview`.
 
 ## Files
 
