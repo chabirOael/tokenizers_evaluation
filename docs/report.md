@@ -33,6 +33,7 @@ Working notes for the comprehensive report. Every number below was measured on t
 | 09-23 | uncertainty diagnostic on five checkpoints | the flatness hypothesis fails: at equal answer NLL AraRooPat v4's reference entropy is 0.744 vs native SFT 0.764 nats/char; low margin before loop onset in every cell, native included |
 | 09-23/24 | neutral-teacher distillation: 6-candidate bake-off (Aya-Expanse-32B, 4.64 on dev), teacher ceiling 3.65 on the test, 35 066 filtered teacher answers, v4's Phase 3 on them for all three arms | judge AraRooPat **2.43**, native **2.52**, BPE **2.13** (retained share 0.67 / 0.69 / 0.58); AraRooPat − BPE **+0.30 [+0.15, +0.45]**, AraRooPat − native −0.09 [−0.24, +0.07]; loops 6.8 / 8.4 / 15.6 % |
 | 09-24 | tokenization audit on the eval texts + MCQ scorer check | AraRooPat: 67–81 % of Arabic words ROOT+PAT, 3.8–14.9 % character path (mostly the choice letters; dialect on Alghafa), `<unk>` 0.5–1.1 % on exam / Alghafa text; native Qwen3: 42–52 % of words contain a single-letter piece; AraRooPat needs 1.3–1.5× native's tokens (26 % of Alghafa prompts > 1 024). **The MCQ scorer skips the first continuation token and scores `</s>` for every EOS-appending tokenizer** (BPE letter MCQ scored on `</s>` alone); native numbers unaffected; fix before the v5 MCQ run (§3.9, §5 items 18–21) |
+| 09-24/25 | scorer window fixed (`2f56441`, no-op on native: 1 200 rows, Δ 0.0); the four MCQ benchmarks at `max_length 4096` on the three v5 arms, the untouched base and the two Phase-2 checkpoints (six cells, 16 h 8 min GPU) | on the letter-scored benchmarks (rows no cell truncates) AraRooPat v5 is **last**: Arabic-Exam 0.549 / 0.555 vs BPE-16K 0.595 / 0.589 vs native v5 0.619 / 0.594 (char / PMI), Culture-MMLU 0.472 / 0.465 vs 0.501 / 0.502 vs 0.520 / 0.504; Phase 3 on teacher text raised recognition (AraRooPat +5–8 points over its Phase 2 checkpoint); ACVA and Alghafa's fixed-label groups are decided by label-prior collapse (PMI picks the character-spelled ` ايجابي` on 97–99 % of rows under AraRooPat), not read (§3.10) |
 
 ## 2. The native arm
 
@@ -855,6 +856,179 @@ Closed-class = PREP + FUNC + clitic-only words. **Reading, AraRooPat.** Two thir
 
 **Consequences for the MCQ run (folded into §5 item 16, now items 16 and 18–21).** (1) Fix the scorer before any MCQ eval: strip a trailing `</s>` from both encodings when the tokenizer appended one, take the continuation as the tokens after the longest common prefix (the rule the training path already uses), score exactly those, and pin it with a test on an EOS-appending tiny tokenizer that asserts the scored token ids equal the continuation's — the fix must be a no-op for the native wrappers (re-scoring `native_qwen3_sft` must reproduce its four accuracies). (2) `max_length: 4096` for every arm, so that no row truncates except the same handful of Arabic-Exam passages for everyone; report `all_sentinel` per arm from the dumps and give the accuracy on the intersection of rows untruncated under all three tokenizers as the primary comparison, the full benchmark as secondary. (3) Read Alghafa per sub-config: the four word-scored sub-configs (15 800 rows) score `ايجابي` spelled in characters under AraRooPat against a two-token `سلبي`; the letter-scored sub-configs do not have that asymmetry. (4) The character-inventory gaps and the `ma_interrog` tag are tokenizer to-dos for the next AraRooPat vocabulary, not for this run: the v5 checkpoints fix their vocabularies, and the eval must use the tokenizer they were trained with. (5) Whether to re-score the archived Llama sweeps after the fix is the user's call (item 21).
 
+### 3.10 MCQ benchmarks on the v5 checkpoints under the fixed scorer (2026-09-24/25)
+
+**The fix** (commit `2f56441`, §3.9). `_compute_loglikelihood` now strips one trailing `</s>` from the context and the context + continuation encodings, takes the continuation as the tokens after their longest common prefix (`answer_only_masking.continuation_start`, the rule the answer-only training loss already used) and sums exactly those; it returns a `ScoredLogLikelihood` (a `float` carrying `n_tokens` / `truncated`), and the row dump (schema 2) records `cont_tokens` per choice and sets `hit_cap` also when the cap reached a continuation. What is scored now on `الإجابة:` + ` أ`: native Qwen3 `[' أ']` (unchanged), AraRooPat `[LIT_BEGIN] [CHAR_أ] [LIT_END]` (was `[CHAR_أ] [LIT_END] </s>`), BPE-16K `[' أ']` (was `['</s>']`); on ` هو رأي ايجابي`: native `' هو' ' ر' 'أ' 'ي' ' ا' 'يج' 'اب' 'ي'` (unchanged), AraRooPat `[FUNC_هو] [ROOT_ر##] [PAT_1َأْيِ] [LIT_BEGIN] [CHAR_ا] [CHAR_ي] [CHAR_ج] [CHAR_ا] [CHAR_ب] [CHAR_ي] [LIT_END]` (was the same minus `[FUNC_هو]`, plus `</s>`), BPE-16K `' هو' ' رأي' ' اي' 'جابي'` (was minus `' هو'`, plus `</s>`). Tests: `tests/test_lighteval_scorer_window.py` (24). **No-op check** (`_audit/scorer_noop_check_2026-09-24.{py,json}`, run 2): 300 seeded rows per benchmark of `native_qwen3_sft` (its `training/sft` checkpoint, `max_length 1024`, 3-shot / ACVA 0-shot) re-scored and joined to the 2026-09-18 dumps by `row_index` — 1 200 rows, 0 prompt mismatches, argmax agreement 100 % under char and PMI on every task, and every stored value identical once cast to float32 like the dump: max |Δ ll| = 0.0 and max |Δ score_pmi| = 0.0 on 3 369 scored and 409 sentinel choices. (Run 1, comparing unrounded values, read ≤ 4.8e-7 on `ll` and up to 31.98 on the PMI score of sentinel choices — float32's spacing of 64 at −1e9; its JSON is kept as `…_run1.json`.)
+
+**Protocol** (`configs/experiments/mcq_v5/*.yaml`, commit `2441518`; generated through the console's `reeval_config` so each cell's tokenizer block and checkpoint are its own, every other section written explicitly and identical across the six files — resolved `evaluation`, `data`, `training` and `sweep.tasks` compared equal). ACVA 0-shot, Alghafa / Arabic-Exam / Culture-MMLU 3-shot, **`max_length 4096`** for every task and cell (§3.9: at 1 024 up to 26 % of AraRooPat's Alghafa prompts overflow), `score_normalization: char+pmi`, row dumps and intrinsic metrics on, every phase disabled. The primary comparison is on the **intersection** of rows that hit the cap in no cell (`hit_cap` or `sentinel` anywhere drops the row for all) — `native_qwen3_sft`, dumped at 1 024, is included in the tables and in the intersection, flagged `†`, so its truncated rows leave the primary comparison like anyone's; a second pass without it (`mcq_compare_4096`) is the sensitivity check. Pairs: paired bootstrap over rows (10 000 resamples, seed 0 — `freeform_judge.paired_bootstrap`, the convention of `paired_compare.py`) and McNemar discordant counts. Run in the brief's order as one detached chain (`_mcq_logs/run_mcq_v5_chain.sh`): AraRooPat v5 → BPE-16K v5 → native v5 → native base → AraRooPat warmup → BPE-16K warmup, every one exit 0.
+
+| cell (checkpoint) | wall | peak GPU |
+|---|---|---|
+| `araroopat_3phase_v5_distill_mcq4096` (`araroopat_3phase_v5_distill/training/sft`) | 2 h 54 min (ACVA 13.9 / Alghafa 68.1 / Exam 40.5 / Culture 45.4 min, intrinsic 6 min) | 16.4 GiB |
+| `bpe_16k_3phase_v5_distill_mcq4096` (`bpe_16k_3phase_v5_distill/training/sft`) | 2 h 35 min | 12.6 GiB |
+| `native_qwen3_sft_v5_distill_mcq4096` (`native_qwen3_sft_v5_distill/training/sft`) | 2 h 41 min | 68.6 GiB |
+| `native_qwen3_base_mcq4096` (`Qwen/Qwen3-4B-Base`) | 2 h 40 min | 68.6 GiB |
+| `araroopat_3phase_v3_warmup_mcq4096` (`araroopat_3phase_v3/training/warmup`) | 2 h 47 min | 16.4 GiB |
+| `bpe_16k_3phase_v3_warmup_mcq4096` (`bpe_16k_3phase_v3/training/warmup`) | 2 h 29 min | 16.4 GiB |
+
+The native cells peak at 68.6 GiB (the 151 936-row output head over a 4 096-token forward, plus the HF loss's float32 copy); it fits the H100, with little room to spare. The first Alghafa pass (AraRooPat) peaked at 12.1 GiB (12 433 MiB) — 4 096 fits for every cell, so no cell fell back to 2 048.
+
+**Diagnostics per cell and task** (all rows; % of rows; `cont_tok` = mean continuation tokens per scored choice — the letter ` أ` is 1 under native and BPE-16K and 3 under AraRooPat, ACVA's ` صح` / ` خطأ` 1 / 2 under native, 1 / 1 under BPE, 2 / 2 under AraRooPat; `native_qwen3_sft` has schema-1 dumps, no `cont_tokens`):
+
+| cell | ACVA hit_cap / all_sent / near_tie % · cont_tok | Alghafa hit_cap / all_sent / near_tie % · cont_tok | Arabic-Exam hit_cap / all_sent / near_tie % · cont_tok | Culture-MMLU hit_cap / all_sent / near_tie % · cont_tok | MEI (ACVA / Alghafa / Exam / Culture) |
+|---|---|---|---|---|---|
+| AraRooPat v5 | 0.0 / 0.0 / 1.0 · 2.00 | 0.0 / 0.0 / 0.2 · 9.39 | 0.1 / 0.1 / 0.2 · 3.01 | 0.0 / 0.0 / 0.5 · 3.00 | 4.963 / 1.592 / 2.301 / 1.668 |
+| BPE-16K v5 | 0.0 / 0.0 / 0.0 · 1.00 | 0.0 / 0.0 / 0.1 · 4.59 | 3.3 / 3.3 / 5.1 · 1.01 | 0.0 / 0.0 / 6.1 · 1.00 | 1.040 / 0.741 / 0.737 / 0.547 |
+| native v5 | 0.0 / 0.0 / 0.1 · 1.50 | 0.0 / 0.0 / 0.6 · 7.75 | 2.4 / 2.4 / 5.8 · 1.01 | 0.0 / 0.0 / 4.1 · 1.00 | 1.002 / 0.701 / 0.725 / 0.531 |
+| native base | 0.0 / 0.0 / 0.6 · 1.50 | 0.0 / 0.0 / 0.8 · 7.75 | 2.4 / 2.4 / 4.8 · 1.01 | 0.0 / 0.0 / 3.0 · 1.00 | 1.409 / 0.677 / 0.726 / 0.531 |
+| AraRooPat warmup | 0.0 / 0.0 / 0.8 · 2.00 | 0.0 / 0.0 / 0.3 · 9.39 | 0.1 / 0.1 / 1.1 · 3.01 | 0.0 / 0.0 / 1.5 · 3.00 | 3.727 / 1.795 / 2.056 / 1.564 |
+| BPE-16K warmup | 0.0 / 0.0 / 0.9 · 1.00 | 0.0 / 0.0 / 0.1 · 4.59 | 3.3 / 3.3 / 3.0 · 1.01 | 0.0 / 0.0 / 4.5 · 1.00 | 1.431 / 0.719 / 0.703 / 0.535 |
+| native SFT (1 024) † | 0.0 / 0.0 / 0.4 · — | 19.3 / 19.3 / 0.3 · — | 4.3 / 4.3 / 4.2 · — | 6.6 / 6.6 / 4.8 · — | 1.278 / 0.919 / 0.777 / 0.581 |
+
+At 4 096 only Arabic-Exam truncates in the new cells — 17 rows under AraRooPat, 340 under native, 482 under BPE-16K (the same long passages; BPE-16K's byte fragments make them longest, 8 042 tokens in §3.9); `all_sentinel` equals `hit_cap` everywhere. MEI is reported for completeness and not read: it multiplies accuracy by RPS, AraRooPat's RPS (0.379) is mechanically high (`RPS_MECHANICAL_FLAGS`), and the per-task inference times differ by < 10 % across cells.
+
+**Accuracy** (char-norm / PMI; ∩ = the primary intersection, bold):
+
+| cell | ACVA all (char / PMI) | ACVA ∩ (char / PMI) | Alghafa all (char / PMI) | Alghafa ∩ (char / PMI) | Arabic-Exam all (char / PMI) | Arabic-Exam ∩ (char / PMI) | Culture-MMLU all (char / PMI) | Culture-MMLU ∩ (char / PMI) |
+|---|---|---|---|---|---|---|---|---|
+| AraRooPat v5 | 0.423 / 0.666 | **0.423 / 0.666** | 0.661 / 0.410 | **0.680 / 0.428** | 0.554 / 0.561 | **0.549 / 0.555** | 0.467 / 0.459 | **0.472 / 0.465** |
+| BPE-16K v5 | 0.412 / 0.495 | **0.412 / 0.495** | 0.696 / 0.619 | **0.712 / 0.675** | 0.583 / 0.576 | **0.595 / 0.589** | 0.493 / 0.495 | **0.501 / 0.502** |
+| native v5 | 0.433 / 0.471 | **0.433 / 0.471** | 0.731 / 0.606 | **0.745 / 0.664** | 0.611 / 0.589 | **0.619 / 0.594** | 0.512 / 0.496 | **0.520 / 0.504** |
+| native base | 0.474 / 0.670 | **0.474 / 0.670** | 0.726 / 0.584 | **0.731 / 0.637** | 0.589 / 0.587 | **0.598 / 0.592** | 0.473 / 0.494 | **0.483 / 0.501** |
+| AraRooPat warmup | 0.404 / 0.482 | **0.404 / 0.482** | 0.640 / 0.447 | **0.663 / 0.478** | 0.486 / 0.480 | **0.483 / 0.476** | 0.414 / 0.411 | **0.418 / 0.415** |
+| BPE-16K warmup | 0.405 / 0.686 | **0.405 / 0.686** | 0.673 / 0.604 | **0.686 / 0.661** | 0.543 / 0.549 | **0.554 / 0.558** | 0.464 / 0.484 | **0.470 / 0.492** |
+| native SFT (1 024) † | 0.475 / 0.560 | **0.475 / 0.560** | 0.643 / 0.591 | **0.734 / 0.675** | 0.591 / 0.555 | **0.609 / 0.566** | 0.491 / 0.469 | **0.510 / 0.484** |
+
+∩ sizes: ACVA 9000 of 9000, Alghafa 18542 of 22977, Arabic-Exam 13840 of 14455, Culture-MMLU 13382 of 14327. What the intersection rule removed: ACVA nothing; Alghafa 4 435 rows (19.3 %), all by the 1 024 cell `native_qwen3_sft` — all 80 true/false rows, 3 575 of 5 400 `meta_ar_dialects`, 589 of 900 `meta_ar_msa`, 122 of 155 `soqal`, 69 of 155 `xglue_mlqa`; Arabic-Exam 615 rows (4.3 %) — 482 capped under BPE-16K, 340 under native, 17 under AraRooPat, 133 only by the 1 024 cell; Culture-MMLU 945 rows (6.6 %), all by the 1 024 cell.
+
+**Alghafa per sub-config** (primary intersection, char / PMI; the four fixed-label sub-configs are the true/false and three sentiment ones, whose continuations are the same 2–3 label phrases on every row; the other five score per-row answer text):
+
+| cell | mcq_exams_test_ar (∩ 562) | meta_ar_dialects (∩ 1825) | meta_ar_msa (∩ 311) | multiple_choice_facts_truefalse_balanced_task (∩ 0) | multiple_choice_grounded_statement_soqal_task (∩ 33) | multiple_choice_grounded_statement_xglue_mlqa_task (∩ 86) | multiple_choice_rating_sentiment_no_neutral_task (∩ 8000) | multiple_choice_rating_sentiment_task (∩ 6000) | multiple_choice_sentiment_task (∩ 1725) | fixed-label ∩ | choice-text ∩ |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| AraRooPat v5 | 0.447 / 0.326 | 0.580 / 0.352 | 0.775 / 0.447 | — / — | 0.758 / 0.394 | 0.849 / 0.442 | 0.854 / 0.527 | 0.590 / 0.339 | 0.341 / 0.387 | 0.697 / 0.440 | 0.585 / 0.361 |
+| BPE-16K v5 | 0.456 / 0.338 | 0.620 / 0.412 | 0.794 / 0.543 | — / — | 0.879 / 0.576 | 0.907 / 0.558 | 0.882 / 0.902 | 0.621 / 0.592 | 0.397 / 0.333 | 0.729 / 0.721 | 0.618 / 0.418 |
+| native v5 | 0.472 / 0.317 | 0.685 / 0.385 | 0.823 / 0.453 | — / — | 0.909 / 0.485 | 0.907 / 0.477 | 0.902 / 0.860 | 0.668 / 0.615 | 0.413 / 0.383 | 0.759 / 0.714 | 0.667 / 0.383 |
+| native base | 0.484 / 0.311 | 0.698 / 0.373 | 0.836 / 0.473 | — / — | 0.879 / 0.424 | 0.884 / 0.465 | 0.876 / 0.832 | 0.657 / 0.586 | 0.401 / 0.332 | 0.741 / 0.683 | 0.678 / 0.375 |
+| AraRooPat warmup | 0.443 / 0.324 | 0.538 / 0.333 | 0.765 / 0.424 | — / — | 0.758 / 0.394 | 0.814 / 0.407 | 0.838 / 0.614 | 0.570 / 0.394 | 0.356 / 0.352 | 0.683 / 0.501 | 0.555 / 0.344 |
+| BPE-16K warmup | 0.450 / 0.322 | 0.621 / 0.388 | 0.801 / 0.505 | — / — | 0.939 / 0.606 | 0.919 / 0.523 | 0.861 / 0.887 | 0.575 / 0.578 | 0.366 / 0.333 | 0.697 / 0.708 | 0.620 / 0.395 |
+| native SFT (1 024) † | 0.472 / 0.329 | 0.662 / 0.376 | 0.830 / 0.463 | — / — | 0.848 / 0.455 | 0.872 / 0.453 | 0.895 / 0.887 | 0.651 / 0.621 | 0.412 / 0.364 | 0.749 / 0.728 | 0.651 / 0.380 |
+
+**Label collapse on the fixed-label groups** — the most-predicted label and its share under char / PMI (4096-only intersection, so the 80 true/false rows are in; ⚠ = ≥ 90 %; gold shares: ACVA صح 0.596 / خطأ 0.404, true/false 0.50 / 0.50, `rating_sentiment_no_neutral` 0.50 / 0.50, the two 3-way ones 0.33 each). Alghafa shuffles the choice order per row, so the dump's position histogram hides this; `mcq_compare.py` reads it by label text (commit `7fb914b`):
+
+| cell | ACVA | multiple_choice_facts_truefalse_balanced_task | multiple_choice_rating_sentiment_no_neutral_task | multiple_choice_rating_sentiment_task | multiple_choice_sentiment_task |
+|---|---|---|---|---|---|
+| AraRooPat v5 | خطأ 0.98 ⚠ / صح 0.58 | صحيح 0.62 / خطأ 0.55 | هو رأي ايجابي 0.57 / هو رأي ايجابي 0.97 ⚠ | هو رأي ايجابي 0.54 / هو رأي ايجابي 0.99 ⚠ | هي جملة ايجابية 0.96 ⚠ / هي جملة ايجابية 0.58 |
+| BPE-16K v5 | خطأ 0.99 ⚠ / خطأ 0.87 | خطأ 0.54 / خطأ 0.55 | هو رأي سلبي 0.56 / هو رأي ايجابي 0.50 | هو رأي سلبي 0.54 / هو رأي سلبي 0.57 | هي جملة ايجابية 0.58 / هي جملة ايجابية 1.00 ⚠ |
+| native v5 | خطأ 0.95 ⚠ / خطأ 0.89 | خطأ 0.54 / خطأ 0.57 | هو رأي سلبي 0.54 / هو رأي ايجابي 0.62 | هو رأي سلبي 0.49 / هو رأي ايجابي 0.62 | هي جملة سلبية 0.42 / هي جملة سلبية 0.52 |
+| native base | خطأ 0.89 / خطأ 0.58 | خطأ 0.54 / خطأ 0.57 | هو رأي سلبي 0.54 / هو رأي ايجابي 0.64 | هو رأي سلبي 0.47 / هو رأي ايجابي 0.60 | هي جملة سلبية 0.42 / هي جملة سلبية 0.81 |
+| AraRooPat warmup | خطأ 1.00 ⚠ / خطأ 0.88 | خطأ 0.54 / خطأ 0.65 | هو رأي سلبي 0.53 / هو رأي ايجابي 0.88 | هو رأي سلبي 0.58 / هو رأي ايجابي 0.91 ⚠ | هي جملة ايجابية 0.80 / هي جملة محايدة 0.90 |
+| BPE-16K warmup | خطأ 1.00 ⚠ / صح 0.63 | خطأ 0.54 / خطأ 0.56 | هو رأي سلبي 0.57 / هو رأي ايجابي 0.52 | هو رأي سلبي 0.61 / هو رأي سلبي 0.57 | هي جملة ايجابية 0.72 / هي جملة ايجابية 1.00 ⚠ |
+
+**Pairs** (primary intersection; A − B; McNemar = rows only A / only B got right):
+
+| A − B | task | n ∩ | char Δ [95 % CI] | only A / only B | PMI Δ [95 % CI] | only A / only B |
+|---|---|---|---|---|---|---|
+| AraRooPat v5 − native base | ACVA | 9000 | -0.051 [-0.058, -0.044] | 271 / 730 | -0.004 [-0.017, +0.008] | 1567 / 1607 |
+| BPE-16K v5 − native base | ACVA | 9000 | -0.062 [-0.068, -0.055] | 194 / 748 | -0.175 [-0.187, -0.164] | 739 / 2317 |
+| native v5 − native base | ACVA | 9000 | -0.041 [-0.046, -0.036] | 101 / 470 | -0.199 [-0.209, -0.188] | 544 / 2333 |
+| AraRooPat v5 − BPE-16K v5 | ACVA | 9000 | +0.011 [+0.007, +0.014] | 183 / 88 | +0.171 [+0.157, +0.185] | 3015 / 1477 |
+| AraRooPat v5 − native v5 | ACVA | 9000 | -0.010 [-0.015, -0.005] | 252 / 342 | +0.194 [+0.180, +0.209] | 3251 / 1502 |
+| BPE-16K v5 − native v5 | ACVA | 9000 | -0.021 [-0.026, -0.016] | 170 / 355 | +0.023 [+0.016, +0.031] | 737 / 526 |
+| native v5 − native SFT (1 024) † | ACVA | 9000 | -0.042 [-0.047, -0.037] | 94 / 475 | -0.089 [-0.096, -0.082] | 167 / 966 |
+| AraRooPat v5 − AraRooPat warmup | ACVA | 9000 | +0.019 [+0.016, +0.022] | 184 / 14 | +0.183 [+0.169, +0.197] | 2996 / 1345 |
+| BPE-16K v5 − BPE-16K warmup | ACVA | 9000 | +0.007 [+0.005, +0.010] | 80 / 13 | -0.191 [-0.205, -0.177] | 1447 / 3167 |
+| AraRooPat v5 − native base | Alghafa | 18542 | -0.051 [-0.057, -0.044] | 1416 / 2361 | -0.209 [-0.216, -0.201] | 1036 / 4909 |
+| BPE-16K v5 − native base | Alghafa | 18542 | -0.019 [-0.024, -0.014] | 1044 / 1395 | +0.039 [+0.033, +0.045] | 2025 / 1309 |
+| native v5 − native base | Alghafa | 18542 | +0.014 [+0.010, +0.018] | 835 / 575 | +0.027 [+0.023, +0.031] | 1071 / 572 |
+| AraRooPat v5 − BPE-16K v5 | Alghafa | 18542 | -0.032 [-0.038, -0.026] | 1491 / 2085 | -0.247 [-0.255, -0.240] | 1118 / 5707 |
+| AraRooPat v5 − native v5 | Alghafa | 18542 | -0.065 [-0.071, -0.059] | 1135 / 2340 | -0.236 [-0.243, -0.229] | 684 / 5056 |
+| BPE-16K v5 − native v5 | Alghafa | 18542 | -0.033 [-0.038, -0.028] | 738 / 1349 | +0.012 [+0.006, +0.017] | 1493 / 1276 |
+| native v5 − native SFT (1 024) † | Alghafa | 18542 | +0.011 [+0.008, +0.015] | 622 / 412 | -0.012 [-0.015, -0.008] | 474 / 691 |
+| AraRooPat v5 − AraRooPat warmup | Alghafa | 18542 | +0.017 [+0.012, +0.022] | 1209 / 895 | -0.050 [-0.054, -0.045] | 500 / 1424 |
+| BPE-16K v5 − BPE-16K warmup | Alghafa | 18542 | +0.027 [+0.022, +0.031] | 1024 / 531 | +0.015 [+0.012, +0.018] | 503 / 232 |
+| AraRooPat v5 − native base | Arabic-Exam | 13840 | -0.049 [-0.059, -0.039] | 1978 / 2656 | -0.037 [-0.046, -0.028] | 1787 / 2298 |
+| BPE-16K v5 − native base | Arabic-Exam | 13840 | -0.002 [-0.011, +0.006] | 1632 / 1665 | -0.003 [-0.011, +0.005] | 1602 / 1644 |
+| native v5 − native base | Arabic-Exam | 13840 | +0.022 [+0.015, +0.028] | 1216 / 917 | +0.002 [-0.004, +0.007] | 823 / 801 |
+| AraRooPat v5 − BPE-16K v5 | Arabic-Exam | 13840 | -0.047 [-0.055, -0.038] | 1425 / 2070 | -0.034 [-0.042, -0.025] | 1540 / 2009 |
+| AraRooPat v5 − native v5 | Arabic-Exam | 13840 | -0.071 [-0.079, -0.062] | 1375 / 2352 | -0.038 [-0.048, -0.029] | 1730 / 2263 |
+| BPE-16K v5 − native v5 | Arabic-Exam | 13840 | -0.024 [-0.031, -0.017] | 1028 / 1360 | -0.005 [-0.012, +0.003] | 1518 / 1582 |
+| native v5 − native SFT (1 024) † | Arabic-Exam | 13840 | +0.010 [+0.003, +0.017] | 1340 / 1197 | +0.027 [+0.021, +0.033] | 1159 / 782 |
+| AraRooPat v5 − AraRooPat warmup | Arabic-Exam | 13840 | +0.066 [+0.058, +0.074] | 2082 / 1171 | +0.079 [+0.070, +0.087] | 2446 / 1355 |
+| BPE-16K v5 − BPE-16K warmup | Arabic-Exam | 13840 | +0.041 [+0.033, +0.049] | 1836 / 1268 | +0.031 [+0.024, +0.038] | 1436 / 1001 |
+| AraRooPat v5 − native base | Culture-MMLU | 13382 | -0.011 [-0.021, -0.001] | 2273 / 2416 | -0.036 [-0.046, -0.026] | 2020 / 2501 |
+| BPE-16K v5 − native base | Culture-MMLU | 13382 | +0.018 [+0.009, +0.027] | 2069 / 1827 | +0.001 [-0.007, +0.009] | 1612 / 1594 |
+| native v5 − native base | Culture-MMLU | 13382 | +0.038 [+0.030, +0.045] | 1692 / 1189 | +0.003 [-0.004, +0.010] | 1243 / 1202 |
+| AraRooPat v5 − BPE-16K v5 | Culture-MMLU | 13382 | -0.029 [-0.036, -0.021] | 1272 / 1657 | -0.037 [-0.046, -0.029] | 1445 / 1944 |
+| AraRooPat v5 − native v5 | Culture-MMLU | 13382 | -0.048 [-0.056, -0.040] | 1272 / 1918 | -0.039 [-0.048, -0.030] | 1843 / 2365 |
+| BPE-16K v5 − native v5 | Culture-MMLU | 13382 | -0.019 [-0.027, -0.012] | 1094 / 1355 | -0.002 [-0.010, +0.006] | 1421 / 1444 |
+| native v5 − native SFT (1 024) † | Culture-MMLU | 13382 | +0.010 [+0.003, +0.018] | 1442 / 1304 | +0.020 [+0.014, +0.026] | 952 / 688 |
+| AraRooPat v5 − AraRooPat warmup | Culture-MMLU | 13382 | +0.054 [+0.046, +0.063] | 1985 / 1261 | +0.050 [+0.041, +0.059] | 2277 / 1608 |
+| BPE-16K v5 − BPE-16K warmup | Culture-MMLU | 13382 | +0.031 [+0.022, +0.039] | 1831 / 1421 | +0.011 [+0.003, +0.018] | 1337 / 1195 |
+
+Alghafa by group (primary intersection, A − B, 95 % CI):
+
+| A − B (Alghafa ∩) | fixed-label char Δ | fixed-label PMI Δ | choice-text char Δ | choice-text PMI Δ |
+|---|---|---|---|---|
+| AraRooPat v5 − native base | -0.043 [-0.050, -0.037] | -0.244 [-0.252, -0.235] | -0.093 [-0.111, -0.075] | -0.015 [-0.029, +0.001] |
+| BPE-16K v5 − native base | -0.012 [-0.017, -0.006] | +0.038 [+0.031, +0.045] | -0.060 [-0.077, -0.043] | +0.043 [+0.028, +0.058] |
+| native v5 − native base | +0.019 [+0.015, +0.023] | +0.030 [+0.026, +0.035] | -0.011 [-0.024, +0.001] | +0.007 [-0.003, +0.018] |
+| AraRooPat v5 − BPE-16K v5 | -0.032 [-0.039, -0.025] | -0.282 [-0.290, -0.273] | -0.033 [-0.050, -0.016] | -0.057 [-0.072, -0.042] |
+| AraRooPat v5 − native v5 | -0.062 [-0.069, -0.056] | -0.274 [-0.282, -0.266] | -0.082 [-0.098, -0.064] | -0.022 [-0.037, -0.007] |
+| BPE-16K v5 − native v5 | -0.030 [-0.035, -0.025] | +0.007 [+0.001, +0.014] | -0.049 [-0.063, -0.034] | +0.035 [+0.021, +0.049] |
+| native v5 − native SFT (1 024) † | +0.011 [+0.007, +0.014] | -0.014 [-0.018, -0.010] | +0.016 [+0.004, +0.028] | +0.003 [-0.006, +0.012] |
+| AraRooPat v5 − AraRooPat warmup | +0.015 [+0.009, +0.020] | -0.062 [-0.067, -0.057] | +0.030 [+0.018, +0.044] | +0.016 [+0.006, +0.026] |
+| BPE-16K v5 − BPE-16K warmup | +0.032 [+0.027, +0.036] | +0.013 [+0.010, +0.016] | -0.001 [-0.014, +0.011] | +0.023 [+0.013, +0.033] |
+
+**Sensitivity — without the 1 024 cell** (`_mcq_compare/mcq_compare_4096.{md,json}`: Alghafa and Culture-MMLU keep all rows, Arabic-Exam 13 973):
+
+| A − B (4096-only ∩) | task | n ∩ | char Δ [95 % CI] | PMI Δ [95 % CI] |
+|---|---|---|---|---|
+| AraRooPat v5 − native base | ACVA | 9000 | -0.051 [-0.058, -0.044] | -0.004 [-0.017, +0.008] |
+| BPE-16K v5 − native base | ACVA | 9000 | -0.062 [-0.068, -0.055] | -0.175 [-0.187, -0.164] |
+| native v5 − native base | ACVA | 9000 | -0.041 [-0.046, -0.036] | -0.199 [-0.209, -0.188] |
+| AraRooPat v5 − BPE-16K v5 | ACVA | 9000 | +0.011 [+0.007, +0.014] | +0.171 [+0.157, +0.185] |
+| AraRooPat v5 − native v5 | ACVA | 9000 | -0.010 [-0.015, -0.005] | +0.194 [+0.180, +0.209] |
+| BPE-16K v5 − native v5 | ACVA | 9000 | -0.021 [-0.026, -0.016] | +0.023 [+0.016, +0.031] |
+| AraRooPat v5 − AraRooPat warmup | ACVA | 9000 | +0.019 [+0.016, +0.022] | +0.183 [+0.169, +0.197] |
+| BPE-16K v5 − BPE-16K warmup | ACVA | 9000 | +0.007 [+0.005, +0.010] | -0.191 [-0.205, -0.177] |
+| AraRooPat warmup − BPE-16K warmup | ACVA | 9000 | -0.001 [-0.002, -0.000] | -0.204 [-0.218, -0.189] |
+| AraRooPat v5 − native base | Alghafa | 22977 | -0.066 [-0.071, -0.059] | -0.173 [-0.180, -0.167] |
+| BPE-16K v5 − native base | Alghafa | 22977 | -0.030 [-0.035, -0.025] | +0.035 [+0.030, +0.040] |
+| native v5 − native base | Alghafa | 22977 | +0.005 [+0.002, +0.009] | +0.022 [+0.019, +0.026] |
+| AraRooPat v5 − BPE-16K v5 | Alghafa | 22977 | -0.035 [-0.041, -0.029] | -0.208 [-0.215, -0.202] |
+| AraRooPat v5 − native v5 | Alghafa | 22977 | -0.071 [-0.076, -0.065] | -0.196 [-0.202, -0.190] |
+| BPE-16K v5 − native v5 | Alghafa | 22977 | -0.035 [-0.040, -0.031] | +0.013 [+0.008, +0.018] |
+| AraRooPat v5 − AraRooPat warmup | Alghafa | 22977 | +0.021 [+0.016, +0.025] | -0.037 [-0.041, -0.033] |
+| BPE-16K v5 − BPE-16K warmup | Alghafa | 22977 | +0.023 [+0.019, +0.027] | +0.015 [+0.012, +0.017] |
+| AraRooPat warmup − BPE-16K warmup | Alghafa | 22977 | -0.034 [-0.039, -0.028] | -0.157 [-0.164, -0.150] |
+| AraRooPat v5 − native base | Arabic-Exam | 13973 | -0.049 [-0.058, -0.039] | -0.037 [-0.046, -0.028] |
+| BPE-16K v5 − native base | Arabic-Exam | 13973 | -0.002 [-0.010, +0.006] | -0.003 [-0.011, +0.005] |
+| native v5 − native base | Arabic-Exam | 13973 | +0.022 [+0.015, +0.029] | +0.002 [-0.004, +0.008] |
+| AraRooPat v5 − BPE-16K v5 | Arabic-Exam | 13973 | -0.046 [-0.054, -0.038] | -0.034 [-0.042, -0.026] |
+| AraRooPat v5 − native v5 | Arabic-Exam | 13973 | -0.071 [-0.079, -0.062] | -0.039 [-0.047, -0.030] |
+| BPE-16K v5 − native v5 | Arabic-Exam | 13973 | -0.024 [-0.031, -0.018] | -0.005 [-0.013, +0.003] |
+| AraRooPat v5 − AraRooPat warmup | Arabic-Exam | 13973 | +0.067 [+0.059, +0.074] | +0.079 [+0.070, +0.088] |
+| BPE-16K v5 − BPE-16K warmup | Arabic-Exam | 13973 | +0.041 [+0.033, +0.049] | +0.031 [+0.025, +0.038] |
+| AraRooPat warmup − BPE-16K warmup | Arabic-Exam | 13973 | -0.072 [-0.081, -0.063] | -0.082 [-0.089, -0.074] |
+| AraRooPat v5 − native base | Culture-MMLU | 14327 | -0.006 [-0.016, +0.003] | -0.035 [-0.044, -0.025] |
+| BPE-16K v5 − native base | Culture-MMLU | 14327 | +0.020 [+0.011, +0.029] | +0.002 [-0.006, +0.009] |
+| native v5 − native base | Culture-MMLU | 14327 | +0.038 [+0.031, +0.046] | +0.003 [-0.005, +0.010] |
+| AraRooPat v5 − BPE-16K v5 | Culture-MMLU | 14327 | -0.026 [-0.034, -0.019] | -0.036 [-0.044, -0.028] |
+| AraRooPat v5 − native v5 | Culture-MMLU | 14327 | -0.045 [-0.053, -0.037] | -0.037 [-0.046, -0.028] |
+| BPE-16K v5 − native v5 | Culture-MMLU | 14327 | -0.018 [-0.025, -0.012] | -0.001 [-0.009, +0.006] |
+| AraRooPat v5 − AraRooPat warmup | Culture-MMLU | 14327 | +0.053 [+0.045, +0.061] | +0.048 [+0.039, +0.057] |
+| BPE-16K v5 − BPE-16K warmup | Culture-MMLU | 14327 | +0.029 [+0.021, +0.037] | +0.011 [+0.004, +0.018] |
+| AraRooPat warmup − BPE-16K warmup | Culture-MMLU | 14327 | -0.050 [-0.059, -0.042] | -0.073 [-0.081, -0.066] |
+
+No sign changes against the primary run on the letter-scored tasks; Alghafa's full 22 977 rows widen AraRooPat's char deficit on the choice-text group (−0.114 vs native base on 7 172 rows against −0.093 on 2 817).
+
+**Two scoring artifacts the dumps exposed (neither fixed here — the brief kept the scorer's normalisations unchanged).** (a) *Label-prior collapse.* On a fixed-label group PMI subtracts each label's unconditioned log-likelihood under the bare `الإجابة:`; when one label's prior is several nats lower than the others', PMI hands it that many nats on every row. Under AraRooPat ` هو رأي ايجابي` — `ايجابي` spelled in six `[CHAR_*]` (§3.9) — has an unconditioned ll of −25.94 against −21.72 for ` هو رأي سلبي` (native −24.26 / −21.89): PMI picks it on 97 % / 99 % of the two rating sub-configs (14 000 rows), and AraRooPat v5's Alghafa PMI (0.428 ∩) is mostly that. BPE-16K collapses the same way on ` هي جملة ايجابية` (prior −30.98 against −25.05 / −25.91; 100 % of 1 725 rows). Char-norm collapses too, on ACVA: every cell picks ` خطأ` on 89–100 % of rows, so every ACVA char accuracy (0.404–0.475) sits on the ` خطأ` base rate (0.404). ACVA PMI splits the cells into collapsed (BPE v5 0.87, native v5 0.89, AraRooPat warmup 0.88, native SFT 0.77 on ` خطأ`) and not (AraRooPat v5, native base, BPE warmup: 0.58–0.63 on one label) — and the three uncollapsed cells score 0.666–0.686, the collapsed ones 0.471–0.560. **ACVA and Alghafa's fixed-label accuracies measure how a cell's label priors fall, not recognition; they are not read as tokenizer results below.** (b) *Exact ties from bf16.* The scorer applies `log_softmax` to the model's bf16 logits, so a single-token continuation's log-prob takes ~1 000–1 800 distinct values over ~50 000 scored choices; 1.8–5.3 % of the letter-task rows under native and BPE-16K end in an exact PMI tie, resolved by `np.argmax` to the first choice (accuracy on those rows 0.25–0.35). AraRooPat's letters are 3-token sums and never tie exactly. Measured effect: re-breaking the ties at random changes each cell's accuracy by −0.33 to +0.37 points (all five native / BPE-16K cells, both letter tasks) — below every gap read here, but a float32 `log_softmax` would remove it (and would change the native numbers, which is why it is not in this commit).
+
+**Reading.**
+*Ranking under log-likelihood scoring.* The free-form ranking (native ≈ AraRooPat > BPE-16K, §3.8) does **not** carry over. On the two letter-scored benchmarks — the ones neither artifact touches — AraRooPat v5 is last on every comparison: Arabic-Exam 0.549 / 0.555 against BPE-16K 0.595 / 0.589 and native v5 0.619 / 0.594 (AraRooPat − BPE −0.047 [−0.055, −0.038] char, −0.034 [−0.042, −0.025] PMI), Culture-MMLU 0.472 / 0.465 against 0.501 / 0.502 and 0.520 / 0.504 (−0.029 [−0.036, −0.021] / −0.037 [−0.046, −0.029]); BPE-16K and native v5 are not separable under PMI (Exam −0.005 [−0.012, +0.003], Culture −0.002 [−0.010, +0.006]) and native leads by 2 points under char. On Alghafa's choice-text group the order is the same (char 0.585 / 0.618 / 0.667 for AraRooPat / BPE / native v5). So on recognition the order is native ≥ BPE-16K > AraRooPat, by 3–5 points for AraRooPat, where generation had AraRooPat 0.30 judge points above BPE. *Phase 3 on teacher text did not cost recognition — it raised it.* AraRooPat v5 over its Phase 2 checkpoint: Arabic-Exam +0.066 [+0.058, +0.074] / +0.079 [+0.070, +0.087], Culture-MMLU +0.054 / +0.050; BPE-16K v5 over its: +0.041 / +0.031 and +0.031 / +0.011; native v5 over the untouched base: +0.022 / +0.002 and +0.038 / +0.003 (char up, PMI flat); native v5 over the pre-distillation SFT: +0.010 / +0.027 and +0.010 / +0.020. At the Phase 2 checkpoints AraRooPat trailed BPE-16K by 7–8 points on the letter tasks (Exam −0.072 / −0.082, Culture −0.050 / −0.073, 4096-only run); Phase 3 halved that. *Where native's advantage sits.* In the per-row answer text, not in the labels: native v5's lead over BPE-16K is char-norm on the letter tasks (+2 points) and on Alghafa's choice-text sub-configs (+0.049 [+0.034, +0.063]), and it vanishes under PMI on the letter tasks; the fixed-label groups are decided by the label priors of (a). *No near-uniform pathology.* Median decision margins are 0.62–4.82 in every cell and task (Charformer's was 5e-6); the near-tie shares (0–6.1 %) are the exact bf16 ties of (b) on single-token letters, not flat distributions. *What the intersection removed* — the 1 024 cell's truncated rows (19.3 % of Alghafa, 6.6 % of Culture-MMLU) and the long Arabic-Exam passages (4.3 %); the 4096-only run keeps them and moves no conclusion.
+
+**Artifacts.** `outputs/experiments/qwen_native_vs_araroopat/<cell>/` for the six cells (`all_metrics.json`, `intrinsic_metrics.json`, `eval_rows/*.parquet` schema 2), `_mcq_compare/mcq_compare.{md,json}` (primary) and `mcq_compare_4096.{md,json}`, `_mcq_logs/` (chain script, `chain.log`, one console log per cell, `gpu_mem.csv` sampled every 15 s), `_audit/scorer_noop_check_2026-09-24{.py,.json,_run1.json,_<task>.parquet}`. Commits: `ff9f4b5` (§3.9), `2f56441` (scorer fix + schema 2 + tests), `2441518` (configs), `4d405ca` (`mcq_compare.py`), `7fb914b` (label-collapse diagnostic), and the documentation commit of this section.
+
 ## 4. What the campaign established
 
 1. The native model's loops were partly measurement (the first loop rule) and partly a greedy attractor of the base model; under the corrected rules the untrained base loops on 6.8 % of prompts and the SFT arm on 12.4 %. SFT on the 30 000-record mixture learns the references' register and length but not their content: judge 2.28 vs 2.42, CI including zero.
@@ -864,6 +1038,8 @@ Closed-class = PREP + FUNC + clitic-only words. **Reading, AraRooPat.** Two thir
 5. (§3.6) Two measurement faults were corrected. The raw-text "held-out" loss was read from each cell's *own* pool — training text for the adapted arms, and a different document set per arm; on a properly held-out set the LM gap to native is 0.03 nats/char, not 0.13. And the Phase 3 stop signal carried 12 % of the loss tokens: on one arm it wandered upward at step 1 400 and stopped training at a fifth of the mixture. Neither fault changed a ranking; both changed magnitudes enough to change what the next step should be.
 6. (§3.7) Neither a token-level repetition penalty nor more and longer Phase 3 free-form data closes AraRooPat's generation gap. A penalty of 1.2 removes loops in every cell (0–1.2 %) but lowers the judge (AraRooPat −0.30, native base −0.29, both CIs below 0; BPE and native SFT within noise), doubles the off-topic flags and, being token-level, halves AraRooPat's article and و tokens; the prompts on which AraRooPat loops hold no recoverable answer (1.72 once the loop is broken, against 2.08 / 2.32 for BPE / native SFT on the same prompts). v4 — 35 000 examples of a 25/15/60 mixture at 1 024 tokens, three times the distinct free-form records — brought the answer NLL to native SFT's level (0.766 nats/char both) without moving the judge (+0.03, CI spans 0) or the loops (23.2 %, worst in the longest-reference tercile). At equal likelihood of the references native SFT loops on half as many prompts: the gap is in free-running generation, which points to sequence-level remedies (distillation from the native model, a training-time repetition objective), not to Phase 3 data or token-level decoding. In every cell the loop rate rises with the reference length.
 7. (§3.8) The flatness explanation of the loop gap does not hold — at equal likelihood the from-scratch vocabularies are as sharp per character as native, and loops start at low-margin points in every model, the untrained native base included. Sequence-level distillation from a third-party teacher (Aya-Expanse-32B, chosen by a bake-off on dev prompts; judge 3.65 on the test prompts) with the same teacher answers, mixture, seed and draw rule for all three arms raised every arm by about a quarter point (AraRooPat +0.25 vs v4, native +0.24 vs SFT, BPE +0.14 vs ffstop) and brought loops to the untrained base's level for AraRooPat and native (6.8 / 8.4 %, flat across reference length) but not for BPE-16K (15.6 %). Under identical treatment AraRooPat retains 0.67 of the teacher's judge score, native 0.69 and BPE-16K 0.58: AraRooPat is not separable from the native vocabulary (−0.09 [−0.24, +0.07]; its residual cost is fluency and instruction following, not correctness) and is above BPE-16K (+0.30 [+0.15, +0.45]) — the first such interval under equal treatment. All three students stay far below the teacher (−1.13 to −1.52). On the teacher's own dev text the native vocabulary has the lowest NLL per character (0.388 vs AraRooPat 0.420, BPE 0.425).
+
+8. (§3.10) On recognition the order is not the generation order. With the MCQ scorer's continuation window fixed (it had skipped the first continuation token and scored `</s>` for every from-scratch tokenizer) and every arm evaluated at 4 096 tokens on the rows no arm truncates, the letter-scored benchmarks rank native v5 ≥ BPE-16K v5 > AraRooPat v5: AraRooPat trails BPE-16K by 3–5 points (Arabic-Exam −0.047 / −0.034, Culture-MMLU −0.029 / −0.037, char / PMI, every CI below 0) and native v5 by 4–7, while BPE-16K and native v5 are within a point under PMI — where the judge had AraRooPat 0.30 above BPE-16K. The distilled Phase 3 did not cost recognition: every arm gained over its predecessor, AraRooPat the most (+5–8 points over its Phase 2 checkpoint, halving its deficit to BPE-16K). ACVA and Alghafa's fixed-label sub-configs cannot rank tokenizers under this protocol: one label takes 89–100 % of the predictions whenever a label's unconditioned prior is several nats off the others' — and a label spelled in characters (AraRooPat's ` ايجابي`) is exactly such a label.
 
 ## 5. Open items and next steps (in the order proposed)
 
@@ -883,13 +1059,18 @@ Closed-class = PREP + FUNC + clitic-only words. **Reading, AraRooPat.** Two thir
 14. ~~`scripts/diag_heldout_loss.py` should emit `nll_per_answer_char` and `reference_chars`~~ — **done, §3.7 (P0)**, with `scripts/diag_backfill_per_char.py` for the older JSONs.
 
 15. **Blind human check on the distilled arms** (console Rate tab, 50 prompts × 3 variants: `teacher_aya_expanse_32b_m2_c2400`, `araroopat_3phase_v5_distill`, `native_qwen3_sft_v5_distill`, then a second set with `bpe_16k_3phase_v5_distill`): the three v5 cells write at the teacher's length, and the judge's length bias is the standing caveat of this eval — the +0.30 AraRooPat − BPE interval and the +0.24 to +0.28 distillation gains should be confirmed by a rater before they are quoted. No GPU.
-16. **The four MCQ benchmarks on the three v5 checkpoints** (eval-only re-eval configs, `acva` / `alghafa` / `culture_arabic_mmlu` / `arabic_exam`, ~1–2 h GPU): the campaign's recognition-side eval has not been run on any Qwen arm; with three checkpoints trained identically it is the cheapest next comparison, and it says whether the free-form ranking (native ≈ AraRooPat > BPE) holds under log-likelihood scoring.
-17. Documentation fix: `sft_eval_mixture_manifest.json` lives under `<cell>/training/data/`, not `<cell>/data/` as the *Phase 3 mixture* section of CLAUDE.md says (§3.8 *Verification* (d)).
+16. ~~The four MCQ benchmarks on the three v5 checkpoints~~ — **done, §3.10** (plus the untouched base and the two Phase-2 checkpoints). **The four MCQ benchmarks on the three v5 checkpoints** (eval-only re-eval configs, `acva` / `alghafa` / `culture_arabic_mmlu` / `arabic_exam`, ~1–2 h GPU): the campaign's recognition-side eval has not been run on any Qwen arm; with three checkpoints trained identically it is the cheapest next comparison, and it says whether the free-form ranking (native ≈ AraRooPat > BPE) holds under log-likelihood scoring.
+17. ~~Documentation fix~~ — **done** (`2f56441`). Documentation fix: `sft_eval_mixture_manifest.json` lives under `<cell>/training/data/`, not `<cell>/data/` as the *Phase 3 mixture* section of CLAUDE.md says (§3.8 *Verification* (d)).
 
-18. **Fix the MCQ scorer's continuation window** (§3.9): strip the appended `</s>` from both encodings and take the continuation as the tokens after the longest common prefix; regression test with an EOS-appending tiny tokenizer asserting the scored ids; `native_qwen3_sft` must reproduce its four accuracies byte for byte. Blocks item 16.
-19. Item 16's protocol after §3.9: `max_length: 4096` for every arm, `all_sentinel` shares reported per arm, accuracy on the intersection of untruncated rows as the primary comparison, Alghafa read per sub-config (the word-scored sentiment sub-configs spell `ايجابي` in characters under AraRooPat).
+18. ~~Fix the MCQ scorer's continuation window~~ — **done, §3.10** (`2f56441`; no-op on `native_qwen3_sft`: 1 200 rows, argmax 100 %, Δ 0.0). **Fix the MCQ scorer's continuation window** (§3.9): strip the appended `</s>` from both encodings and take the continuation as the tokens after the longest common prefix; regression test with an EOS-appending tiny tokenizer asserting the scored ids; `native_qwen3_sft` must reproduce its four accuracies byte for byte. Blocks item 16.
+19. ~~Item 16's protocol~~ — **done, §3.10** (4 096 for every arm, intersection primary, 4096-only sensitivity, Alghafa per sub-config and by label). Item 16's protocol after §3.9: `max_length: 4096` for every arm, `all_sentinel` shares reported per arm, accuracy on the intersection of untruncated rows as the primary comparison, Alghafa read per sub-config (the word-scored sentiment sub-configs spell `ايجابي` in characters under AraRooPat).
 20. Tokenizer to-dos for the next AraRooPat vocabulary (not for the fixed v5 checkpoints): add the curly quotes `“ ”`, the Persian letters `ی` / `ھ`, the Quranic marks, the ornate parentheses `﴾ ﴿` and Latin letters to the character / punctuation inventories (0.55–1.1 % of exam / Alghafa word occurrences carry an `<unk>` today), and `ma_interrog` to `CAMEL_CLITIC_SURFACE`.
-21. Every from-scratch MCQ accuracy of the Llama-1B era (no longer on this disk; quoted in earlier documents and CLAUDE.md) was computed on the wrong token window — for a single-piece letter continuation, on `</s>` alone — and is void until re-run under item 18's fix; the native Llama numbers stand. Decide whether any of them is worth re-running.
+21. Every from-scratch MCQ accuracy of the Llama-1B era (no longer on this disk; quoted in earlier documents and CLAUDE.md) was computed on the wrong token window — for a single-piece letter continuation, on `</s>` alone — and is void until re-run under item 18's fix; the native Llama numbers stand. Decide whether any of them is worth re-running. **Still open (the user's call)** — §3.10 adds that a re-run would also meet the label-prior collapse on ACVA / Alghafa's fixed-label groups and the bf16 ties below.
+
+22. **P1b — the two Phase-2 checkpoints** on the four MCQ benchmarks — **done, §3.10** (`araroopat_3phase_v3_warmup_mcq4096`, `bpe_16k_3phase_v3_warmup_mcq4096`).
+23. **Label-prior collapse on fixed-label MCQ groups** (§3.10 (a)): ACVA and Alghafa's true/false and sentiment sub-configs put 89–100 % of predictions on one label under char or PMI depending on each cell's label priors. Options: score these groups by a calibrated rule (e.g. LightEval's PMI with a content-free query per label set, or a per-group prior correction estimated on held-out rows), report them apart, or drop them from tokenizer comparisons. Decide before quoting any ACVA / Alghafa-fixed-label number across tokenizers.
+24. **bf16 `log_softmax` in the scorer** (§3.10 (b)): single-token continuations tie exactly on 1.8–5.3 % of letter-task rows (native, BPE-16K); a float32 `log_softmax` removes the ties. Measured effect of re-breaking them at random ≤ 0.37 points; changing it changes native numbers, so it needs its own no-op-style check against the current dumps.
+25. Intrinsic RPS is not exactly reproducible for the same tokenizer across runs (BPE-16K 0.0498 vs 0.0476, native 0.0758 vs 0.0779; AraRooPat 0.3788 both) — likely a non-deterministic root extractor path; small, but MEI inherits it.
 
 ## 6. GPU time (2026-09-22 onwards)
 Four training runs 8 h 52 min (1 h 15 lost attempt + 3 h 17 v3 + 0 h 56 lost attempt + 3 h 25 BPE), probe ~35 min, six diagnostics ~6 min, judge passes ~10 min — ≈ 9 h 43 min. Earlier: v1 ~1 h, v2 ~1.5 h (+ 45 min resume), native runs and re-evals ~2 h.
@@ -899,6 +1080,8 @@ Four training runs 8 h 52 min (1 h 15 lost attempt + 3 h 17 v3 + 0 h 56 lost att
 §3.7 (2026-09-23): five eval-only runs 19.6 min, two judge passes 10.4 min (incl. cold starts), memory smoke 1.3 min, AraRooPat v4 1 h 22 min (Phase 3 62.6 min, free-form eval 8.4 min), diagnostic 0.7 min — **≈ 1 h 54 min**. Non-GPU: the v4 mixture dry run 6.6 min, the per-character backfill < 1 min.
 
 §3.8 (2026-09-23/24): P0 1.7 min; bake-off generation 28.9 min (six candidates + determinism runs, incl. Falcon-H1's failed bf16 load); the dev reference row 9.5 min; bake-off judge 10.5 min; ceiling 1.8 min + judge 4.7 min; teacher generation 48.4 + 9.9 min; smoke 1.2 min; the three Phase 3 runs 85.4 + 68.1 + 69.0 min; diagnostics 2.2 min; main judge 5.9 min — **≈ 5 h 47 min**. Non-GPU: three planners 10 min, filters and pseudo-cells a few minutes. Downloads: 143 GB of teacher weights (Aya-Expanse-32B was cached).
+
+§3.10 (2026-09-24/25): the scorer no-op check 2 × ~6 min; the six MCQ cells 2 h 54 + 2 h 35 + 2 h 41 + 2 h 40 + 2 h 47 + 2 h 29 min = 16 h 8 min (peak 68.6 GiB on the native cells, 16.4 GiB on the others) — **≈ 16 h 20 min**. Non-GPU: `mcq_compare.py` 2 min per run.
 
 ## 7. References
 - Xu, J. et al. (2022). *Learning to Break the Loop: Analyzing and Mitigating Repetitions for Neural Text Generation* (DITTO). NeurIPS.
@@ -931,9 +1114,13 @@ Four training runs 8 h 52 min (1 h 15 lost attempt + 3 h 17 v3 + 0 h 56 lost att
 
 §3.8 artifacts: listed under §3.8 *Artifacts*. Commits: `c59c1e7` (uncertainty diagnostic), `17e790a` (distill code: bake-off, teacher generation, pseudo-cells, prompts, filter), `345bf51` (teacher-answer overlay + provenance), `02d0dd8` (the three v5 configs), and the documentation commit of §3.8. Teacher file sha256 `8e4d9cd13e3d1bc8a2cd0782266f570dc771a55f500e0609a1c808955bbcf272`.
 
+§3.10 artifacts: listed under §3.10 *Artifacts*; configs `configs/experiments/mcq_v5/*.yaml`. Commits: `ff9f4b5` (§3.9), `2f56441` (scorer window fix, row-dump schema 2, `tests/test_lighteval_scorer_window.py`, the CLAUDE.md manifest path), `2441518` (the six configs), `4d405ca` (`scripts/mcq_compare.py` + tests), `7fb914b` (label-collapse diagnostic), and the documentation commit of §3.10.
+
 ## 9. Cells of `outputs/experiments/qwen_native_vs_araroopat/`
 Current: `native_qwen3_base_m2_c2400`, `native_qwen3_sft_m2_c2400`, `araroopat_3phase_v2`, `araroopat_3phase_v3`, `bpe_16k_3phase_v3`, **`araroopat_3phase_v3_ffstop`**, **`bpe_16k_3phase_v3_ffstop`** (§3.6: the same recipe with the free-form-aware early stop), **`araroopat_3phase_v4`** (§3.7: Phase 3 at 45 000 × 25/15/60, max_length 1 024 — judge 2.18, the highest AraRooPat cell but not separable from ffstop; the current best arms of each vocabulary are v4 / ffstop for AraRooPat and ffstop for BPE). Older rule sets, kept: `native_qwen3` (untrained base, v1 template), `native_qwen3_base`, `native_qwen3_sft`, `araroopat` (v1). Under `_superseded/`: `native_qwen3_base_after_loop_fix`, `native_qwen3_sft_reeval`, `native_qwen3_{base,sft}_m2_c1200`, the two lost v3 attempts.
 
 New in §3.8: **`araroopat_3phase_v5_distill`**, **`bpe_16k_3phase_v5_distill`**, **`native_qwen3_sft_v5_distill`** (v4's Phase 3 on the Aya-Expanse-32B teacher answers; judge 2.43 / 2.13 / 2.52) and the pseudo-cell **`teacher_aya_expanse_32b_m2_c2400`** (the teacher on the test prompts, 3.65; no model). In `outputs/experiments/teacher_bakeoff/`: the six candidate pseudo-cells and `native_qwen3_base_dev` (the untouched base on the same 250 dev prompts).
 
 In `outputs/experiments/qwen_decoding_ablation/` (§3.7 P1, eval only, repetition penalty 1.2): `araroopat_3phase_v3_ffstop_rp12`, `bpe_16k_3phase_v3_ffstop_rp12`, `native_qwen3_sft_rp12`, `native_qwen3_base_rp12`; `_repro/araroopat_3phase_v3_ffstop_greedy` (the greedy reproduction check, identical to its twin in 250 of 250 rows).
+
+New in §3.10 (eval only, the four MCQ benchmarks at `max_length 4096`, schema-2 row dumps): **`araroopat_3phase_v5_distill_mcq4096`**, **`bpe_16k_3phase_v5_distill_mcq4096`**, **`native_qwen3_sft_v5_distill_mcq4096`** (the v5 Phase 3 checkpoints), **`native_qwen3_base_mcq4096`** (the untouched base), **`araroopat_3phase_v3_warmup_mcq4096`** and **`bpe_16k_3phase_v3_warmup_mcq4096`** (the v3 Phase 2 checkpoints). Comparison tables in `_mcq_compare/`, chain logs in `_mcq_logs/`.
