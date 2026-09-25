@@ -212,3 +212,32 @@ def test_label_collapse_is_read_by_label_text_not_position(tmp_path):
 def test_whole_task_fixed_labels_is_one_group(exp):
     res = mc.compare(exp, ["A", "B"], ["acva"])
     assert set(res["tasks"]["acva"]["cells"]["B"]["label_shares"]) == {"_all"}
+
+
+def test_msa_scope_groups(tmp_path):
+    """The MSA scope rule splits Alghafa's choice-text group into the four MSA sub-configs
+    (in scope) and meta_ar_dialects (out of scope); fixed-label rows are in neither."""
+    groups = mc.ALGHAFA_CHOICE_TEXT_SCOPE
+    assert set(groups) == {"choice_text_msa", "choice_text_dialect"}
+    assert groups["choice_text_dialect"] == frozenset({"meta_ar_dialects"})
+    assert len(groups["choice_text_msa"]) == 4 and "meta_ar_msa" in groups["choice_text_msa"]
+    assert not (groups["choice_text_msa"] & groups["choice_text_dialect"])
+    assert not ((groups["choice_text_msa"] | groups["choice_text_dialect"]) & mc.ALGHAFA_FIXED_LABEL)
+
+    cfgs = ["meta_ar_dialects", "meta_ar_msa", "mcq_exams_test_ar", FIXED] * 5          # 20 rows
+    # A right everywhere; B right on the MSA rows only; no row capped.
+    _write(tmp_path, "A", "alghafa", [_record(i, True, True, cfg=cfgs[i]) for i in range(N)])
+    _write(tmp_path, "B", "alghafa", [_record(i, cfgs[i] in groups["choice_text_msa"],
+                                              cfgs[i] in groups["choice_text_msa"], cfg=cfgs[i]) for i in range(N)])
+    res = mc.compare(tmp_path, ["A", "B"], ["alghafa"], [("A", "B")], n_boot=200)
+    t = res["tasks"]["alghafa"]
+    g = t["cells"]["B"]["groups"]
+    assert g["choice_text_msa"]["rows_int"] == 10 and g["choice_text_msa"]["acc_char_int"] == 1.0
+    assert g["choice_text_dialect"]["rows_int"] == 5 and g["choice_text_dialect"]["acc_pmi_int"] == 0.0
+    assert g["choice_text"]["rows_int"] == 15 and g["fixed_label"]["rows_int"] == 5
+    p = t["pairs"][0]
+    assert p["choice_text_msa_char"]["delta"] == 0.0 and p["choice_text_msa_char"]["only_a"] == 0
+    assert p["choice_text_dialect_pmi"]["only_a"] == 5 and p["choice_text_dialect_pmi"]["delta"] == 1.0
+    md = mc.to_markdown(res)
+    assert "choice_text_msa n=10" in md and "choice_text_dialect n=5" in md
+    assert "choice_text_msa_char" in md

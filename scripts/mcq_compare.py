@@ -19,7 +19,10 @@ the prompts agree), and reports per task and per cell:
     sub-configs (true/false + the three sentiment ones — the same 2–3 label
     phrases on every row, e.g. ``هو رأي ايجابي``) and the five **choice-text**
     MCQ sub-configs (per-row answer phrases). Every Alghafa sub-config scores
-    the choice text (LightEval's official prompt; no letter scoring);
+    the choice text (LightEval's official prompt; no letter scoring). The
+    choice-text group is also split by the **MSA scope rule** (2026-09-25):
+    ``choice_text_msa`` (the four MSA exam / reading sub-configs, in scope) and
+    ``choice_text_dialect`` (``meta_ar_dialects``, reported, out of scope);
   * for the fixed-label groups (ACVA; Alghafa's true/false and sentiment
     sub-configs) the predicted-label shares under char and PMI against the gold
     shares, flagging a class collapse (one label on >= 90 % of rows) — Alghafa
@@ -74,6 +77,20 @@ ALGHAFA_FIXED_LABEL = frozenset({
     "multiple_choice_rating_sentiment_task",
     "multiple_choice_sentiment_task",
 })
+
+#: The MSA scope rule (2026-09-25, docs/report.md §3.11): the campaign is about MSA — every from-scratch arm's
+#: tokenizer corpus, pretraining pool and morphology are MSA by construction — so Alghafa's dialect sub-config is
+#: reported but out of the headline scope, for every arm alike; the four MSA exam / reading sub-configs form the
+#: in-scope choice-text group. Both groups are subsets of ``choice_text``.
+ALGHAFA_CHOICE_TEXT_SCOPE = {
+    "choice_text_msa": frozenset({
+        "mcq_exams_test_ar",
+        "meta_ar_msa",
+        "multiple_choice_grounded_statement_soqal_task",
+        "multiple_choice_grounded_statement_xglue_mlqa_task",
+    }),
+    "choice_text_dialect": frozenset({"meta_ar_dialects"}),
+}
 
 MAX_MD_SUBCONFIGS = 12
 
@@ -306,6 +323,8 @@ def compare(experiment: Path, cells: Sequence[str], tasks: Sequence[str] = TASKS
         if task == "alghafa":
             fixed = np.isin(sub, list(ALGHAFA_FIXED_LABEL))
             groups = {"fixed_label": fixed, "choice_text": ~fixed}
+            for g, cfgs in ALGHAFA_CHOICE_TEXT_SCOPE.items():
+                groups[g] = np.isin(sub, list(cfgs))
         per_cell = {}
         for c, d in dumps.items():
             rec = {
@@ -428,12 +447,17 @@ def to_markdown(res: Dict[str, Any]) -> str:
                     f"{_f(ps[k]['acc_char_int'])} / {_f(ps[k]['acc_pmi_int'])}" for k in cfgs) + " |")
             lines.append("")
         if "groups" in first:
-            lines.append("| cell | fixed-label char ∩ | fixed-label PMI ∩ | choice-text char ∩ | choice-text PMI ∩ |")
-            lines.append("|---|---|---|---|---|")
+            gnames = list(first["groups"])
+            lines.append("Groups, intersection rows — char / PMI (`fixed_label` = the four fixed-label sub-configs, "
+                         "decided by label priors; `choice_text_msa` = the in-scope MSA choice-text group; "
+                         "`choice_text_dialect` = `meta_ar_dialects`, out of scope under the MSA scope rule):")
+            lines.append("")
+            lines.append("| cell | " + " | ".join(f"{g} n={first['groups'][g]['rows_int']}" for g in gnames) + " |")
+            lines.append("|---|" + "---|" * len(gnames))
             for c, r in t["cells"].items():
                 g = r["groups"]
-                lines.append(f"| {c} | {_f(g['fixed_label']['acc_char_int'])} | {_f(g['fixed_label']['acc_pmi_int'])} | "
-                             f"{_f(g['choice_text']['acc_char_int'])} | {_f(g['choice_text']['acc_pmi_int'])} |")
+                lines.append(f"| {c} | " + " | ".join(
+                    f"{_f(g[k]['acc_char_int'])} / {_f(g[k]['acc_pmi_int'])}" for k in gnames) + " |")
             lines.append("")
         if any("label_shares" in r for r in t["cells"].values()):
             gnames = sorted({g for r in t["cells"].values() for g in r.get("label_shares", {})})
@@ -464,6 +488,9 @@ def to_markdown(res: Dict[str, Any]) -> str:
                 keys = ["char", "pmi"] + [k for k in p if k.endswith(("_char", "_pmi")) and k not in ("char", "pmi")]
                 for k in keys:
                     s = p[k]
+                    if s["delta"] is None:            # a group with no intersection rows
+                        lines.append(f"| {p['a']} − {p['b']} | {k} | 0 | — | — | — | — | — | — | — |")
+                        continue
                     lines.append(f"| {p['a']} − {p['b']} | {k} | {s['n']} | {_f(s['acc_a'])} | {_f(s['acc_b'])} | "
                                  f"{s['delta']:+.3f} | [{s['ci_low']:+.3f}, {s['ci_high']:+.3f}] | {s['only_a']} | "
                                  f"{s['only_b']} | {_f(s['mcnemar_p'], 4)} |")
