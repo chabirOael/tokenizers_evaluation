@@ -28,8 +28,21 @@ Rows are the unit; a row's four rotations are one cluster. Every interval is a c
 pair, so pair intervals are paired. The pre-registered reading rules (the brief's P2.3) are evaluated and
 recorded; nothing here is a gate, and the diagnostic scorings are diagnostics of the mechanism, not a protocol.
 
+**Trajectory (docs/report.md §3.12).** ``--arms`` adds the Phase 1 / Phase 2 checkpoints of the two from-scratch
+arms (``araroopat_p1``, ``araroopat_p2``, ``bpe16k_p1``, ``bpe16k_p2``; 3-shot rotations only, no 0-shot cell —
+an arm without one is recorded as ``zero_shot: {"status": "not_run"}``). Every arm then also carries, per norm,
+``E_x`` for every letter (``acc(gold letter ≠ x) − acc(gold letter = x)``) and ``E_s`` for every slot, and the
+predicted-letter / predicted-slot shares pooled over the rotations (the gold letter is uniform over a row's four
+rotations, so a letter share above 0.25 is a preference). The ``trajectory`` block lines the stages up per family
+(AraRooPat P1 → P2 → v5, BPE-16K P1 → P2 → v5, native base → v5), with the AraRooPat − BPE-16K pair at each stage
+and the within-arm stage pairs (later − earlier; their ``G_letter`` / ``G_slot`` are exactly the change of
+``E_أ`` / ``E_slot1`` between the stages, bootstrapped over rows), and the §3.12 reading rules on AraRooPat.
+
     .venv/bin/python scripts/mcq_letter_slot.py
-Writes ``<experiment>/letter_slot.{md,json}``.
+    .venv/bin/python scripts/mcq_letter_slot.py --arms araroopat_p1 araroopat_p2 araroopat_v5 \\
+        bpe16k_p1 bpe16k_p2 bpe16k_v5 native_base native_v5
+Writes ``<experiment>/letter_slot.{md,json}`` (``--arms`` given: ``letter_slot_trajectory.{md,json}``; ``--name``
+and ``--out-dir`` override).
 """
 from __future__ import annotations
 
@@ -55,6 +68,19 @@ ZERO_SHOT = "0shot"
 PAIRS = (
     ("araroopat_v5", "bpe16k_v5"), ("araroopat_v5", "native_v5"), ("bpe16k_v5", "native_v5"),
     ("araroopat_v5", "native_base"), ("bpe16k_v5", "native_base"), ("native_v5", "native_base"),
+)
+#: Training-stage families of the trajectory (§3.12), each in training order: (stage label, arm).
+FAMILIES = (
+    ("AraRooPat", (("P1", "araroopat_p1"), ("P2", "araroopat_p2"), ("v5", "araroopat_v5"))),
+    ("BPE-16K", (("P1", "bpe16k_p1"), ("P2", "bpe16k_p2"), ("v5", "bpe16k_v5"))),
+    ("native", (("base", "native_base"), ("v5", "native_v5"))),
+)
+#: The AraRooPat − BPE-16K pair at the two earlier stages (v5's is in PAIRS) and the within-arm stage pairs
+#: (later − earlier), added to the pair list whenever both arms are analysed.
+STAGE_PAIRS = (
+    ("araroopat_p1", "bpe16k_p1"), ("araroopat_p2", "bpe16k_p2"),
+    ("araroopat_p2", "araroopat_p1"), ("araroopat_v5", "araroopat_p2"),
+    ("bpe16k_p2", "bpe16k_p1"), ("bpe16k_v5", "bpe16k_p2"),
 )
 #: The arm the pre-registered rules read (and the comparator of the terminal-token rule).
 FOCUS, COMPARATOR = "araroopat_v5", "bpe16k_v5"
@@ -253,7 +279,35 @@ def letter_slot_block(correct: np.ndarray, gold_letter: np.ndarray, gold_slot: n
         "by_letter": by_letter, "by_slot": by_slot,
         "E_letter": summarize(e_letter), "E_slot": summarize(e_slot),
         "interaction_alef_slot1": summarize(interaction),
+        # §3.12: the same contrast for every letter / slot (E_letter_by["أ"] == E_letter, E_slot_by["1"] == E_slot).
+        "E_letter_by": {LETTERS[x]: summarize(wmean(W, c, gold_letter != x) - wmean(W, c, gold_letter == x))
+                        for x in range(N_SLOTS)},
+        "E_slot_by": {str(s + 1): summarize(wmean(W, c, slot2 != s) - wmean(W, c, slot2 == s))
+                      for s in range(N_SLOTS)},
     }
+
+
+def preference_block(pred_letter: np.ndarray, pred_slot: np.ndarray, gold_letter: np.ndarray,
+                     gold_slot: np.ndarray, W: np.ndarray) -> Dict[str, Any]:
+    """Predicted-letter and predicted-slot shares pooled over the rotations, with the gold's beside them.
+
+    Over a row's four rotations every letter is gold exactly once, so the gold letter share is 0.25 by construction
+    and a predicted share above it is a letter preference; the gold slot share is the rows' own (fixed per row).
+    The *favoured* letter / slot is the one with the largest excess of predicted over gold share."""
+    slot2 = np.broadcast_to(gold_slot[:, None], pred_slot.shape)
+    ones = np.ones(pred_letter.shape, dtype=bool)
+    out: Dict[str, Any] = {}
+    for what, pred, gold in (("letter", pred_letter, gold_letter), ("slot", pred_slot, slot2)):
+        labels = list(LETTERS) if what == "letter" else [str(s + 1) for s in range(N_SLOTS)]
+        shares = {lab: summarize(wmean(W, (pred == x).astype(np.float64), ones)) for x, lab in enumerate(labels)}
+        gshare = {lab: round(float((gold == x).mean()), 6) for x, lab in enumerate(labels)}
+        excess = {lab: round(shares[lab]["est"] - gshare[lab], 6) for lab in labels}
+        fav = max(labels, key=lambda lab: excess[lab])
+        low = min(labels, key=lambda lab: excess[lab])
+        out[what] = {"pred_share": shares, "gold_share": gshare, "excess": excess,
+                     "favoured": {"label": fav, "share": shares[fav], "excess": excess[fav]},
+                     "least": {"label": low, "share": shares[low], "excess": excess[low]}}
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -277,6 +331,12 @@ def pair_block(ca: np.ndarray, cb: np.ndarray, gold_letter: np.ndarray, gold_slo
         "slot_other": summarize(wmean(W, d, slot2 != 0)),
         "G_letter": summarize(wmean(W, d, gold_letter != 0) - wmean(W, d, gold_letter == 0)),
         "G_slot": summarize(wmean(W, d, slot2 != 0) - wmean(W, d, slot2 == 0)),
+        # §3.12: the contrast for every letter / slot. For a within-arm stage pair (later − earlier) G_by_letter[x]
+        # is exactly E_x(later) − E_x(earlier) (same rows, same masks), bootstrapped over rows.
+        "G_by_letter": {LETTERS[x]: summarize(wmean(W, d, gold_letter != x) - wmean(W, d, gold_letter == x))
+                        for x in range(N_SLOTS)},
+        "G_by_slot": {str(s + 1): summarize(wmean(W, d, slot2 != s) - wmean(W, d, slot2 == s))
+                      for s in range(N_SLOTS)},
     }
 
 
@@ -351,6 +411,7 @@ def per_token_block(panel: Dict[str, Any]) -> Optional[Dict[str, Any]]:
             rec["by_slot"][str(s + 1)] = {"all": means(ls), "gold": means(ls & is_gold),
                                           "non_gold": means(ls & ~is_gold)}
         out["by_letter"][LETTERS[x]] = rec
+    out["all_choices"] = means(np.ones(T.shape[:3], dtype=bool))       # §3.12: every choice, every letter
     return out
 
 
@@ -463,6 +524,93 @@ def terminal_token_rule(diag_focus: Optional[Dict[str, Any]], block_comparator: 
     return bool(ci["lo"] <= e <= ci["hi"])
 
 
+def _overlaps(a: Dict[str, Any], b: Dict[str, Any]) -> bool:
+    return a["lo"] is not None and b["lo"] is not None and a["lo"] <= b["hi"] and b["lo"] <= a["hi"]
+
+
+def trajectory_rules(stages: Dict[str, Dict[str, Any]], bpe: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
+    """The §3.12 pre-registered readings (the brief's P2.3) on one norm. ``stages`` / ``bpe`` map a stage label
+    (P1, P2, v5) to that arm's trajectory row; a stage that is absent leaves its rules at ``None``.
+
+    * ``inherited_P1``: AraRooPat's E_أ at P1 has a CI excluding 0 and overlapping v5's;
+    * ``acquired_P2``: E_أ at P1 has a CI including 0, and at P2 it is positive (CI above 0) and overlaps v5's;
+    * ``phase3``: E_أ at P2 has a CI below +0.05 or including 0, **or** P2's most-disfavoured letter is not أ
+      while v5's is;
+    * slot: ``inherited_at_P1`` / ``inherited_at_P2`` — E_slot1 at that stage has a CI excluding 0 for both
+      from-scratch arms; ``created_by_phase3`` per arm — E_slot1 at P2 includes 0 and at v5 is above 0.
+    """
+    def g(rows, st, key):
+        return (rows.get(st) or {}).get(key)
+
+    out: Dict[str, Any] = {"inherited_P1": None, "acquired_P2": None, "phase3": None}
+    e1, e2, e5 = g(stages, "P1", "E_alef"), g(stages, "P2", "E_alef"), g(stages, "v5", "E_alef")
+    if e1 and e5:
+        out["inherited_P1"] = bool(excludes_zero(e1) and _overlaps(e1, e5))
+    if e1 and e2 and e5:
+        out["acquired_P2"] = bool(not excludes_zero(e1) and e2["lo"] > 0 and _overlaps(e2, e5))
+    if e2 and e5:
+        d2 = g(stages, "P2", "most_disfavoured_letter")["label"]
+        d5 = g(stages, "v5", "most_disfavoured_letter")["label"]
+        out["phase3"] = bool(e2["hi"] < 0.05 or not excludes_zero(e2) or (d2 != LETTERS[0] and d5 == LETTERS[0]))
+        out["most_disfavoured_P2_v5"] = [d2, d5]
+    slot: Dict[str, Any] = {}
+    for st in ("P1", "P2"):
+        a, b = g(stages, st, "E_slot1"), g(bpe, st, "E_slot1")
+        slot[f"inherited_at_{st}"] = (bool(excludes_zero(a) and excludes_zero(b)) if a and b else None)
+    for fam, rows in (("AraRooPat", stages), ("BPE-16K", bpe)):
+        a2, a5 = g(rows, "P2", "E_slot1"), g(rows, "v5", "E_slot1")
+        slot[f"created_by_phase3_{fam}"] = (bool(not excludes_zero(a2) and a5["lo"] > 0) if a2 and a5 else None)
+    out["slot"] = slot
+    return out
+
+
+def trajectory_block(t: Dict[str, Any], nm: str) -> Dict[str, Any]:
+    """One row per (family, stage) present: E_أ, E_slot1, every E_x / E_s, the favoured letter and slot, the
+    most-disfavoured letter (argmax_x E_x), and the per-token means (for a multi-token letter the letter term,
+    here ``[CHAR_x]``, and every other term pooled over the letters)."""
+    rows: List[Dict[str, Any]] = []
+    fam_rows: Dict[str, Dict[str, Dict[str, Any]]] = {}
+    for fam, stages in FAMILIES:
+        for st, arm in stages:
+            a = t["arms"].get(arm)
+            if not a or nm not in a:
+                continue
+            b = a[nm]
+            ex = b["E_letter_by"]
+            worst = max(LETTERS, key=lambda l: ex[l]["est"])
+            pref = a["preferences"][nm]
+            row = {"family": fam, "stage": st, "arm": arm, "acc": b["acc"],
+                   "E_alef": b["E_letter"], "E_slot1": b["E_slot"], "E_letter_by": ex, "E_slot_by": b["E_slot_by"],
+                   "most_disfavoured_letter": {"label": worst, "E": ex[worst]},
+                   "favoured_letter": pref["letter"]["favoured"], "favoured_slot": pref["slot"]["favoured"],
+                   "pred_letter_share": {l: pref["letter"]["pred_share"][l]["est"] for l in LETTERS},
+                   "pred_slot_share": {s: pref["slot"]["pred_share"][s]["est"] for s in pref["slot"]["pred_share"]}}
+            pt = a.get("per_token")
+            if pt:
+                lt = "CHAR" if "CHAR" in pt["terms"] else pt["terms"][0] if len(pt["terms"]) == 1 else None
+                row["per_token"] = {
+                    "letter_term": lt,
+                    "letter_term_by_letter": ({l: {"gold": pt["by_letter"][l]["gold"][lt],
+                                                   "non_gold": pt["by_letter"][l]["non_gold"][lt]} for l in LETTERS}
+                                              if lt else None),
+                    "all_choices": pt["all_choices"],
+                }
+            rows.append(row)
+            fam_rows.setdefault(fam, {})[st] = row
+    pairs = {}
+    for key in ([f"{a}-{b}" for a, b in STAGE_PAIRS] + ["araroopat_v5-bpe16k_v5", "native_v5-native_base"]):
+        p = t["pairs"].get(key)
+        if p and nm in p:
+            q = p[nm]
+            pairs[key] = {k: q[k] for k in ("delta", "letter_alef", "letter_other", "slot_1", "slot_other",
+                                            "G_letter", "G_slot", "by_letter", "by_slot", "G_by_letter",
+                                            "G_by_slot")}
+    out = {"rows": rows, "pairs": pairs}
+    if "AraRooPat" in fam_rows:
+        out["rules"] = trajectory_rules(fam_rows["AraRooPat"], fam_rows.get("BPE-16K", {}))
+    return out
+
+
 def zero_shot_rule(zp: Dict[str, Any]) -> Dict[str, Any]:
     """On the gold-أ rows: does the 3-shot rotation-0 gap persist at 0-shot (the change 0 − 3 has a CI
     including 0), and does the 0-shot gap itself shrink to 0 (its CI includes 0)?"""
@@ -474,6 +622,12 @@ def zero_shot_rule(zp: Dict[str, Any]) -> Dict[str, Any]:
 # ---------------------------------------------------------------------------
 # Driver
 # ---------------------------------------------------------------------------
+
+def default_pairs(arms: Sequence[str]) -> List[Tuple[str, str]]:
+    """PAIRS then STAGE_PAIRS, each kept when both arms are analysed (the default four arms → PAIRS exactly)."""
+    have = set(arms)
+    return [p for p in dict.fromkeys(tuple(PAIRS) + tuple(STAGE_PAIRS)) if p[0] in have and p[1] in have]
+
 
 def analyze(experiment: Path, rows_dir: Path, tasks: Sequence[str] = TASKS, arms: Sequence[str] = ARMS,
             pairs: Sequence[Tuple[str, str]] = PAIRS, *, n_boot: int = 5000, seed: int = 0,
@@ -511,6 +665,9 @@ def analyze(experiment: Path, rows_dir: Path, tasks: Sequence[str] = TASKS, arms
                 blk = letter_slot_block(panel["correct"][nm], panel["gold_letter"], panel["gold_slot"], W)
                 blk["rules"] = reading_rules(blk)
                 arm_out[nm] = blk
+            arm_out["preferences"] = {nm: preference_block(panel["pred_letter"][nm], panel["pred_slot"][nm],
+                                                           panel["gold_letter"], panel["gold_slot"], W)
+                                      for nm in NORMS}
             arm_out["per_token"] = per_token_block(panel)
             diag = diagnostic_scorings(panel, W)
             arm_out["diagnostic_scorings"] = diag
@@ -534,6 +691,8 @@ def analyze(experiment: Path, rows_dir: Path, tasks: Sequence[str] = TASKS, arms
                 arm_out["zero_shot"] = {"flags": zero[arm]["flags"], **{
                     nm: zero_shot_block(zero[arm][nm], panel["correct"][nm][:, 0], panel["gold_slot"], W)
                     for nm in NORMS}}
+            else:
+                arm_out["zero_shot"] = {"status": "not_run"}
             t["arms"][arm] = arm_out
         for a, b in pairs:
             if a not in panels or b not in panels:
@@ -570,6 +729,7 @@ def analyze(experiment: Path, rows_dir: Path, tasks: Sequence[str] = TASKS, arms
                 readings["gap_contrasts"] = {nm: {"G_letter": t["pairs"][key][nm]["G_letter"],
                                                   "G_slot": t["pairs"][key][nm]["G_slot"]} for nm in NORMS}
             t["readings"] = readings
+        t["trajectory"] = {nm: trajectory_block(t, nm) for nm in NORMS}
         res["tasks"][task] = t
     # Drop the per-(row, rotation) arrays kept for the pairs.
     for t in res["tasks"].values():
@@ -661,6 +821,9 @@ def to_markdown(res: Dict[str, Any]) -> str:
         for arm, a in t["arms"].items():
             z = a.get("zero_shot")
             if not z:
+                continue
+            if z.get("status") == "not_run":
+                L.append(f"| {arm} | — | not run | | | | | | |")
                 continue
             for nm in NORMS:
                 q = z[nm]
@@ -778,7 +941,78 @@ def to_markdown(res: Dict[str, Any]) -> str:
                 L.append(f"- the {res['focus']} − {res['comparator']} gap, {nm}: G_letter {_ci(g['G_letter'])}, "
                          f"G_slot {_ci(g['G_slot'])} (supplementary: row content cancels in the pair)")
             L.append("")
+        L += trajectory_markdown(t)
     return "\n".join(L) + "\n"
+
+
+def trajectory_markdown(t: Dict[str, Any]) -> List[str]:
+    tr = t.get("trajectory") or {}
+    if not tr or not tr.get("char", {}).get("rows"):
+        return []
+    L = ["### 7. Trajectory over the training stages (§3.12)", "",
+         "E_x = acc(gold letter ≠ x) − acc(gold letter = x) (positive = the letter is disfavoured when it is the "
+         "answer); E_s likewise for the gold slot. Favoured letter / slot = the largest excess of the predicted share "
+         "over the gold share (pooled over the four rotations; the gold letter share is 0.25 by construction).", ""]
+    for nm in NORMS:
+        L.append(f"**{nm}**")
+        L.append("")
+        L.append("| family | stage | acc | E_أ | E_slot1 | favoured letter (share) | most-disfavoured letter (E_x) | "
+                 "E_x أ / ب / ج / د | E_s 1 / 2 / 3 / 4 | favoured slot (share) |")
+        L.append("|---|---|---|---|---|---|---|---|---|---|")
+        for r in tr[nm]["rows"]:
+            fl, md, fs = r["favoured_letter"], r["most_disfavoured_letter"], r["favoured_slot"]
+            L.append(f"| {r['family']} | {r['stage']} | {_v(r['acc']['est'])} | {_ci(r['E_alef'])} | "
+                     f"{_ci(r['E_slot1'])} | {fl['label']} ({_v(fl['share']['est'])}) | {md['label']} {_ci(md['E'])} | "
+                     + " / ".join(f"{r['E_letter_by'][l]['est']:+.3f}" for l in LETTERS) + " | "
+                     + " / ".join(f"{r['E_slot_by'][str(s)]['est']:+.3f}" for s in range(1, 5))
+                     + f" | {fs['label']} ({_v(fs['share']['est'])}) |")
+        L.append("")
+    rows = [r for r in tr["char"]["rows"] if r.get("per_token")]
+    if rows:
+        L.append("Per token (char rows; the letter term — `[CHAR_x]` for AraRooPat, the one letter token otherwise — "
+                 "mean log P on the gold / non-gold choices of each letter, pooled over slots; the other terms over "
+                 "every choice):")
+        L.append("")
+        L.append("| family | stage | letter term | أ gold / non-gold | ب | ج | د | all choices, every term |")
+        L.append("|---|---|---|---|---|---|---|---|")
+        for r in rows:
+            pt = r["per_token"]
+            lt = pt["letter_term_by_letter"] or {}
+            allc = pt["all_choices"]
+            terms = [k for k in allc if k != "n"]
+            L.append(f"| {r['family']} | {r['stage']} | {pt['letter_term']} | "
+                     + " | ".join(f"{_v(lt[l]['gold'])} / {_v(lt[l]['non_gold'])}" if l in lt else "—"
+                                  for l in LETTERS)
+                     + " | " + ", ".join(f"{k} {allc[k]:.4f}" for k in terms) + " |")
+        L.append("")
+    for nm in NORMS:
+        pairs = tr[nm]["pairs"]
+        if not pairs:
+            continue
+        L.append(f"Stage pairs and AraRooPat − BPE-16K per stage ({nm}; for a within-arm pair later − earlier, "
+                 "G_letter = ΔE_أ and G_slot = ΔE_slot1):")
+        L.append("")
+        L.append("| pair | Δ | gold أ | letter ≠ أ | gold slot 1 | slot ≠ 1 | G_letter | G_slot | G by letter أ / ب / ج / د |")
+        L.append("|---|---|---|---|---|---|---|---|---|")
+        for key, q in pairs.items():
+            L.append(f"| {key} | {_ci(q['delta'])} | {_ci(q['letter_alef'])} | {_ci(q['letter_other'])} | "
+                     f"{_ci(q['slot_1'])} | {_ci(q['slot_other'])} | {_ci(q['G_letter'])} | {_ci(q['G_slot'])} | "
+                     + " / ".join(f"{q['G_by_letter'][l]['est']:+.3f}" for l in LETTERS) + " |")
+        L.append("")
+    for nm in NORMS:
+        ru = tr[nm].get("rules")
+        if not ru:
+            continue
+        sl = ru["slot"]
+        L.append(f"- §3.12 readings, {nm}: inherited at P1 = {ru['inherited_P1']}, acquired in Phase 2 = "
+                 f"{ru['acquired_P2']}, created / reshaped by Phase 3 = {ru['phase3']}"
+                 + (f" (most-disfavoured letter P2 → v5: {' → '.join(ru['most_disfavoured_P2_v5'])})"
+                    if "most_disfavoured_P2_v5" in ru else "")
+                 + f"; slot-1 aversion inherited at P1 = {sl['inherited_at_P1']}, at P2 = {sl['inherited_at_P2']}, "
+                 f"created by Phase 3: AraRooPat {sl['created_by_phase3_AraRooPat']}, "
+                 f"BPE-16K {sl['created_by_phase3_BPE-16K']}")
+    L.append("")
+    return L
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
@@ -788,16 +1022,25 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     ap.add_argument("--tasks", nargs="+", default=list(TASKS))
     ap.add_argument("--n-boot", type=int, default=5000)
     ap.add_argument("--seed", type=int, default=0)
-    ap.add_argument("--name", default="letter_slot")
+    ap.add_argument("--arms", nargs="+", default=None,
+                    help=f"arms to analyse (default: {' '.join(ARMS)}); the pair list is PAIRS + STAGE_PAIRS "
+                         "restricted to the arms given")
+    ap.add_argument("--name", default=None,
+                    help="output basename (default letter_slot; letter_slot_trajectory when --arms is given)")
+    ap.add_argument("--out-dir", default=None, help="where to write (default: the experiment folder)")
     args = ap.parse_args(argv)
     exp = REPO_ROOT / args.experiment if not Path(args.experiment).is_absolute() else Path(args.experiment)
     rows_dir = REPO_ROOT / args.rows_dir if not Path(args.rows_dir).is_absolute() else Path(args.rows_dir)
-    res = analyze(exp, rows_dir, args.tasks, n_boot=args.n_boot, seed=args.seed)
-    (exp / f"{args.name}.json").write_text(json.dumps(res, indent=1, ensure_ascii=False), encoding="utf-8")
+    arms = list(args.arms) if args.arms else list(ARMS)
+    name = args.name or ("letter_slot_trajectory" if args.arms else "letter_slot")
+    out = Path(args.out_dir) if args.out_dir else exp
+    out.mkdir(parents=True, exist_ok=True)
+    res = analyze(exp, rows_dir, args.tasks, arms, default_pairs(arms), n_boot=args.n_boot, seed=args.seed)
+    (out / f"{name}.json").write_text(json.dumps(res, indent=1, ensure_ascii=False), encoding="utf-8")
     md = to_markdown(res)
-    (exp / f"{args.name}.md").write_text(md, encoding="utf-8")
+    (out / f"{name}.md").write_text(md, encoding="utf-8")
     print(md)
-    print(f"wrote {exp / (args.name + '.md')} and .json")
+    print(f"wrote {out / (name + '.md')} and .json")
     return 0
 
 

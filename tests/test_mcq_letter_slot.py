@@ -206,3 +206,126 @@ def test_rotation_averaged_decision_cancels_a_letter_prior(tmp_path):
     p = res["tasks"][TASK]["pairs"]["term-flat"]["rotation_averaged"]["char"]
     assert p["delta"]["est"] == 0.0 and res["tasks"][TASK]["pairs"]["term-flat"]["char"]["delta"]["est"] == 0.0
     assert "rotation-averaged decision" in ls.to_markdown(res)
+
+
+# ---------------------------------------------------------------------------
+# §3.12: --arms, an arm without a 0-shot cell, the trajectory over training stages
+# ---------------------------------------------------------------------------
+
+STAGE_ARMS = ("araroopat_p1", "araroopat_p2", "araroopat_v5", "bpe16k_p1", "bpe16k_p2", "bpe16k_v5")
+
+
+def _stage_experiment(tmp: Path, arms: dict, zero_shot: tuple = ()) -> Path:
+    """Rotation cells for every arm; a 0-shot cell only for the arms listed in ``zero_shot``."""
+    golds = _gold_slots(N)
+    exp = tmp / "exp"
+    rows_dir = tmp / "rows"
+    rows_dir.mkdir(parents=True)
+    (rows_dir / f"rows_{TASK}.json").write_text(json.dumps({"task": TASK, "row_index": list(range(N))}))
+    for arm, fn in arms.items():
+        for k in range(4):
+            _write_cell(exp, f"{arm}_rot{k}", k, 3, golds, fn)
+        if arm in zero_shot:
+            _write_cell(exp, f"{arm}_0shot", 0, 0, golds, fn)
+    return exp
+
+
+def _run_stages(exp, tmp, arms):
+    return ls.analyze(exp, tmp / "rows", [TASK], list(arms), ls.default_pairs(list(arms)), n_boot=300, seed=0)
+
+
+def both_effects(r, gold, k):
+    return ((gold + k) % 4 != 0 and gold != 0) or _flip(r, k) < 0.3
+
+
+def test_default_pairs():
+    assert ls.default_pairs(ls.ARMS) == list(ls.PAIRS)
+    p = ls.default_pairs(list(STAGE_ARMS) + ["native_base", "native_v5"])
+    assert p[:len(ls.PAIRS)] == [q for q in ls.PAIRS]
+    assert ("araroopat_p2", "bpe16k_p2") in p and ("araroopat_v5", "araroopat_p2") in p
+    assert ("bpe16k_p2", "bpe16k_p1") in p and len(p) == len(set(p))
+    # An arm that is not analysed takes its pairs with it.
+    assert all("araroopat_p1" not in q for q in ls.default_pairs(["araroopat_p2", "bpe16k_p2", "araroopat_v5"]))
+
+
+def test_arms_override_and_a_missing_zero_shot_cell(tmp_path):
+    arms = {"araroopat_p2": letter_effect, "bpe16k_p2": no_effect, "araroopat_v5": letter_effect}
+    exp = _stage_experiment(tmp_path, arms, zero_shot=("araroopat_v5",))
+    res = _run_stages(exp, tmp_path, arms)
+    t = res["tasks"][TASK]
+    assert res["arms"] == list(arms)
+    assert t["arms"]["araroopat_p2"]["zero_shot"] == {"status": "not_run"}
+    assert t["arms"]["bpe16k_p2"]["zero_shot"] == {"status": "not_run"}
+    assert "char" in t["arms"]["araroopat_v5"]["zero_shot"]
+    assert set(t["pairs"]) == {"araroopat_p2-bpe16k_p2", "araroopat_v5-araroopat_p2"}
+    assert t["zero_shot_pairs"] == {}
+    md = ls.to_markdown(res)
+    assert "| araroopat_p2 | — | not run |" in md and "### 7. Trajectory" in md
+
+
+def test_trajectory_recovers_an_effect_planted_at_one_stage(tmp_path):
+    """A letter-أ effect at P2 only: E_أ excludes 0 at AraRooPat P2 and nowhere else; the stage pairs show it
+    entering (P2 − P1) and leaving (v5 − P2); the AraRooPat − BPE-16K contrast carries it at P2 only."""
+    arms = {"araroopat_p1": no_effect, "araroopat_p2": letter_effect, "araroopat_v5": no_effect,
+            "bpe16k_p1": no_effect, "bpe16k_p2": no_effect, "bpe16k_v5": no_effect}
+    exp = _stage_experiment(tmp_path, arms)
+    res = _run_stages(exp, tmp_path, arms)
+    tr = res["tasks"][TASK]["trajectory"]["char"]
+    rows = {(r["family"], r["stage"]): r for r in tr["rows"]}
+    assert set(rows) == {(f, s) for f in ("AraRooPat", "BPE-16K") for s in ("P1", "P2", "v5")}
+    for key, r in rows.items():
+        if key == ("AraRooPat", "P2"):
+            assert r["E_alef"]["est"] == pytest.approx(0.7, abs=0.06) and ls.excludes_zero(r["E_alef"])
+            assert r["most_disfavoured_letter"]["label"] == "أ"
+            assert r["E_letter_by"]["أ"] == r["E_alef"]
+        else:
+            assert not ls.excludes_zero(r["E_alef"]), key
+        assert not ls.excludes_zero(r["E_slot1"]), key
+        assert r["per_token"]["letter_term"] == "CHAR"
+    p = tr["pairs"]
+    assert p["araroopat_p2-araroopat_p1"]["G_letter"]["est"] == pytest.approx(0.7, abs=0.06)
+    assert p["araroopat_v5-araroopat_p2"]["G_letter"]["est"] == pytest.approx(-0.7, abs=0.06)
+    # G_letter of a within-arm stage pair is exactly the change of E_أ between the stages.
+    assert p["araroopat_p2-araroopat_p1"]["G_letter"]["est"] == pytest.approx(
+        rows[("AraRooPat", "P2")]["E_alef"]["est"] - rows[("AraRooPat", "P1")]["E_alef"]["est"], abs=1e-6)
+    assert p["araroopat_p2-araroopat_p1"]["G_by_letter"]["أ"] == p["araroopat_p2-araroopat_p1"]["G_letter"]
+    assert ls.excludes_zero(p["araroopat_p2-bpe16k_p2"]["G_letter"])
+    for key in ("araroopat_p1-bpe16k_p1", "bpe16k_p2-bpe16k_p1", "bpe16k_v5-bpe16k_p2"):
+        assert not ls.excludes_zero(p[key]["G_letter"]), key
+    # Effect at P2 but not at v5: the P2 CI does not overlap v5's, so neither the inherited nor the acquired rule
+    # fires; P2's most-disfavoured letter is أ, so the Phase 3 rule does not fire on its letter clause either.
+    ru = tr["rules"]
+    assert ru["inherited_P1"] is False and ru["acquired_P2"] is False and ru["phase3"] is False
+
+
+def test_trajectory_rules_on_planted_origins(tmp_path):
+    base = {"bpe16k_p1": no_effect, "bpe16k_p2": no_effect, "bpe16k_v5": slot_effect}
+    # (a) acquired in Phase 2: the effect is present at P2 and v5, absent at P1.
+    arms = {"araroopat_p1": no_effect, "araroopat_p2": letter_effect, "araroopat_v5": letter_effect, **base}
+    res = _run_stages(_stage_experiment(tmp_path / "a", arms), tmp_path / "a", arms)
+    ru = res["tasks"][TASK]["trajectory"]["char"]["rules"]
+    assert (ru["inherited_P1"], ru["acquired_P2"], ru["phase3"]) == (False, True, False)
+    # (b) inherited: present from P1 on.
+    arms = {"araroopat_p1": letter_effect, "araroopat_p2": letter_effect, "araroopat_v5": letter_effect, **base}
+    res = _run_stages(_stage_experiment(tmp_path / "b", arms), tmp_path / "b", arms)
+    ru = res["tasks"][TASK]["trajectory"]["char"]["rules"]
+    assert ru["inherited_P1"] is True and ru["phase3"] is False
+    # (c) created by Phase 3 (letter at v5 only), and a slot-1 aversion created by Phase 3 in both arms.
+    arms = {"araroopat_p1": no_effect, "araroopat_p2": no_effect, "araroopat_v5": both_effects, **base}
+    res = _run_stages(_stage_experiment(tmp_path / "c", arms), tmp_path / "c", arms)
+    ru = res["tasks"][TASK]["trajectory"]["char"]["rules"]
+    assert (ru["inherited_P1"], ru["acquired_P2"], ru["phase3"]) == (False, False, True)
+    assert ru["slot"] == {"inherited_at_P1": False, "inherited_at_P2": False,
+                          "created_by_phase3_AraRooPat": True, "created_by_phase3_BPE-16K": True}
+    md = ls.to_markdown(res)
+    assert "§3.12 readings, char" in md
+
+
+def test_preferences_pooled_over_rotations(tmp_path):
+    arms = {"araroopat_p2": letter_effect, "bpe16k_p2": no_effect}
+    res = _run_stages(_stage_experiment(tmp_path, arms), tmp_path, arms)
+    pref = res["tasks"][TASK]["arms"]["araroopat_p2"]["preferences"]["char"]
+    assert pref["letter"]["gold_share"] == {l: 0.25 for l in ls.LETTERS}
+    assert sum(v["est"] for v in pref["letter"]["pred_share"].values()) == pytest.approx(1.0, abs=1e-6)
+    # Wrong answers go to the next slot, so the letter after أ (ب) takes أ's lost mass.
+    assert pref["letter"]["favoured"]["label"] == "ب" and pref["letter"]["least"]["label"] == "أ"
