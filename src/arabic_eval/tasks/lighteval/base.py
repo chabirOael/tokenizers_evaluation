@@ -26,7 +26,7 @@ import logging
 from abc import abstractmethod
 from collections import defaultdict
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 import torch
@@ -87,15 +87,20 @@ class ScoredLogLikelihood(float):
 
       * ``n_tokens`` — continuation tokens summed (0 for the sentinel);
       * ``truncated`` — the ``max_length`` cap reached the full encoding, so
-        the continuation may be cut (or, with ``n_tokens == 0``, gone).
+        the continuation may be cut (or, with ``n_tokens == 0``, gone);
+      * ``token_logprobs`` — the addends of the sum, in order (float64; empty
+        for the sentinel): which token of a multi-token continuation carries
+        the score (row-dump schema 3, ``cont_token_ll``).
     """
 
-    __slots__ = ("n_tokens", "truncated")
+    __slots__ = ("n_tokens", "truncated", "token_logprobs")
 
-    def __new__(cls, value: float, n_tokens: int = 0, truncated: bool = False):
+    def __new__(cls, value: float, n_tokens: int = 0, truncated: bool = False,
+                token_logprobs: Tuple[float, ...] = ()):
         obj = float.__new__(cls, value)
         obj.n_tokens = int(n_tokens)
         obj.truncated = bool(truncated)
+        obj.token_logprobs = tuple(float(v) for v in token_logprobs)
         return obj
 
 
@@ -195,13 +200,17 @@ def _compute_loglikelihood(
     log_probs = F.log_softmax(logits[0], dim=-1)       # [seq_len, vocab_size]
 
     # Causal LM: position i predicts position i+1.
-    # Sum log P(token_k … token_{full_len-1}) given their left contexts.
+    # Sum log P(token_k … token_{full_len-1}) given their left contexts. The
+    # addends are kept in order; the sum is accumulated exactly as before.
     total_ll = 0.0
+    token_lls: List[float] = []
     for pos in range(k - 1, full_len - 1):
         next_tok = input_ids_list[pos + 1]
-        total_ll += log_probs[pos, next_tok].item()
+        tok_ll = log_probs[pos, next_tok].item()
+        token_lls.append(tok_ll)
+        total_ll += tok_ll
 
-    return ScoredLogLikelihood(total_ll, full_len - k, truncated)
+    return ScoredLogLikelihood(total_ll, full_len - k, truncated, tuple(token_lls))
 
 
 # ---------------------------------------------------------------------------
@@ -266,6 +275,7 @@ class LightEvalModelWrapper:
         task: Optional["LightEvalBenchmarkTask"] = None,
         score_normalization: str = "char",
         row_sink: Optional[Callable[[Dict[str, Any]], None]] = None,
+        row_indices: Optional[Sequence[int]] = None,
     ) -> Tuple[Dict[str, float], List[Dict[str, Any]]]:
         """
         Run LightEval-style multiple-choice accuracy evaluation.
@@ -299,7 +309,15 @@ class LightEvalModelWrapper:
         exact prompt the model was scored on, every continuation, every
         per-choice score, and the truncation diagnostics. Leaving it ``None``
         keeps this method's behaviour byte-identical to before it existed.
+
+        ``row_indices`` names each example's position in the task's *full*
+        eval list (``rows_file`` scores a subset): it is what the dump and the
+        failure report record as the row's index. ``None`` = ``range(len)``.
         """
+        if row_indices is not None and len(row_indices) != len(examples):
+            raise ValueError(
+                f"row_indices has {len(row_indices)} entries for {len(examples)} examples"
+            )
         if score_normalization not in ("char", "pmi", "char+pmi"):
             raise ValueError(
                 f"Unknown score_normalization={score_normalization!r}; "
@@ -323,7 +341,8 @@ class LightEvalModelWrapper:
         # forward when the same continuations recur.
         uncond_cache: Dict[Tuple[str, Tuple[str, ...]], List[float]] = {}
 
-        for idx, ex in enumerate(tqdm(examples, desc="LightEval MCQ", unit="example")):
+        for pos, ex in enumerate(tqdm(examples, desc="LightEval MCQ", unit="example")):
+            idx = int(row_indices[pos]) if row_indices is not None else pos
             if task is not None:
                 # ``_format_eval_context_with_fewshot`` collapses to the bare
                 # ``_format_eval_context`` when ``task.num_fewshot == 0``, so
@@ -406,6 +425,7 @@ class LightEvalModelWrapper:
                 # and the dump then leaves the two per-choice fields empty.
                 cont_tokens = [getattr(v, "n_tokens", None) for v in log_likelihoods]
                 cont_truncated = [getattr(v, "truncated", None) for v in log_likelihoods]
+                cont_token_ll = [getattr(v, "token_logprobs", None) for v in log_likelihoods]
                 row_sink(build_row_record(
                     row_index=idx,
                     example=ex,
@@ -423,6 +443,9 @@ class LightEvalModelWrapper:
                     max_length=self.max_length,
                     cont_tokens=None if None in cont_tokens else cont_tokens,
                     cont_truncated=None if None in cont_truncated else cont_truncated,
+                    cont_token_ll=(
+                        None if any(v is None for v in cont_token_ll) else cont_token_ll
+                    ),
                 ))
 
             if predicted == gold:
@@ -549,6 +572,7 @@ class LightEvalBenchmarkTask(BaseTask):
     DEFAULT_SEED = 42
     DEFAULT_CLEAN_LATIN_ROWS = False
     DEFAULT_NUM_FEWSHOT = 0
+    DEFAULT_ROWS_FILE: Optional[str] = None
 
     def __init__(self, config: Dict[str, Any]) -> None:
         self.config = config
@@ -564,6 +588,13 @@ class LightEvalBenchmarkTask(BaseTask):
         # ``_source_config`` as the eval row, with the eval row excluded.
         # 0 = pure zero-shot (existing default).
         self.num_fewshot: int = int(config.get("num_fewshot", self.DEFAULT_NUM_FEWSHOT))
+        # Score only these rows of the full eval list (``rows_file``). The full
+        # list is still loaded and cached, so the few-shot pools and seeds — and
+        # therefore every prompt — are those of the full benchmark.
+        self.rows_file: Optional[str] = config.get("rows_file", self.DEFAULT_ROWS_FILE)
+        self._rows_subset: Optional[Dict[str, Any]] = (
+            self._read_rows_file(self.rows_file) if self.rows_file is not None else None
+        )
         self._cached_examples: Optional[List[Dict]] = None
         # Sub-config -> list of indices, populated lazily on first few-shot use.
         self._fewshot_pool_by_config: Optional[Dict[str, List[int]]] = None
@@ -599,6 +630,9 @@ class LightEvalBenchmarkTask(BaseTask):
                       help="In-context demonstrations prepended to each prompt, sampled from the same sub-config "
                            "with the row itself excluded. Absent = the pipeline injects evaluation.num_fewshot "
                            "(3 in the reference configs); set it here to override for this task only."),
+            ParamSpec("rows_file", "path", cls.DEFAULT_ROWS_FILE, nullable=True, advanced=True,
+                      help="score only the rows listed in this JSON (full-list `row_index`); few-shot pools and "
+                           "seeds stay those of the full benchmark."),
         ]
 
     # ------------------------------------------------------------------
@@ -808,6 +842,56 @@ class LightEvalBenchmarkTask(BaseTask):
     # contributes 0 rows to training and 100% to eval).
     # ------------------------------------------------------------------
 
+    def _read_rows_file(self, path: str) -> Dict[str, Any]:
+        """Load and check a ``rows_file``: ``{"task", "row_index": [int, …],
+        "provenance": {…}}``. The task name must be this task's (a file never
+        crosses benchmarks); the indices must be distinct non-negative ints.
+        Their range is checked against the full list at evaluate time."""
+        import hashlib
+        import json
+
+        p = Path(path)
+        if not p.is_file():
+            raise FileNotFoundError(f"{self.name}: rows_file {str(p)!r} does not exist")
+        raw = p.read_bytes()
+        data = json.loads(raw.decode("utf-8"))
+        if not isinstance(data, dict) or "row_index" not in data or "task" not in data:
+            raise ValueError(f"{self.name}: rows_file {str(p)!r} must be a JSON object with 'task' and 'row_index'")
+        if data["task"] != self.name:
+            raise ValueError(
+                f"{self.name}: rows_file {str(p)!r} lists rows of task {data['task']!r}, not {self.name!r}"
+            )
+        idx = data["row_index"]
+        if not isinstance(idx, list) or not idx or any(
+            isinstance(i, bool) or not isinstance(i, int) or i < 0 for i in idx
+        ):
+            raise ValueError(f"{self.name}: rows_file {str(p)!r}: row_index must be a non-empty list of ints ≥ 0")
+        if len(set(idx)) != len(idx):
+            dup = sorted({i for i in idx if idx.count(i) > 1})[:5]
+            raise ValueError(f"{self.name}: rows_file {str(p)!r}: duplicate row_index {dup}")
+        return {"path": str(p), "sha256": hashlib.sha256(raw).hexdigest(), "row_index": list(idx),
+                "n_rows": len(idx)}
+
+    def _select_rows(
+        self, examples: List[Dict[str, Any]], max_samples: Optional[int],
+    ) -> Tuple[List[Dict[str, Any]], Optional[List[int]]]:
+        """The rows to score and their full-list indices (``None`` = all rows in order)."""
+        if self._rows_subset is None:
+            return (examples[:max_samples] if max_samples else examples), None
+        if max_samples:
+            raise ValueError(
+                f"{self.name}: rows_file ({self.rows_file}) and evaluation.num_eval_samples "
+                f"({max_samples}) are both set — a rows_file already names the rows; drop one of them"
+            )
+        idx = self._rows_subset["row_index"]
+        bad = [i for i in idx if i >= len(examples)]
+        if bad:
+            raise ValueError(
+                f"{self.name}: rows_file {self.rows_file!r} lists row_index {bad[:5]} outside the "
+                f"{len(examples)}-row eval list"
+            )
+        return [examples[i] for i in idx], list(idx)
+
     def get_eval_examples(self) -> List[Dict[str, Any]]:
         """Return all examples for evaluation, after the optional Latin filter."""
         if self._cached_examples is None:
@@ -887,6 +971,13 @@ class LightEvalBenchmarkTask(BaseTask):
             "max_length": int(self.max_length),
             "num_fewshot": int(self.num_fewshot),
             "clean_latin_rows": bool(self.clean_latin_rows),
+            "label_rotation": (
+                int(self.label_rotation) if hasattr(self, "label_rotation") else None
+            ),
+            "rows_file": (
+                None if self._rows_subset is None
+                else {k: self._rows_subset[k] for k in ("path", "sha256", "n_rows")}
+            ),
             "tokenizer_class": type(tokenizer).__name__,
             "vocab_size": vocab_size,
             "embedding_type": embedding,
@@ -946,13 +1037,15 @@ class LightEvalBenchmarkTask(BaseTask):
                 "evaluation (identical methodology to LightEval)."
             )
 
-        examples = self.get_eval_examples()
-        if max_samples:
-            examples = examples[:max_samples]
+        # The full list stays cached (few-shot pools and seeds are drawn from
+        # it); ``rows_file`` only chooses which rows are iterated.
+        examples, row_indices = self._select_rows(self.get_eval_examples(), max_samples)
 
         logger.info(
-            "%s: evaluating %d examples (90 %% LightEval split, normalization=%s)",
-            self.name, len(examples), score_normalization,
+            "%s: evaluating %d examples (%s, normalization=%s)",
+            self.name, len(examples),
+            f"rows_file {self.rows_file}" if row_indices is not None else "full benchmark",
+            score_normalization,
         )
         model.model.eval()
         wrapper = LightEvalModelWrapper(model, tokenizer, max_length=self.max_length)
@@ -976,6 +1069,7 @@ class LightEvalBenchmarkTask(BaseTask):
                 task=self,
                 score_normalization=score_normalization,
                 row_sink=writer.write if writer is not None else None,
+                row_indices=row_indices,
             )
         finally:
             if writer is not None:
@@ -1025,6 +1119,10 @@ class LightEvalBenchmarkTask(BaseTask):
         # Stamp the eval-preprocessing flag into the metrics dict so downstream
         # comparison-report consumers can detect mixed runs (clean vs unclean).
         metrics["clean_latin_rows"] = self.clean_latin_rows
+        if hasattr(self, "label_rotation"):
+            metrics["label_rotation"] = int(self.label_rotation)
+        if self._rows_subset is not None:
+            metrics["rows_file"] = {k: self._rows_subset[k] for k in ("path", "sha256", "n_rows")}
 
         return metrics
 

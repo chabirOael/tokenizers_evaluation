@@ -25,6 +25,8 @@ from typing import Any, Callable, Dict, FrozenSet, List, Optional, Tuple
 import numpy as np
 from datasets import concatenate_datasets, get_dataset_config_names, load_dataset
 
+from arabic_eval.params_spec import ParamSpec
+
 logger = logging.getLogger("arabic_eval.tasks.lighteval.utils")
 
 
@@ -36,6 +38,16 @@ CHOICE_LETTERS: List[str] = ["A", "B", "C", "D", "E"]
 # for letter-MCQ datasets.
 ARABIC_CHOICE_LETTERS: List[str] = ["أ", "ب", "ج", "د", "هـ"]
 
+#: ``label_rotation`` of the letter-scored tasks when the YAML does not set it:
+#: the LightEval-official prompt, أ on the first option.
+DEFAULT_LABEL_ROTATION = 0
+
+LABEL_ROTATION_SPEC = ParamSpec(
+    "label_rotation", "int", DEFAULT_LABEL_ROTATION, min=0, max=len(ARABIC_CHOICE_LETTERS) - 1,
+    advanced=True,
+    help="rotate the choice letters over the slots by k — diagnostic; 0 = the LightEval-official prompt.",
+)
+
 
 # Official LightEval Arabic-MCQ instruction prefix. Used by ArabicMMLU and
 # AlGhafa Native prompts (LightEval ``community_tasks/arabic_evals.py``).
@@ -44,7 +56,33 @@ ALGHAFA_INSTRUCTION = (
 )
 
 
-def format_mcq_context_letter_official(question: str, choices: List[str]) -> str:
+def choice_letters(n: int, rotation: int = 0) -> List[str]:
+    """The letter labelling each of ``n`` slots, in slot order.
+
+    ``rotation`` k gives slot ``i`` the letter ``ARABIC_CHOICE_LETTERS[(i + k) % n]``
+    (k = 1 on four choices: ب ج د أ), so over k = 0 … n−1 every letter is seen
+    at every slot — the manipulation that separates a letter effect from a slot
+    effect on benchmarks where أ always labels the first option. Beyond
+    ``len(ARABIC_CHOICE_LETTERS)`` choices the old mapping is kept, unrotated
+    (letters, then ``str(i)``).
+    """
+    if n <= len(ARABIC_CHOICE_LETTERS):
+        return [ARABIC_CHOICE_LETTERS[(i + rotation) % n] for i in range(n)]
+    return [ARABIC_CHOICE_LETTERS[i] if i < len(ARABIC_CHOICE_LETTERS) else str(i) for i in range(n)]
+
+
+def read_label_rotation(config: Dict[str, Any]) -> int:
+    """``label_rotation`` of a letter-scored task's params: an int in
+    ``0 ≤ k < len(ARABIC_CHOICE_LETTERS)``, else ``ValueError``."""
+    k = config.get("label_rotation", DEFAULT_LABEL_ROTATION)
+    if isinstance(k, bool) or not isinstance(k, int) or not 0 <= k < len(ARABIC_CHOICE_LETTERS):
+        raise ValueError(
+            f"label_rotation must be an int in [0, {len(ARABIC_CHOICE_LETTERS) - 1}], got {k!r}"
+        )
+    return k
+
+
+def format_mcq_context_letter_official(question: str, choices: List[str], rotation: int = 0) -> str:
     """ArabicMMLU-style prompt (LightEval official format).
 
     Surface form::
@@ -59,10 +97,12 @@ def format_mcq_context_letter_official(question: str, choices: List[str]) -> str
         الإجابة:
 
     Continuations to score are the Arabic letters ``" أ"``, ``" ب"``, etc.
+    ``rotation`` relabels the slots (``choice_letters``); the option texts stay
+    in their order. 0 — the official prompt — is what training and every eval
+    use; the synthetic MCQ training records never pass it.
     """
     lines = [ALGHAFA_INSTRUCTION + question]
-    for i, choice in enumerate(choices):
-        letter = ARABIC_CHOICE_LETTERS[i] if i < len(ARABIC_CHOICE_LETTERS) else str(i)
+    for letter, choice in zip(choice_letters(len(choices), rotation), choices):
         lines.append(f"{letter}. {choice}")
     lines.append("الإجابة:")
     return "\n".join(lines)

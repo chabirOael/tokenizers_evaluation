@@ -12,16 +12,27 @@ from typing import Any, Dict, List, Optional
 from arabic_eval.registry import task_registry
 from arabic_eval.tasks.lighteval.base import LightEvalBenchmarkTask
 from arabic_eval.tasks.lighteval.utils import (
-    ARABIC_CHOICE_LETTERS,
+    LABEL_ROTATION_SPEC,
+    choice_letters,
     format_mcq_context_letter_official,
     load_huggingface_mcq,
     parse_mcq_generic,
+    read_label_rotation,
     select_aggregator,
 )
 
 
 @task_registry.register("culture_arabic_mmlu")
 class CultureArabicMMLUTask(LightEvalBenchmarkTask):
+    def __init__(self, config: Dict[str, Any]) -> None:
+        super().__init__(config)
+        # Letters rotated over the slots (diagnostic; 0 = the official prompt).
+        self.label_rotation: int = read_label_rotation(config)
+
+    @classmethod
+    def param_spec(cls):
+        return [*super().param_spec(), LABEL_ROTATION_SPEC]
+
     @property
     def name(self) -> str:
         return "culture_arabic_mmlu"
@@ -48,14 +59,12 @@ class CultureArabicMMLUTask(LightEvalBenchmarkTask):
     def _format_eval_context(self, ex: Dict[str, Any]) -> str:
         # Official LightEval letter-MCQ format (no ``###`` markers, instruction
         # prefix + Arabic-letter listings).
-        return format_mcq_context_letter_official(ex["question"], ex["choices"])
+        return format_mcq_context_letter_official(
+            ex["question"], ex["choices"], rotation=self.label_rotation
+        )
 
     def _build_continuations(self, ex: Dict[str, Any]) -> List[str]:
-        n = len(ex["choices"])
-        return [
-            " " + (ARABIC_CHOICE_LETTERS[i] if i < len(ARABIC_CHOICE_LETTERS) else str(i))
-            for i in range(n)
-        ]
+        return [" " + letter for letter in choice_letters(len(ex["choices"]), self.label_rotation)]
 
     def _aggregate_scores(
         self,

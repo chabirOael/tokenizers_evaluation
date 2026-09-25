@@ -111,8 +111,9 @@ def build_comparison_table(
 # Nested blocks of a downstream task record that must not be flattened into
 # the main table: the per-sub-config breakdown (Alghafa) and the free-form
 # judge summaries (one dict per judge, plus the judge agreement), each
-# rendered as its own section below the table.
-_NESTED_DOWNSTREAM_KEYS = frozenset({"per_subconfig_accuracy", "judge", "judge_agreement"})
+# rendered as its own section below the table; and the ``rows_file`` a subset
+# eval was scored on (path + sha256 — provenance, not a metric).
+_NESTED_DOWNSTREAM_KEYS = frozenset({"per_subconfig_accuracy", "judge", "judge_agreement", "rows_file"})
 
 
 def _build_freeform_judge_section(

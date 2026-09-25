@@ -22,3 +22,5 @@ task:
     clean_latin_rows: false
     # In-context demonstrations prepended to each prompt, sampled from the same sub-config with the row itself excluded. Absent = the pipeline injects evaluation.num_fewshot (3 in the reference configs); set it here to override for this task only. [int; range 0–…]
     num_fewshot: 0
+    # score only the rows listed in this JSON (full-list `row_index`); few-shot pools and seeds stay those of the full benchmark. [path | null; advanced]
+    rows_file: null

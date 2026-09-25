@@ -18,10 +18,12 @@ from typing import Any, Dict, List, Optional
 from arabic_eval.registry import task_registry
 from arabic_eval.tasks.lighteval.base import LightEvalBenchmarkTask
 from arabic_eval.tasks.lighteval.utils import (
-    ARABIC_CHOICE_LETTERS,
+    LABEL_ROTATION_SPEC,
     CHOICE_LETTERS,
+    choice_letters,
     format_mcq_context_letter_official,
     load_huggingface_mcq,
+    read_label_rotation,
     select_aggregator,
 )
 
@@ -34,6 +36,17 @@ ARABIC_EXAM_EXCLUDED_CONFIGS: frozenset = frozenset({"All"})
 
 @task_registry.register("arabic_exam")
 class ArabicExamTask(LightEvalBenchmarkTask):
+    def __init__(self, config: Dict[str, Any]) -> None:
+        super().__init__(config)
+        # Letters rotated over the slots (diagnostic; 0 = the official prompt).
+        # The gold index stays the slot index; the demonstrations follow because
+        # they are rendered through the same two hooks.
+        self.label_rotation: int = read_label_rotation(config)
+
+    @classmethod
+    def param_spec(cls):
+        return [*super().param_spec(), LABEL_ROTATION_SPEC]
+
     @property
     def name(self) -> str:
         return "arabic_exam"
@@ -100,17 +113,15 @@ class ArabicExamTask(LightEvalBenchmarkTask):
         # main MCQ block follows the LightEval letter format with the standard
         # instruction prefix and Arabic-letter listings.
         ctx = ex.get("context", "")
-        base = format_mcq_context_letter_official(ex["question"], ex["choices"])
+        base = format_mcq_context_letter_official(
+            ex["question"], ex["choices"], rotation=self.label_rotation
+        )
         if ctx:
             return f"السياق: {ctx}\n{base}"
         return base
 
     def _build_continuations(self, ex: Dict[str, Any]) -> List[str]:
-        n = len(ex["choices"])
-        return [
-            " " + (ARABIC_CHOICE_LETTERS[i] if i < len(ARABIC_CHOICE_LETTERS) else str(i))
-            for i in range(n)
-        ]
+        return [" " + letter for letter in choice_letters(len(ex["choices"]), self.label_rotation)]
 
     def _aggregate_scores(
         self,

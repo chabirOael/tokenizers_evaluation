@@ -48,7 +48,10 @@ logger = logging.getLogger("arabic_eval.evaluation.eval_rows")
 #: 2 (2026-09-24): ``cont_tokens`` per choice, and ``hit_cap`` also set when the
 #: cap reached a continuation's full encoding (1: the prompt's only). Readers
 #: take both versions — a missing column is simply absent from the page.
-SCHEMA_VERSION = 2
+#: 3 (2026-09-25): ``cont_token_ll`` — the per-token log-probabilities the scorer
+#: summed, one list per choice (which token of ``[LIT_BEGIN] [CHAR_x] [LIT_END]``
+#: carries a letter's score). Schema-2 readers need nothing: the column is absent.
+SCHEMA_VERSION = 3
 
 #: Value ``_compute_loglikelihood`` returns when truncation left no room for
 #: the continuation (``full_len <= ctx_len``). Every choice scoring this means
@@ -169,6 +172,10 @@ def eval_row_schema(metadata: Optional[Dict[str, Any]] = None):
         # Continuation tokens the scorer summed, per choice (0 = sentinel):
         # the audit of the scoring window (schema 2). Null when unknown.
         pa.field("cont_tokens", pa.list_(pa.int16())),
+        # The addends of each choice's ``ll``, in order (schema 3); an empty
+        # inner list for a sentinel choice. Null when the scorer returned plain
+        # floats. ``sum(cont_token_ll[i]) == ll[i]`` up to float32 rounding.
+        pa.field("cont_token_ll", pa.list_(pa.list_(pa.float32()))),
         pa.field("margin", pa.float32()),
         pa.field("margin_ll", pa.float32()),
         pa.field("decision_margin", pa.float32()),
@@ -212,6 +219,7 @@ def build_row_record(
     max_length: Optional[int] = None,
     cont_tokens: Optional[Sequence[int]] = None,
     cont_truncated: Optional[Sequence[bool]] = None,
+    cont_token_ll: Optional[Sequence[Sequence[float]]] = None,
 ) -> Dict[str, Any]:
     """Build one dump record.
 
@@ -231,6 +239,7 @@ def build_row_record(
     (``ScoredLogLikelihood.n_tokens`` / ``.truncated``): the first is stored,
     the second only feeds ``hit_cap`` — the cap touched the row when the
     prompt reached it *or* when it reached a continuation's full encoding.
+    ``cont_token_ll`` is ``.token_logprobs`` per choice (schema 3).
     """
     conts = [str(c) for c in continuations]
     lls = [float(v) for v in log_likelihoods]
@@ -275,6 +284,10 @@ def build_row_record(
             else [float(v) for v in unconditioned_log_likelihoods]
         ),
         "cont_tokens": None if cont_tokens is None else [int(v) for v in cont_tokens],
+        "cont_token_ll": (
+            None if cont_token_ll is None
+            else [[float(x) for x in choice] for choice in cont_token_ll]
+        ),
         "margin": margin,
         "margin_ll": margin_ll,
         "decision_margin": decision_margin,

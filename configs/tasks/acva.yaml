@@ -22,3 +22,5 @@ task:
     clean_latin_rows: false
     # In-context demonstrations prepended to each prompt. ACVA is word-scored true/false: the reference configs pin 0 here (a demonstration adds little and lengthens the prompt); absent = the pipeline injects evaluation.num_fewshot. [int; range 0–…]
     num_fewshot: 0
+    # score only the rows listed in this JSON (full-list `row_index`); few-shot pools and seeds stay those of the full benchmark. [path | null; advanced]
+    rows_file: null

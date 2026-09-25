@@ -123,13 +123,20 @@ def test_lighteval_task_built_with_empty_params_equals_the_spec_defaults(task):
     assert issubclass(cls, LightEvalBenchmarkTask)
     spec = cls.param_spec()
     d = spec_defaults(spec)
-    assert list(d) == ["dataset_name", "dataset_config", "cache_dir", "max_length", "seed", "clean_latin_rows", "num_fewshot"]
+    common = ["dataset_name", "dataset_config", "cache_dir", "max_length", "seed", "clean_latin_rows",
+              "num_fewshot", "rows_file"]
+    # label_rotation (2026-09-25) is declared by the two letter-scored tasks only.
+    letter = task in ("arabic_exam", "culture_arabic_mmlu")
+    assert list(d) == common + (["label_rotation"] if letter else [])
     inst = cls({})                                   # no data is loaded in __init__
     assert inst.dataset_name == d["dataset_name"] == cls._default_dataset_name()
     assert inst.dataset_config == d["dataset_config"] is None
     assert inst.cache_dir == d["cache_dir"] and inst.max_length == d["max_length"]
     assert inst.seed == d["seed"] and inst.clean_latin_rows == d["clean_latin_rows"]
     assert inst.num_fewshot == d["num_fewshot"] == 0
+    assert inst.rows_file == d["rows_file"] is None
+    if letter:
+        assert inst.label_rotation == d["label_rotation"] == 0
     assert inst._cached_examples is None
 
 

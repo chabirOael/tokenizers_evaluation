@@ -16,7 +16,9 @@ were summed — this file pins that, against a tiny random Llama:
   * the sentinel when truncation leaves no room, under both truncation styles
     (AraRooPat cuts after the EOS; HF ``tokenizers`` keeps the EOS);
   * the CharacterBERT ``char_ids`` branch;
-  * ``cont_tokens`` in the row dump (schema 2), and old dumps stay readable.
+  * ``cont_tokens`` in the row dump (schema 2), and old dumps stay readable;
+  * ``token_logprobs`` (schema 3, ``cont_token_ll``): one addend per scored
+    token, summing to the value, empty for the sentinel.
 """
 from __future__ import annotations
 
@@ -297,6 +299,43 @@ def test_empty_shared_prefix_is_the_sentinel(tiny_llama_path):
 
 
 # --------------------------------------------------------------------------
+# 3b. Per-token log-probabilities (schema 3)
+# --------------------------------------------------------------------------
+
+THREE = " الطاولة المدرسة الكتاب"   # three tokens, like [LIT_BEGIN] [CHAR_x] [LIT_END]
+
+
+@pytest.mark.parametrize("specials,continuation", [
+    (False, ONE), (False, MULTI), (True, ONE), (True, THREE),
+], ids=["no_eos_one", "no_eos_two", "eos_one", "eos_three"])
+def test_token_logprobs_are_the_addends(tiny_llama_path, specials, continuation):
+    tok = _WordTok(specials=specials)
+    adapter = _adapter(tiny_llama_path, tok)
+    ll = _compute_loglikelihood(adapter, tok, CTX, continuation)
+    assert isinstance(ll.token_logprobs, tuple)
+    assert len(ll.token_logprobs) == ll.n_tokens == len(tok.word_ids(continuation))
+    assert abs(sum(ll.token_logprobs) - float(ll)) < 1e-6
+    # In the summation order, each addend is log P(token | its left context).
+    full = strip_trailing_eos(tok.encode(CTX + continuation).input_ids, EOS)
+    lp = _log_probs(adapter, full)
+    start = len(full) - ll.n_tokens
+    assert list(ll.token_logprobs) == [lp[p - 1, full[p]].item() for p in range(start, len(full))]
+
+
+def test_token_logprobs_empty_for_the_sentinel(tiny_llama_path):
+    tok = _WordTok(specials=True)
+    adapter = _adapter(tiny_llama_path, tok)
+    ll = _compute_loglikelihood(adapter, tok, "يدرس الطلاب اللغة العربية كتبت الطالبة", ONE, max_length=5)
+    assert float(ll) == SENTINEL_LL
+    assert ll.n_tokens == 0 and ll.token_logprobs == ()
+
+
+def test_scored_float_default_has_no_addends():
+    v = ScoredLogLikelihood(-1.5, 2, False)
+    assert v.token_logprobs == () and float(v) == -1.5
+
+
+# --------------------------------------------------------------------------
 # 4. CharacterBERT (char_ids, word-level logits)
 # --------------------------------------------------------------------------
 
@@ -320,6 +359,8 @@ def test_char_ids_branch_scores_the_continuation_words(tiny_llama_path):
                                    "attention_mask": torch.ones(1, len(ids), dtype=torch.long)})
         lp = F.log_softmax(out["logits"][0], dim=-1)
         assert float(ll) == _sum_window(lp, ids, len(ids) - n_words, len(ids))
+        assert len(ll.token_logprobs) == n_words
+        assert abs(sum(ll.token_logprobs) - float(ll)) < 1e-6
 
 
 # --------------------------------------------------------------------------
@@ -369,7 +410,7 @@ def test_cont_tokens_lands_in_the_dump(tiny_llama_path, tmp_path, specials):
     task = _StubTask({"max_length": 64}, rows=rows)
     task.evaluate(adapter, tok, row_dump_dir=tmp_path, score_normalization="char+pmi")
     f = EvalRowFile(tmp_path / "stub_bench.parquet")
-    assert f.metadata["schema_version"] == SCHEMA_VERSION == 2
+    assert f.metadata["schema_version"] == SCHEMA_VERSION == 3
     recs = f.rows(range(f.n_rows))
     assert [r["cont_tokens"] for r in recs] == [[1, 2, 1], [1, 2, 1]]
     assert not any(r["hit_cap"] for r in recs)
