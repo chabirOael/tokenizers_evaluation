@@ -299,3 +299,80 @@ class TestRating:
     def test_single_cell_experiment_without_judges(self, repo):
         info = R.build_set(repo, "outputs/experiments/single_exp", name="v1", n_prompts=5, variants_per_prompt=3)
         assert info["variants_per_prompt"] == 1 and info["n_items"] == 5 and info["selection"]["disagreement"] == []
+
+
+def _judge_file(cell: Path, jname: str, scores: Dict[str, int], n: int = 12) -> None:
+    """A judge file whose score is 3 on every prompt except the ones in ``scores``."""
+    rows = [{"id": f"cidar-{i}", "stratum": ("short", "medium", "long")[i % 3], "score": scores.get(f"cidar-{i}", 3),
+             "correctness": 3, "fluency": 3, "instruction_following": 3, "flags": "", "rationale": "r",
+             "parse_ok": True, "raw": "{}"} for i in range(n)]
+    write_report_table(cell / "freeform_judge" / f"{jname}.parquet", rows, JUDGE_FIELDS, metadata={"judge": {"model": jname}})
+
+
+@pytest.fixture
+def crossed(tmp_path) -> Path:
+    """Three cells with generations under two judges whose per-generation disagreement (max − min of the two
+    scores) is planted: judge ja is 3 everywhere; judge jb departs on a few prompts.
+
+    |ja − jb| per prompt: a — cidar-3 2, cidar-8 2, cidar-6 1; b — cidar-3 2, cidar-10 2; c — cidar-3 2.
+    Mean over the three cells: cidar-3 2.0, cidar-8 and cidar-10 0.667, cidar-6 0.333 (the max over cells would
+    tie cidar-3 / -8 / -10 at 2 and rank cidar-10 first by id). Over {a, c}: cidar-3 2, cidar-8 1, cidar-6 0.5."""
+    jb = {"a": {"cidar-3": 5, "cidar-8": 1, "cidar-6": 4}, "b": {"cidar-3": 5, "cidar-10": 5}, "c": {"cidar-3": 1}}
+    for name in ("a", "b", "c"):
+        cell = _cell(tmp_path, "crossed", name, "bpe")
+        _judge_file(cell, "ja", {})
+        _judge_file(cell, "jb", jb[name])
+    _cell(tmp_path, "crossed", "unsupported_cf", "charformer", unsupported=True)
+    return tmp_path
+
+
+class TestRatingCells:
+    EXP = "outputs/experiments/crossed"
+
+    def _doc(self, repo, name):
+        return json.loads((repo / self.EXP / "freeform_rating" / f"{name}.json").read_text(encoding="utf-8"))
+
+    def test_cells_restricts_the_hidden_cells(self, crossed):
+        info = R.build_set(crossed, self.EXP, name="ac", n_prompts=6, variants_per_prompt=2, seed=3,
+                           baseline="a", cells=["c", "a"])
+        assert info["cells"] == ["a", "c"] and info["baseline"] == "a" and info["n_items"] == 12
+        doc = self._doc(crossed, "ac")
+        assert {it["hidden"]["cell"] for it in doc["items"]} == {"a", "c"}
+        assert all("hidden" not in it for it in R.get_items(crossed, self.EXP, "ac", "alice")["items"])
+
+    def test_unknown_cell_and_baseline_outside_the_cells_raise(self, crossed):
+        with pytest.raises(R.FreeformError, match="without free-form generations"):
+            R.build_set(crossed, self.EXP, name="x", cells=["a", "nope"])
+        with pytest.raises(R.FreeformError, match="without free-form generations"):
+            R.build_set(crossed, self.EXP, name="x", cells=["a", "unsupported_cf"])     # a cell, but no generations
+        with pytest.raises(R.FreeformError, match="baseline 'b' not among"):
+            R.build_set(crossed, self.EXP, name="x", cells=["a", "c"], baseline="b")
+        with pytest.raises(R.FreeformError, match="at least one cell"):
+            R.build_set(crossed, self.EXP, name="x", cells=[])
+        assert not (crossed / self.EXP / "freeform_rating" / "x.json").exists()
+
+    def test_two_judges_rank_by_the_mean_over_cells_of_the_judge_spread(self, crossed):
+        info = R.build_set(crossed, self.EXP, name="all", n_prompts=6, variants_per_prompt=2, seed=0)
+        assert info["judges"] == ["ja", "jb"]
+        assert info["selection"]["disagreement"] == ["cidar-3", "cidar-10", "cidar-8"]
+        info = R.build_set(crossed, self.EXP, name="ac", n_prompts=6, variants_per_prompt=2, seed=0,
+                           baseline="a", cells=["a", "c"])
+        assert info["selection"]["disagreement"] == ["cidar-3", "cidar-8", "cidar-6"]     # only a and c count
+        assert len(info["selection"]["random"]) == 3
+        assert not set(info["selection"]["random"]) & set(info["selection"]["disagreement"])
+
+    def test_variants_equal_to_the_cell_count_cross_every_prompt_with_every_cell(self, crossed):
+        info = R.build_set(crossed, self.EXP, name="full", n_prompts=6, variants_per_prompt=3, seed=0,
+                           baseline="b", cells=["a", "b", "c"])
+        assert info["variants_per_prompt"] == 3 and info["n_items"] == 18
+        by_prompt: Dict[str, set] = {}
+        for it in self._doc(crossed, "full")["items"]:
+            by_prompt.setdefault(it["prompt_id"], set()).add(it["hidden"]["cell"])
+        assert len(by_prompt) == 6 and all(v == {"a", "b", "c"} for v in by_prompt.values())
+
+    def test_naming_every_cell_equals_the_default(self, crossed):
+        R.build_set(crossed, self.EXP, name="d", n_prompts=6, variants_per_prompt=2, seed=5)
+        R.build_set(crossed, self.EXP, name="e", n_prompts=6, variants_per_prompt=2, seed=5, cells=["c", "b", "a"])
+        d, e = self._doc(crossed, "d"), self._doc(crossed, "e")
+        for k in ("baseline", "cells", "judges", "selection", "items", "n_prompts", "variants_per_prompt"):
+            assert d[k] == e[k]

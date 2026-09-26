@@ -5,7 +5,9 @@ half at random, half where the judges disagree most (or, with one judge,
 where its scores vary most across variants) — and for each one the baseline
 cell's generation plus ``variants_per_prompt − 1`` other cells', balanced by
 round-robin over the cells; the items are shuffled and the cell of every
-item is kept in the set file only. A rater sees instruction, reference and
+item is kept in the set file only (``cells`` restricts the draw to named
+cells; with ``variants_per_prompt`` equal to their number every prompt
+carries every cell — a fully crossed set). A rater sees instruction, reference and
 generation and gives the judge's 1–5 score plus flags; ratings land in one
 JSON per rater. ``agreement`` then reveals the cells and computes rater vs
 judge (Spearman, exact, quadratic-weighted kappa, mean |Δ|) on the rated
@@ -66,21 +68,36 @@ def _ratings_dir(exp_dir: Path, name: str) -> Path:
 # ---------------------------------------------------------------------------
 
 def build_set(repo_root: Path, experiment: str, name: str = "v1", n_prompts: int = 50, variants_per_prompt: int = 3,
-              seed: int = 42, baseline: Optional[str] = None, overwrite: bool = False) -> Dict[str, Any]:
+              seed: int = 42, baseline: Optional[str] = None, overwrite: bool = False,
+              cells: Optional[Sequence[str]] = None) -> Dict[str, Any]:
+    """``cells``: draw from these cells only (each must hold generations; the baseline must be one of them).
+    ``None`` = every cell of the experiment with generations."""
     repo_root = Path(repo_root)
     exp_dir = _experiment_dir(repo_root, experiment)
     name = _safe(name, "set name")
     out = _set_path(exp_dir, name)
     if out.exists() and not overwrite:
         raise FreeformError(f"rating set {name!r} exists; pass overwrite to rebuild (existing ratings stay)")
-    cells = _cells_with_generations(exp_dir)
+    available = _cells_with_generations(exp_dir)
+    if cells is None:
+        cells = available
+    else:
+        wanted = list(dict.fromkeys(str(c) for c in cells))
+        if not wanted:
+            raise FreeformError("cells: name at least one cell")
+        have = {c.name for c in available}
+        unknown = [c for c in wanted if c not in have]
+        if unknown:
+            raise FreeformError(f"cells without free-form generations in this experiment: {unknown} "
+                                f"(cells with generations: {sorted(have)})")
+        cells = [c for c in available if c.name in set(wanted)]
     if not cells:
         raise FreeformError("no cell with free-form generations")
     loaded = {c.name: load_cell(repo_root, str(c.relative_to(repo_root))) for c in cells}
     names = [c.name for c in cells]
     base = baseline or next((n for n in names if n.startswith("native_")), names[0])
     if base not in names:
-        raise FreeformError(f"baseline {base!r} not among {names}")
+        raise FreeformError(f"baseline {base!r} not among the set's cells {names}")
     judges = sorted({j["name"] for d in loaded.values() for j in d["judges"]})
     ids = sorted(set.intersection(*[{r["id"] for r in d["rows"]} for d in loaded.values()]))
     by_cell = {n: {r["id"]: r for r in d["rows"]} for n, d in loaded.items()}

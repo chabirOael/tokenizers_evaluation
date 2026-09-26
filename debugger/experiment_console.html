@@ -764,6 +764,9 @@ table.cmp td.evc-cell{min-width:14ch}
       <label class="k" title="half drawn at random, half where the judges disagree most">prompts</label><input type="number" id="rt-b-n" value="50" style="width:5rem">
       <label class="k" title="the baseline cell plus this many minus one other cells, round-robin so every cell is rated evenly">variants / prompt</label><input type="number" id="rt-b-k" value="3" style="width:4.5rem">
       <label class="k">seed</label><input type="number" id="rt-b-seed" value="42" style="width:5rem">
+      <label class="k" title="the set draws from the ticked cells only; variants / prompt = the number ticked puts every cell on every prompt">cells</label>
+      <span id="rt-b-cells" style="display:flex;gap:6px;flex-wrap:wrap;max-width:60%"></span>
+      <label class="k" for="rt-b-base">baseline</label><select id="rt-b-base"></select>
       <label class="chip"><input type="checkbox" id="rt-b-over"> overwrite</label>
       <button class="btn sm primary" id="rt-b-go">build</button>
       <span id="rt-b-msg" class="chip" style="text-transform:none"></span>
@@ -3033,7 +3036,8 @@ function evSetMode(mode){
 S.ff = {tree:null, exp:null, cell:null, judge:'', smin:'', smax:'', jflag:'', stop:'', flag:'', stratum:'', q:'',
   mode:'single', cmp:{cells:null, anchor:'', match:'any', data:null, open:null, detail:null},
         sort:'row', page:1, size:50, data:null, open:null, detail:null, busy:false};
-S.rt = {exp:null, sets:null, set:null, rater:'', items:null, pos:0, agreement:null, mode:'idle'};
+S.rt = {exp:null, sets:null, set:null, rater:'', items:null, pos:0, agreement:null, mode:'idle',
+        cells:[], bcells:null, bbase:''};   // build form: cells with generations, the ticked ones (null = all), baseline
 try { S.rt.rater = localStorage.getItem('xc-rater') || ''; } catch(e){}
 const ffNum = (v, d=1) => (v==null || isNaN(v)) ? '—' : Number(v).toFixed(d);
 function ffToast(cls, msg){ if (typeof status === 'function') status(cls, msg); else console.log(cls, msg); }
@@ -3626,8 +3630,9 @@ async function loadRtTab(force){
   await loadRtSets();
 }
 async function loadRtSets(){
-  try { const d = await api('GET', '/api/rating/sets?' + new URLSearchParams({experiment: S.rt.exp}).toString()); S.rt.sets = d.sets; }
-  catch(e){ S.rt.sets = []; }
+  try { const d = await api('GET', '/api/rating/sets?' + new URLSearchParams({experiment: S.rt.exp}).toString()); S.rt.sets = d.sets; S.rt.cells = d.cells || []; }
+  catch(e){ S.rt.sets = []; S.rt.cells = []; }
+  renderRtBuildCells();
   const sets = S.rt.sets || [];
   S.rt.set = evOptions($('#rt-set'),
     sets.length ? sets.map(s => ({value: s.name, label: `${s.name} · ${s.n_items} items · ${s.raters.length} rater${s.raters.length===1?'':'s'}`}))
@@ -3639,6 +3644,28 @@ async function loadRtSets(){
   else $('#rt-body').innerHTML = '<div class="empty">' + (sets.length
     ? 'type your name and press <b>rate</b>; the answers come in a shuffled order with the tokenizer hidden'
     : 'no rating set for this experiment yet — build one (with judge files the harder half is drawn where the judges disagree; otherwise all at random)') + '</div>';
+}
+/* build form: one chip per cell with generations (all ticked by default = every cell, as before) and a
+   baseline among the ticked ones; `cells` is sent only when some cell is left out */
+function rtBuildCells(){ return S.rt.bcells === null ? S.rt.cells.slice() : S.rt.bcells.filter(n => S.rt.cells.includes(n)); }
+function renderRtBuildCells(){
+  const box = $('#rt-b-cells'); box.innerHTML = '';
+  const ticked = rtBuildCells();
+  for (const c of S.rt.cells){
+    const chip = h('label', {class: 'chip' + (ticked.includes(c) ? ' accent' : ''), title: c},
+      h('input', {type: 'checkbox', checked: ticked.includes(c), onchange: e => {
+        const cur = rtBuildCells();
+        S.rt.bcells = e.target.checked ? [...cur, c] : cur.filter(n => n !== c);
+        renderRtBuildCells();
+      }}), ` ${c}`);
+    box.append(chip);
+  }
+  if (!S.rt.cells.length) box.append(h('span', {class: 'chip warn'}, 'no cell with generations'));
+  const base = $('#rt-b-base'); base.innerHTML = '';
+  base.append(h('option', {value: ''}, 'auto (native_* cell)'));
+  for (const c of ticked) base.append(h('option', {value: c}, c));
+  if (!ticked.includes(S.rt.bbase)) S.rt.bbase = '';
+  base.value = S.rt.bbase;
 }
 function renderRtSummary(){
   const box = $('#rt-sum'); box.innerHTML = '';
@@ -3727,7 +3754,8 @@ async function loadRtAgreement(){
   box.append(h('div', {class: 'rt-card'}, h('div', {class: 'ev-h'}, h('h4', {}, `agreement on ${a.n_items} items`)), t, pc));
 }
 function wireRtTab(){
-  $('#rt-exp').onchange = () => { S.rt.exp = evPick('#rt-exp'); S.rt.set = null; S.rt.mode = 'idle'; loadRtSets(); };
+  $('#rt-exp').onchange = () => { S.rt.exp = evPick('#rt-exp'); S.rt.set = null; S.rt.mode = 'idle'; S.rt.bcells = null; S.rt.bbase = ''; loadRtSets(); };
+  $('#rt-b-base').onchange = () => { S.rt.bbase = $('#rt-b-base').value; };
   $('#rt-set').onchange = () => { S.rt.set = evPick('#rt-set'); S.rt.mode = 'idle'; loadRtSets(); };
   $('#rt-rater').onchange = () => { S.rt.rater = $('#rt-rater').value.trim(); try { localStorage.setItem('xc-rater', S.rt.rater); } catch(e){} };
   $('#rt-start').onclick = () => {
@@ -3740,11 +3768,17 @@ function wireRtTab(){
   $('#rt-refresh').onclick = () => loadRtTab(true);
   $('#rt-build-toggle').onclick = () => { const b = $('#rt-build'); b.style.display = b.style.display === 'none' ? '' : 'none'; };
   $('#rt-b-go').onclick = async () => {
-    const msg = $('#rt-b-msg'); msg.textContent = 'building…';
+    const msg = $('#rt-b-msg');
+    const ticked = rtBuildCells();
+    if (!ticked.length){ msg.textContent = 'tick at least one cell'; return; }
+    msg.textContent = 'building…';
+    const body = {experiment: S.rt.exp, name: $('#rt-b-name').value.trim() || 'v1',
+      n_prompts: Number($('#rt-b-n').value) || 50, variants: Number($('#rt-b-k').value) || 3,
+      seed: Number($('#rt-b-seed').value) || 42, overwrite: $('#rt-b-over').checked};
+    if (ticked.length < S.rt.cells.length) body.cells = ticked;
+    if (S.rt.bbase) body.baseline = S.rt.bbase;
     try {
-      const r = await api('POST', '/api/rating/build', {experiment: S.rt.exp, name: $('#rt-b-name').value.trim() || 'v1',
-        n_prompts: Number($('#rt-b-n').value) || 50, variants: Number($('#rt-b-k').value) || 3,
-        seed: Number($('#rt-b-seed').value) || 42, overwrite: $('#rt-b-over').checked});
+      const r = await api('POST', '/api/rating/build', body);
       msg.textContent = `built ${r.name}: ${r.n_items} items (${r.selection.disagreement.length} disagreement + ${r.selection.random.length} random prompts)`;
       S.rt.set = r.name; S.rt.mode = 'idle'; await loadRtSets();
     } catch(e){ msg.textContent = e.message; }

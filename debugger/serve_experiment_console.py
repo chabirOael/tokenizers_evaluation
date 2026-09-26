@@ -66,7 +66,8 @@ Routes
                                     cross-cell sorts, paging) + a per-cell summary over the selection
     GET  /api/freeform/compare/export?cells=&…   the same selection as a CSV download
     GET  /api/rating/sets?experiment=        blind rating sets of an experiment and who rated what
-    POST /api/rating/build          {"experiment", "name", "n_prompts", "variants", "seed", "overwrite"} → the set (blind)
+    POST /api/rating/build          {"experiment", "name", "n_prompts", "variants", "seed", "overwrite", "baseline",
+                                     "cells"} → the set (blind); no "cells" = every cell with generations
     GET  /api/rating/items?experiment=&set=&rater=   the items (cell hidden) with this rater's ratings
     POST /api/rating/submit         {"experiment", "set", "rater", "item_id", "score", "flags", "note"}
     GET  /api/rating/agreement?experiment=&set=      rater vs judge / rater vs rater / judge vs judge, cells revealed
@@ -422,7 +423,7 @@ class Handler(SimpleHTTPRequestHandler):
                 REPO_ROOT, str(req.get("experiment") or ""), name=str(req.get("name") or "v1"),
                 n_prompts=int(req.get("n_prompts") or 50), variants_per_prompt=int(req.get("variants") or 3),
                 seed=int(req.get("seed") or 42), baseline=(str(req["baseline"]) if req.get("baseline") else None),
-                overwrite=bool(req.get("overwrite"))))
+                overwrite=bool(req.get("overwrite")), cells=list(req.get("cells") or []) or None))
         elif route == "/api/rating/submit":
             self._send_json(freeform_rating.submit(
                 REPO_ROOT, str(req.get("experiment") or ""), str(req.get("set") or ""), str(req.get("rater") or ""),
