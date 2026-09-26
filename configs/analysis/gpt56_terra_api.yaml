@@ -1,0 +1,31 @@
+# Analysis tab of the experiment console (Analysis → model): an LLM that answers questions about
+# the experiments by writing Python against their results (arabic_eval.analysis, preloaded as `ae`)
+# in a sandboxed worker. Any OpenAI-compatible /chat/completions endpoint works.
+#
+# gpt-5.6-terra (verified on this account for the judge 2026-09-18): the model rejects an explicit
+# temperature, so it is null = omitted; reasoning_effort goes through extra_body and the tab offers
+# the choices below. The key: export OPENAI_API_KEY before starting the console, or type it into the
+# tab (kept in the server's memory only, never written to disk).
+#
+# Protocol: fenced ```python blocks (tool_protocol: fenced, the default). Native function calling is not an
+# option here: /v1/chat/completions rejects function tools together with reasoning_effort for this model
+# (HTTP 400, 2026-09-25). Measured on 5 known-answer questions: 4 / 5 exact, 6–15 s each (the miss read
+# "best eval loss" as the table minimum instead of the step early stopping restored).
+analysis:
+  name: "gpt56_terra"
+  kind: "openai"
+  model: "gpt-5.6-terra"            # the tab can override it per session
+  base_url: null                    # null = https://api.openai.com/v1
+  api_key_env: "OPENAI_API_KEY"
+  temperature: null
+  max_tokens: 16000                 # per reply; reasoning tokens count against it
+  timeout_sec: 300
+  extra_body: {reasoning_effort: "medium"}
+  reasoning_efforts: ["low", "medium", "high"]
+  context_tokens: 100000            # prompt + history budget before older steps are elided
+  chars_per_token: 3.0
+  max_steps: 12                     # code steps per question before the model must answer
+  step_timeout_sec: 120
+  output_chars_to_model: 6000
+  api_reference: "full"
+  description: "OpenAI API — large context, full helper docs; step outputs are sent to OpenAI."

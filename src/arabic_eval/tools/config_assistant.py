@@ -190,13 +190,15 @@ class ChatClient:
     and records ``last_usage`` (``stream_options.include_usage``); ``complete``
     returns the whole content."""
 
-    def __init__(self, cfg: AssistantConfig) -> None:
+    def __init__(self, cfg: AssistantConfig, api_key: Optional[str] = None) -> None:
         self.cfg = cfg
-        self._key = os.environ.get(cfg.api_key_env) if cfg.api_key_env else None
+        # An explicit key (the Analysis tab's in-memory key) wins over the environment.
+        self._key = api_key or (os.environ.get(cfg.api_key_env) if cfg.api_key_env else None)
         if cfg.api_key_env and not self._key:
             raise AssistantError(f"assistant {cfg.name!r}: environment variable {cfg.api_key_env} is not set")
         self.url = cfg.url + "/chat/completions"
         self.last_usage: Optional[Dict[str, Any]] = None
+        self.last_finish_reason: Optional[str] = None
 
     def body(self, messages: Sequence[Dict[str, str]], stream: bool) -> Dict[str, Any]:
         b: Dict[str, Any] = {"model": self.cfg.model, "messages": list(messages),
@@ -235,12 +237,15 @@ class ChatClient:
 
     def stream(self, messages: Sequence[Dict[str, str]]) -> Iterator[str]:
         self.last_usage = None
+        self.last_finish_reason = None
         resp = self._request(self.body(messages, stream=True))
         with resp:
             for ev in parse_sse(resp):
                 if ev.get("usage"):
                     self.last_usage = ev["usage"]
                 for ch in ev.get("choices") or []:
+                    if ch.get("finish_reason"):
+                        self.last_finish_reason = ch["finish_reason"]
                     delta = (ch.get("delta") or {}).get("content")
                     if delta:
                         yield delta

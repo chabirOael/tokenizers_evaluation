@@ -38,7 +38,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Tuple, get_args
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, get_args
 
 import yaml
 from pydantic import ValidationError
@@ -1243,6 +1243,9 @@ class RunManager:
         self.grace_sec = grace_sec
         self._lock = threading.Lock()
         self._procs: Dict[str, subprocess.Popen] = {}
+        # Other GPU holders a run must not start beside (the Analysis tab's local model server):
+        # each returns why the GPU is taken, or None. The "run concurrently" force skips them.
+        self.gpu_guards: List[Callable[[], Optional[str]]] = []
 
     # ---- record io ---------------------------------------------------------
     def run_dir(self, run_id: str) -> Path:
@@ -1423,6 +1426,11 @@ class RunManager:
                 raise RunConflict(
                     f"run {active[0]['run_id']} is still {active[0]['status']}; tick 'run concurrently' to start anyway"
                 )
+            if not force:
+                for guard in self.gpu_guards:
+                    why = guard()
+                    if why:
+                        raise RunConflict(f"{why}; tick 'run concurrently' to start anyway")
             ts = datetime.now().astimezone()
             run_id = f"{ts.strftime('%Y%m%d-%H%M%S')}_{label}"
             n = 1

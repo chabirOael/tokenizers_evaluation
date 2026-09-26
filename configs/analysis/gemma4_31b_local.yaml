@@ -1,0 +1,43 @@
+# Analysis tab, local model: google/gemma-4-31b-it served by vLLM from .venv-judge on the H100
+# (the same checkpoint and venv as the free-form judge). The console starts and stops the server
+# from the tab: it takes the whole GPU (no training or eval run can start while it is up), and it
+# stops itself after `serve.idle_stop_min` minutes without a question. Nothing leaves the machine.
+#
+# Measured 2026-09-25 (5 known-answer questions, a fresh session each):
+#  - fenced ```python protocol: 1 / 5 — Gemma 4 calls tools in its own syntax (<|tool_call>call:…) and wrote
+#    bare `call:python` text instead of a code block; with the run_python tool (native protocol, vLLM's gemma4
+#    tool parser) and its thinking routed to reasoning_content (gemma4 reasoning parser): 5 / 5, 3–24 s each.
+#  - bf16 weights: 59.0 GiB, KV cache 32 277 tokens → 24 576-token context; fp8 weights (online quantization):
+#    31.7 GiB, KV cache 267 654 tokens → 65 536-token context with 4× headroom, also 5 / 5 (3–20 s).
+#    Cold start 3–4.5 min (2.5 min with vLLM's compile cache warm). For bf16: quantization null,
+#    max_model_len 24576, context_tokens 20000, api_reference short, output_chars_to_model 2500, max_steps 8.
+analysis:
+  name: "gemma4_31b_local"
+  kind: "local_vllm"
+  model: "google/gemma-4-31b-it"
+  base_url: "http://127.0.0.1:8801/v1"
+  api_key_env: null
+  temperature: 0.0
+  max_tokens: 4096
+  timeout_sec: 600
+  extra_body: {}
+  context_tokens: 60000             # 65 536 − the reply reservation
+  chars_per_token: 3.0
+  max_steps: 10
+  step_timeout_sec: 120
+  output_chars_to_model: 4000
+  api_reference: "full"
+  system_role: true
+  tool_protocol: "native"
+  serve:
+    venv: ".venv-judge"
+    port: 8801
+    max_model_len: 65536
+    quantization: "fp8"
+    kv_cache_dtype: "fp8"
+    gpu_memory_utilization: 0.92
+    dtype: "bfloat16"
+    extra_args: ["--enable-auto-tool-choice", "--tool-call-parser", "gemma4", "--reasoning-parser", "gemma4"]
+    startup_timeout_sec: 900
+    idle_stop_min: 30
+  description: "Local Gemma-4-31B (fp8) under vLLM — private, 64K context, holds the GPU while running."

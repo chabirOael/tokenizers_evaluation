@@ -13,6 +13,7 @@ and are rediscovered when the server restarts.
 
 Routes
     GET  /                          debugger/experiment_console.html
+    GET  /assets/<file>             debugger/assets/*.js|css (the Analysis tab's script)
     GET  /api/health                {"ok": true, "python": ..., "hf_token_set": ...}
     GET  /api/schema                JSON schema of ExperimentConfig + base.yaml defaults + registries + presets
     GET  /api/configs               every configs/experiments/*.yaml with its cells / tasks / existing results
@@ -74,6 +75,30 @@ Routes
                                     of events (token / edits / repair / done / error); the model's edits are applied
                                     to the config and validated server-side, the page puts the result in the form
     POST /api/assistant/preview     the same body → the messages a turn would send, with their size
+    GET  /api/analysis/endpoints    configs/analysis/*.yaml with readiness (API key: tab / environment; local
+                                    server) + the sandbox status
+    GET  /api/analysis/scope        the experiment folders with their cell counts (the scope picker)
+    GET  /api/analysis/sessions     every analysis session (outputs/analysis/<id>/), newest first
+    GET  /api/analysis/session?id=  one session: turns, steps (code, outputs, displays), answers, provenance
+    GET  /api/analysis/artifact?session=&name=   a figure / table the session's code showed (&download=1)
+    GET  /api/analysis/export?session=&format=ipynb|md   the session as a notebook or Markdown
+    GET  /api/analysis/api          the ae helpers' reference (what the model is told)
+    POST /api/analysis/key          {"name": "OPENAI_API_KEY", "key": "..." | null} → status (kept in memory only)
+    POST /api/analysis/sessions     {"endpoint", "scope": {"experiments": [...]}, "options": {"model",
+                                    "reasoning_effort"}, "title"} → a new session
+    POST /api/analysis/session/update  {"id", "endpoint", "options", "scope", "title"}
+    POST /api/analysis/chat         {"session", "message"} → an SSE stream of one turn (turn / model_start / token /
+                                    reply / approval / exec_start / exec / answer / error / done); 409 when busy
+    POST /api/analysis/stop         {"session"}: stop the stream / interrupt the running step
+    POST /api/analysis/approve      {"session", "step", "approve"} (only without the sandbox)
+    POST /api/analysis/exec         {"session", "code"} → a code cell run by hand in the session's worker
+    POST /api/analysis/preview      {"session", "message"} → the messages a turn would send, with their size
+    POST /api/analysis/kernel/restart  {"session"}: drop the session's Python worker (variables lost)
+    GET  /api/analysis/local/status?endpoint=   the local model server (stopped / starting / ready / stopping / failed)
+    GET  /api/analysis/local/log?endpoint=&n=   its log tail
+    POST /api/analysis/local/start  {"endpoint", "force"} → start `vllm serve` (409 while a run or another process
+                                    holds the GPU, unless forced); runs refuse to start while it is up
+    POST /api/analysis/local/stop   {"endpoint"}
 
 Stdlib only (http.server) — no new dependencies.
 """
@@ -95,6 +120,8 @@ sys.path.insert(0, str(REPO_ROOT / "src"))
 from arabic_eval.tools import eval_rows_browser as eval_rows  # noqa: E402
 from arabic_eval.tools import freeform_rating  # noqa: E402
 from arabic_eval.tools import config_assistant as assistant  # noqa: E402
+from arabic_eval.tools import analysis_agent  # noqa: E402
+from arabic_eval.tools import local_llm_service  # noqa: E402
 from arabic_eval.tools import freeform_rows_browser as freeform_rows  # noqa: E402
 from arabic_eval.tools.experiment_console import (  # noqa: E402
     judge_configs,
@@ -119,9 +146,14 @@ from arabic_eval.tools.experiment_console import (  # noqa: E402
 )
 
 PAGE = REPO_ROOT / "debugger" / "experiment_console.html"
+ASSETS = REPO_ROOT / "debugger" / "assets"          # the page's own scripts (the Analysis tab)
 PATHS = ConsolePaths(REPO_ROOT)
 RUNS = RunManager(PATHS)
 ASSISTANT_CTX = assistant.ContextBuilder(PATHS)
+# The Analysis tab's local model server shares the GPU with runs: each refuses to start beside the other.
+LOCAL = local_llm_service.LocalLLMService(REPO_ROOT, active_runs=RUNS.active)
+RUNS.gpu_guards.append(LOCAL.gpu_guard)
+ANALYSIS = analysis_agent.AnalysisService(REPO_ROOT, local_status=LOCAL.status, activity_hook=LOCAL.touch)
 _MAX_BODY = 4 * 1024 * 1024
 _TEXT_ROOT = REPO_ROOT / "outputs"
 
@@ -164,11 +196,30 @@ class Handler(SimpleHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _send_asset(self, name: str) -> None:
+        p = (ASSETS / name).resolve()
+        ctype = {".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8"}.get(p.suffix)
+        if ASSETS.resolve() not in p.parents or not p.is_file() or ctype is None:
+            self._send_json({"error": "not found"}, HTTPStatus.NOT_FOUND)
+            return
+        self._send_bytes(p.read_bytes(), ctype)
+
+    def _send_bytes(self, data: bytes, content_type: str, filename: str = None) -> None:
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", content_type)
+        if filename:
+            self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(data)
+
     def _send_events(self, events) -> None:
         """Relay an event iterator as a server-sent-event stream (``data: <json>``
         per event). HTTP/1.0: no Content-Length, the connection closes at the
         end, which is what the page's stream reader waits for. Failures after
-        the headers are sent become an ``error`` event."""
+        the headers are sent become an ``error`` event; a generator is closed
+        when the page goes away (an analysis turn then ends as 'stopped')."""
         self.send_response(HTTPStatus.OK)
         self.send_header("Content-Type", "text/event-stream; charset=utf-8")
         self.send_header("Cache-Control", "no-store")
@@ -189,6 +240,10 @@ class Handler(SimpleHTTPRequestHandler):
                 _emit({"type": "error", "message": f"{type(e).__name__}: {e}" if not isinstance(e, ConsoleError) else str(e)})
             except OSError:
                 pass
+        finally:
+            close = getattr(events, "close", None)
+            if close is not None:
+                close()
 
     def _read_body(self) -> dict:
         n = int(self.headers.get("Content-Length") or 0)
@@ -217,8 +272,8 @@ class Handler(SimpleHTTPRequestHandler):
                 self._get(route, q)
             else:
                 self._post(route, self._read_body())
-        except RunConflict as e:
-            self._send_json({"error": str(e)}, HTTPStatus.CONFLICT)
+        except (RunConflict, analysis_agent.SessionBusy, local_llm_service.LocalServerConflict) as e:
+            self._send_json({"error": str(e), "conflict": True}, HTTPStatus.CONFLICT)
         except ConsoleError as e:
             self._send_json({"error": str(e)}, HTTPStatus.BAD_REQUEST)
         except ValueError as e:
@@ -237,6 +292,8 @@ class Handler(SimpleHTTPRequestHandler):
     def _get(self, route: str, q: dict) -> None:
         if route == "/":
             self._send_page()
+        elif route.startswith("/assets/"):
+            self._send_asset(route[len("/assets/"):])
         elif route == "/api/health":
             b = schema_bundle(PATHS)["env"]
             self._send_json({"ok": True, **b, "page": PATHS.rel(PAGE)})
@@ -307,6 +364,8 @@ class Handler(SimpleHTTPRequestHandler):
             self._send_json({"assistants": assistant.assistant_configs(PATHS)})
         elif route == "/api/rating/agreement":
             self._send_json(freeform_rating.agreement(REPO_ROOT, q.get("experiment", ""), q.get("set", "")))
+        elif route.startswith("/api/analysis/"):
+            self._analysis_get(route[len("/api/analysis/"):], q)
         else:
             self._send_json({"error": "not found"}, HTTPStatus.NOT_FOUND)
 
@@ -375,11 +434,81 @@ class Handler(SimpleHTTPRequestHandler):
         elif route == "/api/assistant/preview":
             acfg, kw = _assistant_request(req)
             self._send_json(assistant.preview_messages(PATHS, ASSISTANT_CTX, acfg, **kw))
+        elif route.startswith("/api/analysis/"):
+            self._analysis_post(route[len("/api/analysis/"):], req)
         elif route.startswith("/api/runs/") and route.endswith("/cancel"):
             run_id = route[len("/api/runs/"):-len("/cancel")]
             rec = RUNS.cancel(run_id)
             log.info("cancel requested for %s (pgid %s)", run_id, rec.get("pgid"))
             self._send_json(rec)
+        else:
+            self._send_json({"error": "not found"}, HTTPStatus.NOT_FOUND)
+
+
+    # ---- Analysis tab ---------------------------------------------------
+    def _analysis_get(self, sub: str, q: dict) -> None:
+        if sub == "endpoints":
+            ANALYSIS.pool.reap()
+            self._send_json(ANALYSIS.endpoints())
+        elif sub == "scope":
+            import arabic_eval.analysis as ae
+            exps = ae.experiments().reset_index().to_dict("records")
+            self._send_json({"experiments": exps})
+        elif sub == "sessions":
+            self._send_json({"sessions": ANALYSIS.store.list()})
+        elif sub == "session":
+            self._send_json(ANALYSIS.session(q.get("id", "")))
+        elif sub == "artifact":
+            p = ANALYSIS.store.artifact(q.get("session", ""), q.get("name", ""))
+            ctype = {".json": "application/json", ".png": "image/png", ".csv": "text/csv; charset=utf-8",
+                     ".svg": "image/svg+xml"}.get(p.suffix, "application/octet-stream")
+            self._send_bytes(p.read_bytes(), ctype, p.name if q.get("download") else None)
+        elif sub == "export":
+            name, data, ctype = ANALYSIS.export(q.get("session", ""), q.get("format", "ipynb"))
+            self._send_bytes(data, ctype, name)
+        elif sub == "local/status":
+            self._send_json(LOCAL.status(ANALYSIS.endpoint(q.get("endpoint", ""))))
+        elif sub == "local/log":
+            self._send_json(LOCAL.log_tail(ANALYSIS.endpoint(q.get("endpoint", "")), int(q.get("n") or 200)))
+        elif sub == "api":
+            import arabic_eval.analysis as ae
+            self._send_json({"reference": ae.api_reference(full=True)})
+        else:
+            self._send_json({"error": "not found"}, HTTPStatus.NOT_FOUND)
+
+    def _analysis_post(self, sub: str, req: dict) -> None:
+        sid = str(req.get("session") or req.get("id") or "")
+        if sub == "key":
+            name = str(req.get("name") or "OPENAI_API_KEY")
+            ANALYSIS.keys.set(name, req.get("key"))
+            self._send_json(ANALYSIS.keys.status(name))
+        elif sub == "sessions":
+            self._send_json(ANALYSIS.new_session(str(req.get("endpoint") or ""), scope=req.get("scope"),
+                                                 options=req.get("options"), title=_opt_str(req, "title")))
+        elif sub == "session/update":
+            self._send_json(ANALYSIS.update_session(sid, endpoint=_opt_str(req, "endpoint"), options=req.get("options"),
+                                                    scope=req.get("scope"), title=req.get("title")))
+        elif sub == "chat":
+            events = ANALYSIS.chat(sid, str(req.get("message") or ""))   # validates before any header is sent
+            self._send_events(events)
+        elif sub == "stop":
+            self._send_json({"stopping": ANALYSIS.stop(sid)})
+        elif sub == "approve":
+            self._send_json({"ok": ANALYSIS.approve(sid, int(req.get("step") or 0), bool(req.get("approve")))})
+        elif sub == "exec":
+            self._send_json(ANALYSIS.exec_code(sid, str(req.get("code") or "")))
+        elif sub == "preview":
+            self._send_json(ANALYSIS.preview(sid, str(req.get("message") or "")))
+        elif sub == "local/start":
+            ep = ANALYSIS.endpoint(str(req.get("endpoint") or ""))
+            if ep.kind != "local_vllm":
+                raise analysis_agent.AnalysisError(f"{ep.name} is not a local model")
+            self._send_json(LOCAL.start(ep, force=bool(req.get("force"))), HTTPStatus.ACCEPTED)
+        elif sub == "local/stop":
+            self._send_json(LOCAL.stop(ANALYSIS.endpoint(str(req.get("endpoint") or ""))))
+        elif sub == "kernel/restart":
+            ANALYSIS.close_kernel(sid)
+            self._send_json({"ok": True})
         else:
             self._send_json({"error": "not found"}, HTTPStatus.NOT_FOUND)
 
@@ -433,6 +562,11 @@ def main() -> int:
     if not PAGE.exists():
         log.error("page not found: %s", PAGE)
         return 1
+    try:                                    # watch a local model server a previous console left running
+        LOCAL.adopt([e for e in (analysis_agent.AnalysisEndpoint.from_yaml(p)
+                                 for p in sorted(ANALYSIS.endpoint_dir().glob("*.yaml"))) if e.kind == "local_vllm"])
+    except Exception as e:  # noqa: BLE001 - a broken YAML must not keep the console down
+        log.warning("analysis endpoints: %s", e)
     active = RUNS.active()
     if active:
         log.info("rediscovered %d active run(s): %s", len(active), ", ".join(r["run_id"] for r in active))
