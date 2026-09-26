@@ -1023,8 +1023,9 @@ class LightEvalBenchmarkTask(BaseTask):
             backward-compatible).
           * ``"pmi"`` — subtract unconditioned per-continuation log-likelihoods.
             ``accuracy`` and the failure CSV reflect the PMI argmax.
-          * ``"char+pmi"`` — compute both. ``accuracy`` aliases ``accuracy_char_norm``
-            for backward compat with comparison-report consumers.
+          * ``"char+pmi"`` — compute both. ``accuracy`` follows the primary
+            normalization, PMI (``accuracy == accuracy_pmi``); read
+            ``accuracy_char_norm`` / ``accuracy_pmi`` by name.
         """
         if score_normalization not in ("char", "pmi", "char+pmi"):
             raise ValueError(

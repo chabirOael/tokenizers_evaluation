@@ -465,3 +465,61 @@ Two tabs for the free-form eval (`freeform_cidar`; see *Free-form eval* in `CLAU
 - **Rate** — the blind human check (`src/arabic_eval/tools/freeform_rating.py`, routes `/api/rating/sets|build|items|submit|agreement`). *Build a set* draws N prompts (half random, half where the judges disagree most) × K variants per prompt (baseline + others, round-robin), shuffles the items and keeps the cell only in `<experiment>/freeform_rating/<set>.json`. Type a rater name, press *rate*: one item at a time (instruction, reference, candidate), score 1–5 on the judge's rubric, flags, a note; ratings go to `<set>.ratings/<rater>.json` and resume where you left off. *Agreement* reveals the cells: rater vs each judge (Spearman, exact, quadratic-weighted κ, mean |Δ|), rater vs rater, judge vs judge on the same items, and the per-cell human mean beside the judge means (`<set>.agreement.json`).
 
 **Judge runs from the console** (2026-09-18). The Free-form tab's *judge…* button lists `configs/judges/*.yaml` with a readiness check (`vllm` judges need `.venv-judge` and the extracted Python headers — `scripts/judge/setup_judge_env.sh`; `openai` judges need their `api_key_env` exported in the environment the console server was started from), a **cells** row, a baseline cell, an optional per-cell limit, *overwrite* and *run concurrently*. The cells row (2026-09-24) is where you pick which tokenizers this run scores: one chip per cell with generations, ticked by default to **the tokenizer selected in the tab** (quick links *this cell · all · none · not judged yet*), each chip stating whether the ticked judges already have verdicts for it (`reuse` — nothing is spent unless *overwrite* is on — / `partial` / `new`). A line under the bar says exactly what will run (`will judge 1 of 16 cells: … · baseline … (auto)`), and warns when the baseline sits outside the selection and has no verdicts of a ticked judge — the only case where the paired comparison cannot be computed (those cells are then recorded with `vs_baseline_status: baseline_not_judged`). Only the selected cells are judged and rewritten; the comparison report still covers every cell. *Start judge run* posts to `/api/judge/start`, which snapshots the judge YAMLs into `outputs/runs/<run_id>/judges/` and launches `scripts/judge/run_judge.sh` (any GPU judge) or `scripts/judge/judge_freeform.py` (API judges only) as a detached run with the same lifecycle as an experiment: `run.json` carries `kind: judge`, the Runs tab parses the judge log into per-judge / per-cell chips, *cancel* works, and a finished run shows the per-cell judge means and links to `freeform_judge_report.json` and the regenerated comparison report. A GPU judge conflicts with an active run like an experiment does; API-only judges start alongside.
+
+## Analysis tab (added 2026-09-25/26)
+
+Ask a question about the experiments in plain language — *"compare the three v5 arms on the
+judge, with CIs"*, *"plot the loop-stop rate against the judge mean for the current free-form
+cells"*, *"where does AraRooPat v5 lose to BPE-16K v5 on arabic_exam?"* — and a model answers
+by **running Python on the results**. Every step's code and output stay on the page; tables and
+interactive charts are shown as the code produces them; the answer comes last, with its numbers
+checked against what the steps printed.
+
+**Pick a model** (top bar):
+
+| Model | How | Notes |
+|---|---|---|
+| `gpt56_terra` (OpenAI API) | paste the key into the field (kept in the server's memory only; the page shows `…last4`) or export `OPENAI_API_KEY` before starting the console | step outputs — numbers, sample rows — are sent to OpenAI; reasoning effort low / medium / high per session |
+| `gemma4_31b_local` (Gemma-4-31B on the H100) | **▶ start** in the *local server* panel; ready after 3–4.5 min | nothing leaves the machine; it takes the whole GPU (start is refused while a run uses it — the page offers to force — and runs refuse to start while it is up); **■ stop** it when done, otherwise it stops itself after 30 idle minutes; *log* shows vLLM's output |
+
+Measured on 5 questions with known answers (fresh session each, 2026-09-25): Gemma 5 / 5 in 3–9 s,
+`gpt-5.6-terra` 4 / 5 in 6–15 s.
+
+**What you see.** *scope* narrows the experiments the model is told about (it can still read any
+cell). Each step is a collapsible card — the code (copy, *edit & run*), its stdout, the value of its
+last line, the tables (click a header to sort, *CSV* downloads the whole table) and the charts
+(Plotly: hover, zoom, PNG download from the chart's toolbar; they follow the light / dark theme).
+The **answer** card ends with ✓ *N numbers traced to outputs* or ⚠ *K of N numbers not printed by
+any step*, the untraced numbers highlighted in the text — check those. When the model's first
+answer contains numbers no step printed, it is held back (a collapsed *draft answer* note) and the
+model is asked to compute them first. *context* shows the exact messages the next question would
+send and their size; the meter shows it against the model's budget. **■ Stop** ends the reply or
+interrupts the running code. *⌨ run code* runs your own Python in the same session (the model sees
+it on the next question). Sessions are listed on the left and reopen as they were; *⤓ ipynb* /
+*⤓ md* export one (the notebook's first cell makes it runnable from `.venv`); *↺ python* drops the
+session's Python worker (variables lost).
+
+**Safety.** The code runs in a sandbox: the whole filesystem is read-only except the session
+folder (`outputs/analysis/<id>/`), there is no network, the process cannot see or signal any other
+process, and no API key or token is in its environment. Limits: 120 s per step, 16 GB of memory.
+If a machine has no unprivileged user namespaces (or `ARABIC_EVAL_ANALYSIS_SANDBOX=off`), the chip
+says *no sandbox* and **every step waits for your ▶ run it / skip**.
+
+**Troubleshooting.** A console started before this tab existed serves the old page — restart it.
+*local · down* after a start: open *log*; a crash shows as *failed* with the log's last line. A
+start refused with "the GPU already holds …" means another process uses it — check the Runs tab /
+`nvidia-smi` before forcing.
+
+**Files.**
+
+| File | Role |
+|---|---|
+| `debugger/assets/console_analysis.js` | the tab (served by `GET /assets/`); marked + DOMPurify, prism-python and plotly.js from cdnjs, SRI-pinned, loaded on first open |
+| `src/arabic_eval/analysis/` | the `ae` helpers the model calls (usable from any notebook: `import arabic_eval.analysis as ae`) |
+| `src/arabic_eval/tools/analysis_agent.py` | endpoints, key store, sessions, prompt, the turn loop (fenced / native tool protocol), export |
+| `src/arabic_eval/tools/analysis_provenance.py` | the number check |
+| `src/arabic_eval/tools/analysis_worker.py`, `analysis_kernel.py` | the sandboxed Python worker and its manager (limits, interrupt, restart) |
+| `src/arabic_eval/tools/local_llm_service.py` | start / stop / status of the local model server, GPU guards, idle stop |
+| `configs/analysis/*.yaml` | the endpoints (model, protocol, context budget, steps; `serve:` for the local one) |
+| `outputs/analysis/` | sessions (`<id>/session.json` + `artifacts/`), `_servers/` (local server state + log) |
+| `tests/test_analysis_{kit,kernel,agent,console}.py`, `tests/test_local_llm_service.py` | the helpers against the report's numbers, the sandbox, the loop on a scripted model, the page wiring, the server lifecycle (with `tests/data/fake_openai_server.py` standing in for vLLM) |
