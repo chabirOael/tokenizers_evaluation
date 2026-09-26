@@ -414,6 +414,7 @@ table.cmp td.evc-cell{min-width:14ch}
     <button class="tab" data-view="eval">Eval rows</button>
     <button class="tab" data-view="freeform">Free-form</button>
     <button class="tab" data-view="rate">Rate</button>
+    <button class="tab" data-view="analysis" title="ask questions about the experiments; an LLM answers by running Python on their results">Analysis</button>
   </div>
   <div class="spacer"></div>
   <span id="gpu-chip" class="chip">GPU …</span>
@@ -736,6 +737,8 @@ table.cmp td.evc-cell{min-width:14ch}
   </div>
 </section>
 
+<!-- ================= ANALYSIS (built by assets/console_analysis.js) ================= -->
+<section class="view" id="view-analysis"></section>
 <section class="view" id="view-rate">
   <div class="panel">
     <div class="panel-h">
@@ -3959,6 +3962,7 @@ function setView(v){
   if (v==='eval') S.ev.mode === 'compare' ? loadEvalCompareTree() : loadEvalTree();
   if (v==='freeform') loadFfTree();
   if (v==='rate') loadRtTab();
+  if (v==='analysis' && window.AnalysisTab) window.AnalysisTab.open();
 }
 function setEtab(t){
   if (t==='yaml' && S.etab!=='yaml' && !S.yamlDirty && S.cfg && (S.dirty || !$('#yaml').value)) formToYaml();
@@ -4033,5 +4037,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   const run = new URLSearchParams(location.search).get('run'); if (run){ setView('runs'); selectRun(run); }
 });
 </script>
+<!-- Analysis tab (uses the helpers above; libraries load on first open) -->
+<script src="/assets/console_analysis.js"></script>
 </body>
 </html>
