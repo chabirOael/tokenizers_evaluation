@@ -68,6 +68,12 @@ araroopat-camel = [
     #   .venv-camel/bin/camel_data -i light
     "camel-tools>=1.5.0",
 ]
+analysis = [
+    # Charts of the experiment console's Analysis tab: arabic_eval.analysis.show() writes
+    # Plotly JSON that the page draws (interactive, shapes Arabic labels correctly — matplotlib
+    # does not). Without it the helpers still work and charts fall back to matplotlib PNGs.
+    "plotly>=6.0",
+]
 dev = [
     "pytest>=7.4.0",
     "pytest-cov>=4.1.0",
