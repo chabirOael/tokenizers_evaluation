@@ -1,0 +1,25 @@
+# Local open judge candidate C1 (brief v6, 2026-10-09; the default primary judge until the human rating picks
+# one, docs/report.md §3.14 S3–S4): openai/gpt-oss-120b, Apache-2.0, 117 B parameters / ~5 B active, MXFP4
+# weights (~61 GB) built for one 80 GB H100. Same vendor as gpt-5.6-terra (the API judge of §3.13) — say so
+# wherever the two are compared. Reasoning tokens count against max_tokens; the reasoning parser makes vLLM's
+# structured output apply after the analysis channel. Verify on the probe that outputs[0].text is the final
+# message (the JSON verdict), not the analysis channel.
+# revision pinned to the snapshot downloaded on 2026-10-09.
+judge:
+  name: "gptoss_120b"
+  backend: "vllm"
+  model: "openai/gpt-oss-120b"
+  revision: "b5c939de8f754692c1647ca79fbf85e8c1e70f8a"   # snapshot downloaded 2026-10-09 (session 77; original/ and metal/ excluded)
+  rubric: "default_v1"
+  temperature: 0.0
+  max_tokens: 1024
+  seed: 0
+  structured_json: true
+  max_model_len: 4096
+  gpu_memory_utilization: 0.92
+  dtype: "auto"
+  batch_size: 64
+  engine_kwargs:
+    reasoning_parser: "openai_gptoss"
+  chat_template_kwargs:
+    reasoning_effort: "low"

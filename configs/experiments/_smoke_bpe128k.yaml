@@ -1,0 +1,158 @@
+# SMOKE COPY of qwen_bpe128k_3phase_v5_distill.yaml (30 micro-steps per phase, a 60-example mixture, 10 free-form
+# prompts) — the same pool settings (total_words + heldout_sets_v2.yaml → the same pool fingerprint), so this run
+# builds and packs the 110 M-word pool once and the full run reuses it. Everything else as the full config.
+# ---- header of the full config:
+# BPE-128K arm of the supervisor tables campaign (brief v6 §4, 2026-10-09; docs/report.md §3.15): Qwen3-4B-Base with a
+# from-scratch byte-level BPE of 128 000 pieces — "native-sized" (Qwen3 151 936, Llama-3.2 128 256, Gemma-3 262 144) —
+# through the identical pipeline as the other arms, in ONE run with the three phases enabled:
+#   * Phases 1 + 2: qwen_bpe16k_3phase_v3.yaml's blocks (32.8 M + 98.3 M mix tokens, LR 5e-4 constant / 2e-5 cosine,
+#     warm-up 400, embedding_init surface_avg / char_len, base tokenizer = the model's own);
+#   * Phase 3, corpus_params (the Aya-Expanse-32B teacher overlay, sha256 8e4d9cd1…) and sweep.tasks:
+#     qwen_bpe16k_3phase_v5_distill.yaml's, byte for byte (the v4 block: mixture 45 000 at 25/15/60, max_length 1 024,
+#     batch 2 x 8, LR 2e-5, warm-up 800, eval_mixture 1 000 every 500 from 1 500).
+# Only these differ: the tokenizer (bpe 128 000, min_frequency 2, trained once by scripts/train_tokenizer.py on the same
+# corpus split and preprocessing as bpe_16k_v3 — 668 959 texts — and loaded here by load_path), the pool size, the
+# held-out declaration of the pool, and the QA-blend share (a block count per tokenizer).
+# Pool: BPE-128K packs 1.36 tokens per pool word (1 800 pool docs, outputs/experiments/_comparative_tables/m5/
+# tokenizer_basics.json; Wikipedia 1.33 is the binding source of the exact-share budget), so the 128.1 M raw-text
+# tokens of Phases 1 + 2 need ~96 M words; 110 M words leaves ~14 % margin. Its own fingerprint.
+# Held-out documents: the pool declares configs/contamination/heldout_sets_v2.yaml = heldout_sets.yaml + the 150
+# raw-text held-out documents of the loss diagnostic (rawtext_heldout_v1.jsonl), which a ~110 M-word pack would
+# otherwise reach; Stage A drops them by content. heldout_sets.yaml itself is unchanged, so every existing pool, pack
+# and exclusions.json keeps its fingerprint (see the header of heldout_sets_v2.yaml for why).
+experiment:
+  name: _smoke_bpe128k
+  description: "Qwen3-4B-Base + from-scratch BPE 128 000 (surface-average init): Phase 1 32.8 M + Phase 2 98.3 M mix tokens on its own 110 M-word pool, Phase 3 = the v5 distillation block on Aya-Expanse-32B answers — the BPE-128K arm of the supervisor tables"
+  output_dir: outputs/experiments/_smoke_bpe128k
+  seed: 42
+  deterministic: true
+  runs:
+    - {started_at: "2026-10-09T17:18:26+00:00", run_id: "20261009-171826__smoke_bpe128k", source: console}
+
+data:
+  # Tokenizer-training corpus preprocessing (base.yaml defaults, stated because they key the CAMeL cache):
+  preprocessing:
+    normalize_unicode: true
+    remove_diacritics: false
+    normalize_alef: false        # off since 2026-09-16: the fold rewrote 13 % of words into spellings no eval text uses
+    remove_tatweel: true
+    min_text_length: 10
+    join_lone_waw: true
+
+tokenizer:
+  type: bpe
+  vocab_size: 128000
+  save_path: outputs/tokenizers/bpe_128k_v1
+  load_path: outputs/tokenizers/bpe_128k_v1   # trained once (scripts/train_tokenizer.py, 2026-10-09); every BPE-128K config loads it
+  params: &bpe_params            # configs/tokenizers/bpe.yaml
+    min_frequency: 2
+
+model:
+  type: qwen3
+  name_or_path: Qwen/Qwen3-4B-Base
+  dtype: bfloat16
+  device: auto
+  embedding_init:                # as qwen_bpe16k_3phase_v3.yaml (the probe's winner, docs/report.md §3.5)
+    method: surface_avg
+    base_tokenizer: null         # = model.name_or_path
+    weighting: char_len
+    norm: none
+    seed: 42
+
+training:
+  pretraining_mix:
+    pool:
+      total_words: 110000000     # BPE-128K: 1.36 tokens/word (Wikipedia 1.33 binding) → ~146 M tokens; the phases draw 128.1 M raw + the QA blend
+    heldout_filter:
+      sets_file: configs/contamination/heldout_sets_v2.yaml   # + the 150 raw-text held-out documents (see header)
+  corpus_params:
+    cidar:
+      teacher_answers: outputs/data_cache/distill/aya_expanse_32b_v1/teacher_answers_v1.jsonl   # sha256 8e4d9cd13e3d1bc8…, see header
+    bactrian_x_ar:
+      teacher_answers: outputs/data_cache/distill/aya_expanse_32b_v1/teacher_answers_v1.jsonl   # sha256 8e4d9cd13e3d1bc8…, see header
+    aya_ar:
+      include_datasets: ["Aya-Dataset", "Dolly-v2 (T)"]   # the two free-form sub-datasets of standard_arabic
+      teacher_answers: outputs/data_cache/distill/aya_expanse_32b_v1/teacher_answers_v1.jsonl   # sha256 8e4d9cd13e3d1bc8…, see header
+  phases:
+    embedding_alignment:         # Phase 1: new embeddings + tied lm_head on raw text, body frozen (qwen_bpe16k_3phase_v3.yaml)
+      enabled: true
+      datasets: [pretraining_mix]
+      trainable_parameters: [embed_tokens, lm_head]
+      steps: 30                  # SMOKE
+      mix_tokens: 122880         # SMOKE: 30 × 8 × 512
+      learning_rate: 5.0e-4      # embeddings only: the higher rate is safe here
+      batch_size: 8
+      gradient_accumulation_steps: 1
+      max_length: 512
+      loss_target: full_sequence
+      lr_scheduler: constant
+      warmup_steps: 0
+    warmup:                      # Phase 2: whole model on raw text + the QA-format blend (qwen_bpe16k_3phase_v3.yaml)
+      enabled: true
+      datasets: [pretraining_mix]
+      trainable_parameters: ["*"]
+      steps: 32                  # SMOKE (8 updates)
+      mix_tokens: 65536          # SMOKE: 32 × 4 × 512 = 128 blocks (3 QA)
+      learning_rate: 2.0e-5      # full fine-tuning of a 4B model
+      batch_size: 4
+      gradient_accumulation_steps: 4
+      max_length: 512
+      loss_target: full_sequence
+      lr_scheduler: cosine       # horizon 12 000 updates
+      warmup_steps: 4            # SMOKE
+      qa_blend:
+        datasets: [tydiqa_arabic, arcd]
+        share: 0.025               # the QA blend is fixed TEXT, so its block count is per tokenizer: BPE-128K packs TyDiQA + ARCD
+                                   # train (14 160 records) into 4 932 blocks (178.4 tokens/record; BPE-16K 5 919, AraRooPat
+                                   # 10 396; packed 2026-10-09, qa_blend/d6efaf936cb20550). 0.025 = 4 800 blocks = 0.973 of a
+                                   # pass — BPE-16K's 0.03 = 5 760 of 5 919 = 0.973. Phase 2 = 187 200 raw blocks + 4 800 QA blocks.
+        split: train
+        seed: 42
+    sft:                         # Phase 3: byte-identical to qwen_araroopat_3phase_v4.yaml
+      enabled: true
+      datasets: [tydiqa_arabic, arcd, arabic_squad_mcq, cidar, bactrian_x_ar, aya_ar]
+      trainable_parameters: ["*"]
+      mixture:
+        total_examples: 60         # SMOKE
+        shares: {extractive: 0.25, mcq: 0.15, free_form: 0.60}   # ffstop: 40/30/30 -> 11 250 / 6 750 / 27 000
+        within_category: equal     # 9 000 per free-form corpus; a corpus that runs dry spills to the others (water-fill)
+        upsample: true             # kept from ffstop; at 1 024 tokens the extractive pool should not need it
+        drop_truncated_answers: true
+        seed: 42
+      steps: null                # derived: 45 000 / 2 = 22 500 micro-steps = 2 813 updates at accumulation 8
+      learning_rate: 2.0e-5
+      batch_size: 2              # ffstop: 4
+      gradient_accumulation_steps: 8   # ffstop: 4 — the same 16 sequences per update
+      max_length: 1024           # ffstop: 512 — keeps AraRooPat's long free-form answers (1.96 chars/token)
+      loss_target: answer_only
+      lr_scheduler: cosine       # horizon 2 813 updates
+      warmup_steps: 4            # SMOKE
+      early_stopping:
+        enabled: true
+        eval_every_n_steps: 15     # SMOKE
+        patience: 5
+        min_delta: 5.0e-4
+        min_steps_before_stop: 10  # SMOKE
+        restore_best_at_end: true
+        eval_splits: null          # cleared (null, not {}: the YAML layers deep-merge)
+        eval_mixture:              # 1 000 dev records at the phase's 25/15/60, scored per answer token
+          total_examples: 20       # SMOKE
+          seed: 42
+
+evaluation:
+  intrinsic_metrics: true
+  morphological_metrics: true
+  downstream_metrics: true
+  eval_row_dump: true
+  score_normalization: char+pmi
+  num_fewshot: 3                 # unused by freeform_cidar; kept so adding the MCQ tasks later changes nothing else
+  num_eval_samples: 10           # SMOKE
+
+sweep:
+  tokenizers:
+    - type: bpe                  # == tokenizer.type above; one cell → no --sweep, this list is informational
+      vocab_sizes: [16000]
+      params: *bpe_params
+  tasks:
+    - type: freeform_cidar
+      params: {max_output_chars: 2400}   # pinned: the fixed decoding rule of the reference cells (code default since 2026-09-21)

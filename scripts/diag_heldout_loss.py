@@ -44,8 +44,11 @@ Two numbers an SFT run must not get wrong, measured on data no phase trained on:
     # the v1 flat template (``السؤال: … الإجابة: …``), to reproduce pre-2026-09-18 numbers
     .venv/bin/python scripts/diag_heldout_loss.py --cell <cell> --base --v1-template
 
-The model is loaded with ``AutoModelForCausalLM.from_pretrained(<checkpoint>)``,
-which is right for **standard-embedding** tokenizers only (native_*, bpe,
+The model is loaded with ``AutoModelForCausalLM.from_pretrained(<checkpoint>)`` — for a Gemma-3 cell
+(``model.type: gemma3``) with ``load_gemma3_text_model``, the adapter's loader, because the auto class maps the
+multimodal base checkpoint to ``Gemma3ForConditionalGeneration`` and a plain text-model load of it initialises the
+text weights at random without an error (see ``models/gemma3_adapter.py``) — which is right for
+**standard-embedding** tokenizers only (native_*, bpe,
 wordpiece, morpho_bpe, araroopat): the CharCNN / char-JABER / Charformer cells
 replace the embedding and output head with modules a vanilla load cannot
 rebuild, and the script refuses them. The pool directory comes from the
@@ -111,14 +114,22 @@ def strip_specials(ids: Sequence[int], bos: Optional[int], eos: Optional[int]) -
     return out
 
 
-def blocks_from(doc_ids: Sequence[Sequence[int]], eos: int, block: int = BLOCK) -> List[List[int]]:
+def blocks_from(doc_ids: Sequence[Sequence[int]], eos: int, block: int = BLOCK,
+                bos: Optional[int] = None) -> List[List[int]]:
     """Concatenate documents with an EOS separator and chunk into full blocks
-    (the tail shorter than ``block`` is dropped, as the packer does)."""
+    (the tail shorter than ``block`` is dropped, as the packer does).
+
+    ``bos`` (``--bos-blocks``): every block starts with that id followed by ``block − 1`` text tokens, so each block
+    is still ``block`` long and ``block − 1`` positions are scored, as without it. For base models that always see a
+    BOS first (Llama-3, Gemma-3); Qwen3 has none, and the packed training blocks of the adapted arms carry none."""
     flat: List[int] = []
     for ids in doc_ids:
         flat.extend(ids)
         flat.append(eos)
-    return [flat[i:i + block] for i in range(0, len(flat) - block + 1, block)]
+    if bos is None:
+        return [flat[i:i + block] for i in range(0, len(flat) - block + 1, block)]
+    step = block - 1
+    return [[bos] + flat[i:i + step] for i in range(0, len(flat) - step + 1, step)]
 
 
 def v1_format_prompt(rec: QARecord) -> str:
@@ -312,12 +323,21 @@ def checkpoint_for(cell_dir: Path, base: bool, override: Optional[str], model_cf
     return str(ckpt)
 
 
+def load_causal_lm(ckpt: str, model_type: str, dtype: str):
+    """The checkpoint as a causal LM, through the loader the pipeline itself uses for that model type."""
+    import torch
+    if model_type == "gemma3":
+        from arabic_eval.models.gemma3_adapter import load_gemma3_text_model
+        return load_gemma3_text_model(ckpt, torch_dtype=getattr(torch, dtype))
+    from transformers import AutoModelForCausalLM
+    return AutoModelForCausalLM.from_pretrained(ckpt, dtype=getattr(torch, dtype))
+
+
 def run(cell_dir: Path, *, base: bool, checkpoint: Optional[str], pool: Optional[str], heldout: str,
         v1_template: bool, n_docs: int, block: int, max_length: int, device: str, dtype: str,
-        rawtext: str = DEFAULT_RAWTEXT) -> Dict[str, Any]:
+        rawtext: str = DEFAULT_RAWTEXT, bos_blocks: bool = False) -> Dict[str, Any]:
     import pyarrow.parquet as pq
     import torch
-    from transformers import AutoModelForCausalLM
 
     tok_cfg, model_cfg, _raw = read_cell(cell_dir)
     tokenizer = build_tokenizer(tok_cfg)
@@ -348,7 +368,10 @@ def run(cell_dir: Path, *, base: bool, checkpoint: Optional[str], pool: Optional
     doc_ids = [strip_specials(tokenizer.encode(d).input_ids, bos, eos) for d in docs]
     chars = sum(len(d) for d in docs)
     toks = sum(len(x) for x in doc_ids)
-    blocks = blocks_from(doc_ids, int(eos), block)
+    if bos_blocks and bos is None:
+        raise SystemExit(f"--bos-blocks: tokenizer {tok_cfg.type} has no bos_token")
+    blocks = blocks_from(doc_ids, int(eos), block, bos=int(bos) if bos_blocks else None)
+    rawtext_meta["bos_blocks"] = bool(bos_blocks)
     log.info("%s: %d docs, %d chars, %d tokens (%.2f chars/token), %d blocks of %d — encoded in %.0fs",
              rawtext_meta["mode"], len(docs), chars, toks, chars / max(toks, 1), len(blocks), block,
              time.perf_counter() - t0)
@@ -364,7 +387,7 @@ def run(cell_dir: Path, *, base: bool, checkpoint: Optional[str], pool: Optional
     t0 = time.perf_counter()
     from arabic_eval.models.llama_adapter import configure_sdpa_backends
     configure_sdpa_backends()          # the cuDNN SDPA per-shape compile would bill every new batch width
-    model = AutoModelForCausalLM.from_pretrained(ckpt, dtype=getattr(torch, dtype)).to(device).eval()
+    model = load_causal_lm(ckpt, model_cfg.type, dtype).to(device).eval()
     log.info("loaded in %.0fs", time.perf_counter() - t0)
     mix = lm_loss(model, blocks, device)
     cpt = chars / max(toks, 1)
@@ -430,6 +453,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     ap.add_argument("--max-length", type=int, default=2048, help="truncation length for the held-out references")
     ap.add_argument("--device", default="cuda")
     ap.add_argument("--dtype", default="bfloat16")
+    ap.add_argument("--bos-blocks", action="store_true",
+                    help="start every raw-text block with the tokenizer's BOS (Llama-3 / Gemma-3 always see one "
+                         "first); writes …_bosblocks.json beside the default file")
     ap.add_argument("--out", help="JSON output path (default <cell>/diag_heldout_loss[_base][_v1].json)")
     args = ap.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -437,7 +463,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     cell_dir = Path(args.cell)
     res = run(cell_dir, base=args.base, checkpoint=args.checkpoint, pool=args.pool, heldout=args.heldout,
               v1_template=args.v1_template, n_docs=args.n_docs, block=args.block, max_length=args.max_length,
-              device=args.device, dtype=args.dtype, rawtext=args.rawtext)
+              device=args.device, dtype=args.dtype, rawtext=args.rawtext, bos_blocks=args.bos_blocks)
     print_table(res)
     stem = "diag_heldout_loss" if args.pool else "diag_heldout_rawtext_v1"
     suffix = ""
@@ -446,7 +472,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         if name and name != "sft":
             suffix = f"_{name}"
     out = Path(args.out) if args.out else cell_dir / (
-        stem + suffix + ("_base" if args.base else "") + ("_v1" if args.v1_template else "") + ".json")
+        stem + suffix + ("_base" if args.base else "") + ("_v1" if args.v1_template else "")
+        + ("_bosblocks" if args.bos_blocks else "") + ".json")
     out.parent.mkdir(parents=True, exist_ok=True)
     with open(out, "w", encoding="utf-8") as f:
         json.dump(res, f, ensure_ascii=False, indent=2)

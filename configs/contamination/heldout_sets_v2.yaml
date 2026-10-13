@@ -1,0 +1,75 @@
+# Held-out evaluation sets, version 2 (2026-10-09, brief v6 §4.2) — heldout_sets.yaml plus the raw-text
+# held-out set of the loss diagnostic (rawtext_heldout_v1.jsonl, 150 FineWeb-2 documents of the 80 M pool that
+# no packer reached; scripts/build_rawtext_heldout.py).
+#
+# Why a second file instead of an edit of heldout_sets.yaml: the pool fingerprint hashes the declaration file
+# named by training.pretraining_mix.heldout_filter.sets_file. Editing heldout_sets.yaml would re-fingerprint the
+# 50 M and 80 M pools, and the 80 M pool's rebuild (minus the 150 documents) changes FineWeb-2's document count,
+# hence source_doc_order (a seeded permutation of range(n_docs)), hence every packed block — BPE-16K on
+# Llama-3.2-3B / Gemma-3-4B would then train on different text than on Qwen3-4B. Only configs that name this
+# file (the BPE-128K arms, whose ~110 M-word pool would otherwise reach the 150 documents) drop them by content;
+# every existing pool, pack and exclusions.json stays byte-identical. Raw documents are matched as `prompt`
+# (8-gram containment, the pool's coverage / run tiers); no `context`, so the exact-paragraph tier — meaningless
+# on web text, see CLAUDE.md "A held-out set for the raw-text loss too" — is not used.
+#
+# Held-out evaluation sets — text the model must never train on.
+#
+# Read by scripts/check_contamination.py (which writes exclusions.json next
+# to this file), by the pretraining-mix pool builder (Stage A filter
+# `heldout_filter`, by content) and by the tests. Changing this file, a
+# pinned dataset revision (PINNED_REVISIONS in finetune_corpora.py) or the
+# prompt file changes the pool fingerprint, so the pool rebuilds.
+#
+# Matching (src/arabic_eval/data/contamination.py): both sides normalized
+# the same way (NFKC, no diacritics / tatweel, alef and ة / ى folded,
+# Arabic-Indic digits → ASCII, punctuation out); exact SHA-1 of passage /
+# paragraph / question, plus word n-gram containment. A training record is
+# `contaminated` (removed) on an exact match, on covering ≥ `tiers.coverage`
+# of a held-out record's n-grams, or on a shared run ≥ `tiers.run_words`
+# words; a shorter shared n-gram is `overlap` (reported only).
+
+ngram_default: 8
+tiers:
+  coverage: 0.5
+  run_words: 20
+
+sets:
+  # TyDi QA GoldP (secondary_task), Arabic rows of the public dev split.
+  # TyDi's test set is hidden; dev is what every paper reports on.
+  tydiqa_arabic_validation:
+    kind: corpus
+    corpus: tydiqa_arabic
+    split: validation
+    ngram: 8
+
+  # ARCD: the Hub's `validation` split is the paper's test split (702 rows).
+  arcd_validation:
+    kind: corpus
+    corpus: arcd
+    split: validation
+    ngram: 8
+
+  # Free-form eval prompts: 250 held-out CIDAR rows built by
+  # scripts/build_freeform_heldout.py (v1, 2026-09-18; manifest next to it).
+  # JSONL, one object per line: {"id", "prompt", "reference", "stratum", ...};
+  # `context` is optional (see freeform_prompts.template.jsonl). Rebuilding the
+  # file changes its hash → the pool fingerprint → the pool rebuilds; rerun
+  # scripts/check_contamination.py --write-exclusions afterwards.
+  freeform_prompts:
+    kind: file
+    path: configs/contamination/freeform_cidar_heldout_v1.jsonl
+    ngram: 6
+    fields:
+      id: id
+      prompt: prompt
+      context: context
+      reference: reference
+
+  # The raw-text held-out set of scripts/diag_heldout_loss.py (--rawtext, the default since 2026-09-22).
+  rawtext_heldout_v1:
+    kind: file
+    path: configs/contamination/rawtext_heldout_v1.jsonl
+    ngram: 8
+    fields:
+      id: id
+      prompt: text

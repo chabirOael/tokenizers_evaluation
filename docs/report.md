@@ -1448,6 +1448,554 @@ The Arabic-Exam `Language` observation under the official prompt is a separate, 
 
 **Verification of the P1 / P2 completion (2026-09-26, Fable session, against the outputs and commit `dd9a301`).** *Reproduced exactly:* the five judge files' hashes (`030dc712`, `06301183`, `020ab3e7`, `e7753f5f`, `461b4a1d`) and the two reused ones against `_run2_sha_before.txt`; the per-cell means ± SE under both judges and the five agreement triples (Spearman / exact / QWK 0.813 / 0.560 / 0.806, 0.757 / 0.568 / 0.765, 0.782 / 0.488 / 0.737, 0.802 / 0.528 / 0.808, 0.815 / 0.584 / 0.774), the pooled 0.821 / 0.546 / 0.803 over 1 250 pairs and the counts of 5s (Gemma 121 / 49 / 47 / 47 / 24 against gpt 70 / 14 / 20 / 22 / 11 for teacher / native v5 / AraRooPat / base / BPE); the nine pairs under both judges to the third decimal with their win / tie / loss shares (`paired_compare.py`); the four sub-score triples; the twelve per-stratum gaps (84 / 83 / 83 prompts; point estimates identical, the bootstrap bounds within 0.012 of the report's — a different resampler, e.g. the medium-stratum AraRooPat − BPE-16K lower bound +0.325 here against +0.313); the five Spearman pairs of score with generation length and the mean lengths 608 / 543 / 541 / 511 / 533; the length-matched pairs (n 116 at a mean 317 characters: +0.293 [+0.103, +0.491] / +0.190 [+0.009, +0.362]; n 119: +0.151 / +0.118; the ≤ 150 cut n 144 / 150 with +0.201 / +0.167 and +0.047 / +0.053; the medians |Δ| 126.0 and 110.5 characters); the paired-difference standard deviations 1.23 / 1.26 (Gemma) and 1.02 / 1.02 (gpt); the retained shares 0.666 / 0.690 / 0.584 and 0.718 / 0.733 / 0.666; the reproducibility triple of *3.5* (recomputed earlier in this section's first verification). The set `v5_blind.json`: schema 1, created 10:29:01 UTC, seed 42, baseline `native_qwen3_sft_v5_distill`, the four cells and both judges recorded, 25 disagreement + 25 random prompts with no overlap, 200 items, every prompt carrying each of the four cells exactly once (checked programmatically; no assignment printed), `get_items` serving 200 items with no `hidden` field and 0 rated, `list_sets` listing it with both judges and no rater. Commit `dd9a301` touches `CLAUDE.md` (the one *Judges* sentence) and this report only; the tree holds nothing else but this session's two paragraphs and this one. Tests `test_freeform_judge.py` / `test_paired_compare.py` / `test_freeform_console.py`: 50 passed in 1.46s. Memory notes `project_judge_validation_2026-09-26.md` and `feedback_sandbox_no_network.md` updated as stated, with the credit-exhaustion correction. *Read with care:* the P1 block's pointer to the paragraphs above dangles in `HEAD` until the user commits this file; the length-matched subsets are the short-answer sub-population (about 300 characters against 540), as the block says, so J4 speaks for that population and the rater for the rest. *Reading.* J1 to J4 stand as written: the AraRooPat-over-BPE-16K lead survives an independent judge at 0.57 of its Gemma size, is not carried by answer length, and AraRooPat stays level with native v5 under both judges; the two judges agree substantially but less than the API judge agrees with itself, and gpt-5.6-terra's compressed top end makes every teacher gap and distillation gain read smaller. What remains is the rater's 200 items.
 
+### 3.14 The judge switch to a local open model (2026-10-09)
+
+**Why.** The thesis supervisor asked for two more base models, and the user chose Llama-3.2-3B and **Gemma-3-4B** (brief v6, 2026-10-09). With Gemma as a base model, `gemma4_31b` would score its own family, so it cannot stay the primary judge. The replacement is a **local open model**: pinned weights, greedy decoding, vLLM on the H100 like Gemma. Every verdict is therefore reproducible byte for byte, needs no API and no key, and the thesis can cite the weights.
+
+Eligibility follows the user's rules (settled over four turns on 2026-10-09):
+- **Families.** The judge comes from no base-model family (Qwen, Llama, Gemma) and not from the teacher's (Cohere: Aya-Expanse, Command-R).
+- **Vendor variety.** The user rejected a set made of OpenAI models only. The candidates span four vendors, so that whichever wins, the agreement table holds a judge from another vendor.
+- **Bake-off candidates.** A model that was a teacher bake-off *candidate* but not the teacher may judge. Falcon-H1-34B was first excluded and then re-admitted, with one safeguard: J10 below.
+
+`gemma4_31b`'s verdicts stay on disk as history and as the second opinion for agreement. `gpt56_terra`'s files on the five v5 cells stay for the record; that judge shares gpt-oss's vendor, and every comparison of the two says so. The thesis deck of 2026-09-26 reports Gemma's numbers. The supervisor tables (`docs/comparative_tables_2026-10.md`) will report the primary judge's numbers, with Gemma's beside them.
+
+**Candidates** (YAMLs in `configs/judges/`; `temperature 0.0`, `seed 0`, `max_model_len 4096`, `structured_json: true`, rubric `default_v1` for all four):
+
+| | model | vendor | weights | engine settings |
+|---|---|---|---|---|
+| C1 (default) | `openai/gpt-oss-120b` | OpenAI | MXFP4, ~61 GB, Apache-2.0 | `dtype auto`, `max_tokens 1024` (its reasoning counts), `engine_kwargs {reasoning_parser: openai_gptoss}`, `chat_template_kwargs {reasoning_effort: low}`, batch 64 |
+| C2 | `mistralai/Mistral-Small-3.2-24B-Instruct-2506` | Mistral | bf16, ~48 GB, Apache-2.0 | `engine_kwargs {tokenizer_mode, config_format, load_format: mistral}`, batch 64 |
+| C3 | `tiiuae/Falcon-H1-34B-Instruct` @ `6e6890e2…` | TII | bf16, ~63 GB | `gpu_memory_utilization 0.95`, `engine_kwargs {max_num_seqs: 32}` (the bake-off's Mamba-state trap: the default OOMs), `chat_template_kwargs {enable_thinking: false}`, batch 32 |
+| C4 (optional) | `microsoft/phi-4` | Microsoft | bf16, ~28 GB, MIT | none, batch 64; run only if downloaded |
+
+The revisions of C1, C2 and C4 are pinned to the downloaded snapshots once they exist.
+
+**Code change** (uncommitted). `JudgeConfig` gains four fields: `revision` (also passed as the tokenizer revision), `quantization`, `engine_kwargs` (merged into `LLM(**kw)` last) and `chat_template_kwargs` (passed to `llm.chat`). All four are refused on the `openai` backend, and unknown YAML keys are still rejected. The committed Gemma judge's engine options are empty, so its `LLM(...)` and `llm.chat(...)` calls are unchanged; a test pins that. `--dry-run` now prints each judge's engine options and the exact rendered chat text from the cached tokenizer. Tests: `tests/test_freeform_judge.py` gains four tests (the candidate YAMLs, the merge order, the API-backend refusal and null handling, the `chat_template_kwargs` passthrough with a fake engine). With `test_freeform_console.py`, 45 passed.
+
+**The selection rule, pre-registered on 2026-10-09, before any verdict of a candidate exists:**
+- **S0.** The human rating of `freeform_rating/v5_blind` must be complete (`n_rated == 200`; 51 on 2026-10-09) before any per-item agreement is computed or any cell of the set is revealed. Until then the candidates' verdicts may be produced and stored, but no agreement with the rater is computed or printed.
+- **S1.** Each candidate judges the five v5-era cells: teacher, AraRooPat v5, native v5, BPE-16K v5 and native base, 1 250 verdicts. It also judges `araroopat_3phase_v5_distill` a second time under the name `<judge>_repeat`, for self-agreement.
+- **S2.** `freeform_rating.agreement(...)` is extended to read the judge files from the set's cells for judges that were not in the set when it was built. It reports rater vs each judge on the 200 items (quadratic-weighted kappa, Spearman, exact, mean |Δ|), judge vs judge on the same items, and the per-cell human means, revealed only then. Gemma and gpt-5.6-terra are in the table for the record.
+- **S3.** The **primary judge** is the eligible candidate (C1–C4; never Gemma, never an API model) with the highest weighted kappa against the human, provided its parse rate is ≥ 98 % and its greedy repeat agrees exactly on ≥ 95 % of items. A tie within 0.03 kappa goes to the higher exact agreement; a tie still goes to C1. The rule is applied once and recorded with its numbers.
+- **S4.** If the rating is not complete when the first new-model results are due (end of P2), C1 is the primary judge **by default** and the tables carry every candidate's column. S3 is applied when the rating finishes. If it then names another candidate, the tables are regenerated with that judge as primary and this section says both.
+- **S5.** Gemma's kappa against the human is reported next to the candidates'. If it is the highest, that is a finding to write down, not a reason to keep Gemma: the family rule stands.
+
+A candidate that cannot load, or that parses fewer than 98 % of its verdicts on the probe, is reported and dropped from the selection. It is never patched with a different sampling setting.
+
+**Readings, pre-registered (they decide nothing):**
+- **J5.** Agreement of the primary judge with Gemma per cell and pooled (Spearman, exact, weighted kappa), and with gpt-5.6-terra on the five v5 cells.
+- **J6.** The three headline paired differences under the primary judge: AraRooPat v5 − BPE-16K v5, AraRooPat v5 − native v5, BPE-16K v5 − native v5. Sign and CI next to Gemma's (+0.300 [+0.152, +0.452], −0.088 [−0.240, +0.068], −0.388 [−0.548, −0.228]) and gpt-5.6-terra's (+0.172 [+0.048, +0.300], −0.048 [−0.172, +0.080], −0.220 [−0.332, −0.112]).
+- **J7.** The length-matched check (§3.13 J4, the ≤ 100-character rule) under the primary judge.
+- **J8.** The retained share of the teacher per arm under the primary judge: the arm's mean ÷ the teacher cell's mean under the same judge.
+- **J9.** The primary judge's self-agreement on the greedy repeat (exact; expected 100 %).
+- **J10.** The bake-off order under the primary judge against Gemma's (Aya-Expanse-32B 4.64 first under Gemma). This checks the teacher choice; it does not re-choose (rule 5 of §3.8). **Safeguard:** a judge that was itself a bake-off candidate (Falcon-H1) still judges all seven bake-off cells, so the files are complete. Its verdicts on its own cell are flagged and left out of the order statement: the order is reported over the other six, and once more over all seven with the flag. A judge never ranks its own answers.
+- **J11.** The human-rating table of S2: rater vs every judge, reported whole.
+
+**Not changed by the switch:** the teacher; every training recipe; every scoring rule; the free-form decoding rules; the held-out sets; the Gemma judge environment (kept, not run again unless the user asks). No API judge is run in this campaign.
+
+**Status (2026-10-09, 17:50 UTC).** Code and YAMLs in place. Falcon-H1 has been probed and has delivered its S1 verdicts. gpt-oss-120b and Mistral-Small-3.2 wait for the user's downloads (network steps 1–2); phi-4 only if downloaded. The rating stands at 51 of 200, so S2–S3 are not applied and no agreement with the rater has been computed.
+
+*Probe tool.* `scripts/judge/probe_judge.py` prepares two identical folders under `outputs/judge_probes/<date>/<judge>/run{1,2}/`. Each holds copies of the first 20 generations of `araroopat_3phase_v5_distill` plus a four-row fixture cell; the real cells are never touched. Each folder is judged in its own process, and `check` writes `probe.json`.
+
+The four fixtures reconstruct the "4/4 probe verdicts" of the 2026-09-18 judge set-up, which were never committed. All four use the first row's held-out prompt:
+
+| fixture | expected verdict |
+|---|---|
+| the reference itself as the answer | score ≥ 4 |
+| an empty answer | score 1, flag `empty` |
+| a 40-fold repetition loop | score ≤ 2, flag `repetition` |
+| an English answer | score ≤ 2, flag `wrong_language` |
+
+A candidate passes when all of these hold:
+- at least 98 % of its verdicts parse;
+- the four fixtures land on the expected score;
+- the repeat's score equals the first run's on at least 95 % of rows (the S3 rule).
+
+Identity of the whole row (sub-scores, flags, raw text) is reported beside the pass rule.
+
+*Falcon-H1-34B probe* (`outputs/judge_probes/2026-10-09/falcon_h1_34b/probe.json`). The load succeeded at the bake-off settings (`max_num_seqs` 32, 0.95):
+
+| measure | value |
+|---|---|
+| weights | 63.0 GiB |
+| KV cache | 6.2 GiB (29 354 tokens) |
+| run 1 (cold start) | 288 s: load 140 s, engine init 122 s, of which compile 44 s |
+| run 2 (caches warm) | 54 s |
+| parse | 24 / 24 |
+| fixtures | 4 / 4, with the expected flags (reference 5; empty 1; loop 1, `repetition` + `off_topic`; English 1, `wrong_language` + `off_topic`) |
+| repeat, score | 24 / 24 |
+| repeat, whole row | 23 / 24 |
+
+The one row that differs (`cidar-10117`) swapped two sub-scores (correctness 2 ↔ 1, instruction-following 1 ↔ 2) at the same score. That is cross-process non-determinism of a bf16 Mamba hybrid; Gemma-4-31B reproduced its reruns exactly.
+
+**Falcon passes.**
+
+*Falcon-H1-34B S1* (log `_audit/judge_falcon_h1_34b_2026-10-09_{s1,repeat}.log`; pre-run state `_audit/judge_falcon_2026-10-09_before_{all_metrics,judge_files}.txt`):
+- **Verdicts.** The five v5-era cells: 1 250 verdicts in 373 s including the cold start, 63–68 s per cell of 250 at batch 32 (≈ 3.8 verdicts/s, against Gemma's 39/s at batch 64). Parse 100 %.
+- **Repeat.** `araroopat_3phase_v5_distill` re-judged in its own process as `falcon_h1_34b_repeat` (113 s). Score exact on 250 / 250; whole row exact 0.932.
+- **What changed on disk.** Exactly the five `all_metrics.json` and six new judge files. No `gemma4_31b` or `gpt56_terra` file moved.
+- **Memory warning.** One CUDA allocator OOM warning (a failed 1.4 GB allocation) during the second cell. vLLM recovered on its own, and every verdict of that cell parsed.
+
+The per-cell means and the paired differences under Falcon are in the supervisor tables (T2, T2b, T2c). They are not read here before the rating completes. They decide nothing until S3.
+
+*gpt-oss-120b probe* (`outputs/judge_probes/2026-10-10/gptoss_120b/probe.json`, snapshot `b5c939de…`, run at the end of the M8 chain):
+
+| measure | value |
+|---|---|
+| parse | 24 / 24 |
+| fixtures | 4 / 4 with the expected flags |
+| repeat, score | 24 / 24 |
+| repeat, whole row | 24 / 24 |
+| weights | 61.4 GiB |
+| load | 18 s |
+| engine init | 127 s (compile 17 s) |
+| KV cache | 7.9 GiB = 115 135 tokens |
+| 20 verdicts | 5 s |
+
+`outputs[0].text` is the bare JSON verdict: no analysis-channel text reached it (reasoning parser `openai_gptoss`, `reasoning_effort: low`, structured output). **gpt-oss passes.**
+
+*Mistral-Small-3.2-24B: dropped (2026-10-10, the user's decision, brief §3.2).* It cannot load in `.venv-judge`. vLLM 0.29's `pixtral.py` imports `PixtralRotaryEmbedding` from transformers, and the environment's transformers 5.17 renamed that class `PixtralVisionRotaryEmbedding`. Both loading paths import that module: the Mistral format resolves to `PixtralForConditionalGeneration`, and the HF format to `Mistral3ForConditionalGeneration`, whose vision encoder is Pixtral's (`judge_probes/2026-10-10/mistral_small_32/run1.log`). A one-line alias in the shared judge environment would probably load it; the user chose to drop the candidate instead of patching the environment the other judges run in.
+
+The candidates are now C1 gpt-oss-120b (OpenAI), C3 Falcon-H1-34B (TII) and, if downloaded, C4 phi-4 (Microsoft). Two vendors remain, so the vendor-variety rule holds; S3 picks among the remaining candidates.
+
+*gpt-oss-120b S1* (chains/m9_queue.sh, 2026-10-10 07:26–07:32 UTC; pre-run state `_audit/judge_gptoss_2026-10-10_before_*.txt`):
+- **Verdicts.** The five v5-era cells plus `bpe_128k_3phase_v5_distill`: 1 500 verdicts, parse 100 %, 12–23 s per cell of 250.
+- **Repeat.** `araroopat_3phase_v5_distill` re-judged in its own process as `gptoss_120b_repeat`: score exact on 249 / 250 (0.996, above S3's 0.95); whole row exact 0.908.
+- **What changed on disk.** Exactly the six `all_metrics.json` and seven new judge files.
+
+Both candidates' S1 files exist. S2–S3 wait for the rating (51 / 200).
+
+*S2 code.* `freeform_rating.agreement(..., extra_judges_from_cells=True)` reads every judge file of the set's cells at call time through `load_cell`, as it already did; the function never read scores stored at build time. It now records `judges_at_build` (the set's `gemma4_31b`, `gpt56_terra`), `judges_from_cells` and `judge_items_covered`. `extra_judges_from_cells=False` restricts the output to the build-time judges. A test (`tests/test_freeform_console.py::test_agreement_reads_judges_added_after_the_build`) adds a judge file after the build and checks both modes.
+
+**Applied, 2026-10-11: S4 and the re-judge pass (M4)** (`chains/m4_queue.sh`, run between the Llama evaluations and the Gemma training, because a judge cannot share the GPU with a training run).
+- **S4.** At the end of P2 (06:18 UTC) the blind rating stood at 51 of 200, read as a count only. **gpt-oss-120b (C1) is therefore the primary judge by default.** This is recorded in `outputs/experiments/_comparative_tables/judge_selection.json`. S3 is applied when the rating is complete; if it names Falcon-H1, the tables are regenerated with Falcon primary and this section says both.
+- **The pass.** It was one process per experiment, with one date and pinned weights (`b5c939de…`), run 06:18–06:26:
+  - `qwen_native_vs_araroopat`: the 12 arms of brief §1, the teacher and BPE-128K. The 6 cells judged in S1 were reused, not re-requested; baseline `native_qwen3_sft_v5_distill`.
+  - `qwen_decoding_ablation`: the 4 cells, baseline `native_qwen3_base_rp12` as in Gemma's run.
+  - `teacher_bakeoff`: the 7 cells, baseline `native_qwen3_base_dev`.
+  - Cost: 19 new cells = 4 750 verdicts in 7.6 min of wall time, three cold starts included (engine init 46 s with the compile cache warm).
+  - Across all 25 gpt-oss files there are 6 250 verdicts, every one parsed.
+  - Every `all_metrics.json` and judge file the pass touched was snapshotted first into `_comparative_tables/m4/before/`. The per-cell `all_metrics.json` keep the Gemma block beside the new one, as do the experiments' `comparison_report.txt`. `freeform_judge_report.json` describes the last run only, by design; its earlier copy is in the snapshot.
+- **J5 (gpt-oss vs Gemma-4-31B).** Over the 24 cells both judged, pooled QWK is **0.817** (6 000 verdicts, exact 0.579). Per cell it runs 0.434–0.772, median 0.644. The lowest values are the v1 and v2 AraRooPat cells, where nearly every answer scores 1 (exact 0.936 and 0.876): kappa has no variance to work with there. On the five v5-era cells gpt-oss agrees with GPT-5.6 at 0.767 and with Gemma at 0.745 (Gemma–GPT-5.6 0.803). Falcon agrees with gpt-oss at 0.593 and with Gemma at 0.626 (the tables' T2c).
+- **J6 (the three headline differences on the Qwen3-4B v5 cells,** `judge_compare`, 10 000 resamples, seed 0; T7b):
+
+| | gpt-oss-120b | Falcon-H1-34B | Gemma-4-31B | GPT-5.6 |
+|---|---|---|---|---|
+| AraRooPat − BPE-16K | +0.212 [+0.088, +0.340] | +0.072 [−0.068, +0.216] | +0.300 [+0.152, +0.452] | +0.172 [+0.048, +0.300] |
+| AraRooPat − native | −0.152 [−0.284, −0.016] | −0.092 [−0.220, +0.036] | −0.088 [−0.240, +0.068] | −0.048 [−0.172, +0.080] |
+| BPE-16K − native | −0.364 [−0.496, −0.232] | −0.164 [−0.304, −0.032] | −0.388 [−0.548, −0.228] | −0.220 [−0.332, −0.112] |
+
+  - The sign of every difference holds under all four judges.
+  - AraRooPat − BPE-16K is above zero under the primary judge, as under Gemma and GPT-5.6; under Falcon it includes zero.
+  - **AraRooPat − native is below zero under gpt-oss** (−0.152), where the other three judges include zero.
+- **J7 (length-matched,** the pairs within 100 characters, T2c). AraRooPat − BPE-16K on 116 pairs: gpt-oss +0.172 [+0.009, +0.336], Gemma +0.293 [+0.103, +0.491], GPT-5.6 +0.190 [+0.009, +0.362], Falcon +0.078 [−0.112, +0.267]. AraRooPat − native on 119 pairs includes zero under every judge (gpt-oss −0.092 [−0.277, +0.101]).
+- **J8 (share of the teacher's score)** under gpt-oss: native 0.75, AraRooPat 0.71, BPE-16K 0.64, BPE-128K 0.62. Under Gemma: 0.69, 0.67, 0.58. The order is the same; gpt-oss's teacher mean is lower (3.27 against 3.65), so the shares are higher.
+- **J9.** gpt-oss's greedy repeat is score-exact on 249 / 250 (S1).
+- **J10 (bake-off order, a check of the teacher choice).**
+  - gpt-oss: Aya-Expanse-32B 4.26 > Falcon-H1-34B 4.07 > ALLaM-7B 4.06 > Jais-2-8B 4.00 > Command-R7B-Arabic 4.00 > Llama-3.3-70B (AWQ) 3.86.
+  - Gemma: Aya-Expanse-32B 4.64 > ALLaM-7B 4.50 > Command-R7B-Arabic 4.43 > Falcon-H1-34B 4.32 > Llama-3.3-70B 4.26 > Jais-2-8B 4.21.
+  - **Aya-Expanse-32B is first under both: the teacher choice holds.** The rest of the order moves (Falcon-H1 from fourth to second), which is a finding, not a re-choice (rule 5).
+  - gpt-oss was not a bake-off candidate, so the J10 safeguard does not apply. Falcon has not judged the bake-off cells.
+- **J11** waits for the rating.
+
+### 3.15 BPE-128K on Qwen3-4B-Base (2026-10-09)
+
+**Why.** The supervisor asked for a fourth tokenizer of native size. The native vocabularies are 151 936 for Qwen3, 128 256 for Llama-3.2 and 262 144 for Gemma-3. The fourth arm is a byte-level BPE of 128 000 pieces, put through the identical pipeline.
+
+**The tokenizer** (`outputs/tokenizers/bpe_128k_v1`, 2026-10-09). It was trained once by `scripts/train_tokenizer.py --type bpe --vocab-size 128000 --params '{"min_frequency": 2}'`. It uses the same corpus split and preprocessing as `bpe_16k_v3`: 668 959 texts and the base.yaml block. `training_provenance.json` equals bpe_16k_v3's in `dataset_name`, `preprocessing`, `num_texts` and `tokenizer_params`. It differs only in `entry_point`, `vocab_size_arg` and an explicit `seed` of 42, which is the pipeline run's seed. Training took 89 s. Every later config loads it by `load_path`.
+
+`scripts/train_tokenizer.py` gained `--cache-dir`. Its default is now the base config's `data.cache_dir` (the pipeline's), so both entry points read the same prepared corpus, offline too. Before this, the script used the `datasets` default cache, which holds no prepared copy of ArabicText-Large.
+
+*Measurements* (`scripts/measure_tokenizer_basics.py` → `outputs/experiments/_comparative_tables/m5/tokenizer_basics.json`):
+
+| measure (texts) | BPE-128K | BPE-16K | AraRooPat v3 | native Qwen3 |
+|---|---|---|---|---|
+| pieces per word (20 000 eval texts) | 1.229 | 1.502 | 3.194 | 2.301 |
+| characters per piece (same texts) | 4.75 | 3.89 | 1.82 | 2.55 |
+| characters per piece (250 references, specials included) | 2.89 | 2.49 | 1.96 | 2.30 |
+| pieces per pool word (1 800 pool docs) | 1.363 | 1.694 | 3.044 | 2.227 |
+| reference round-trip chrF, raw / diacritics stripped | 100.0 / 100.0 | 100.0 / 100.0 | 91.10 / 98.97 | 99.42 / 100.0 |
+| exact word round trip (2 000 corpus words) | 1.000 | 1.000 | 0.993 | 1.000 |
+| letter ` أ` | 1 piece | 1 piece | 3 pieces | 1 piece |
+
+AraRooPat's three round-trip numbers reproduce §3.5 exactly.
+
+*Never-seen share* (`scripts/count_adaptation_tokens.py` over the blocks Phases 1 + 2 consumed, 131 072 000 tokens per arm):
+
+| arm | never seen | seen 1–9 times |
+|---|---|---|
+| BPE-16K v3 | 490 of 16 000 (3.06 %) | 101 (0.63 %) |
+| AraRooPat v3 | 837 of 17 184 (4.87 %) | 3 485 (20.29 %) |
+| BPE-128K | after its run | after its run |
+
+**The held-out documents, and a deviation from the brief.** Brief §4.2 asked to register `rawtext_heldout_v1.jsonl` in `heldout_sets.yaml`, then rebuild the 50 M and 80 M pools and verify each equals the old pool minus the 150 documents.
+
+That rebuild cannot give the same training text:
+- The 150 documents are FineWeb-2 documents of the **80 M** pool (and of no other pool).
+- Dropping them changes that source's document count.
+- `source_doc_order` is `rng.permutation(n_docs)`, so the change reorders every packed block.
+- BPE-16K on Llama-3.2-3B and Gemma-3-4B would then train on different text than on Qwen3-4B.
+
+Instead, `configs/contamination/heldout_sets_v2.yaml` is `heldout_sets.yaml` plus the raw-text set, matched as `prompt` with 8-grams and no paragraph tier. Only the BPE-128K configs name it, through `training.pretraining_mix.heldout_filter.sets_file`. The effect:
+- `heldout_sets.yaml` is unchanged, so every existing pool, pack and `exclusions.json` keeps its fingerprint.
+- `qwen_bpe16k_3phase_v3.yaml` still resolves to `51e0a74a3d05b6cf`, and `qwen_araroopat_3phase_v3.yaml` to `d9d1b696d93e6bd9`, so the new models' AraRooPat and BPE-16K arms reuse their packs byte for byte.
+- The old 80 M pool remains safe for BPE-16K: its pack took 128 754 of the pool's 131 048 FineWeb-2 documents, and the 150 documents sit beyond that position by construction (`rawtext_heldout_v1.manifest.json`).
+
+*Checks:*
+- `check_contamination.py --sets configs/contamination/heldout_sets_v2.yaml --no-pool` (no write; `outputs/data_cache/contamination/2026-10-09_heldout_v2_check/`, 54 s) gives an excluded-id set identical to `exclusions.json` for all seven corpora: 797 ids — tydiqa 359, cidar 253, arcd 122, aya 54, bactrian 6, the two SQuAD corpora 1 each.
+- The raw-text set's only hit is one 8-word overlap with `bactrian-alpaca-12054` (coverage 0.0005); none is in the contaminated tier.
+- `outputs/experiments/_comparative_tables/m6/verify_heldout_pool.py` confirms that none of the 150 held-out `sha1(text)` ids is in the new pool, and that the 50 M / 80 M / 20 M pools are untouched (September manifests, their packs unchanged).
+
+**The pool** (`bcc25c16069c1153`). It holds 110 M words for 128.6 M raw-text tokens. The 1 800-document sample gave 1.33 tokens per word for Wikipedia, the binding source, so the need was about 96 M words, plus margin. Built from the console's smoke run (the stream needs its network) in 1 184 s:
+
+| source | words | documents kept | streamed | dropped as held-out overlap |
+|---|---|---|---|---|
+| wikipedia_ar | 22.0 M | 66 856 | 252 440 | 58 |
+| fineweb2_arb | 77.0 M | 179 017 | 212 344 | 217 |
+| arabicweb24 | 11.0 M | 25 787 | 31 092 | 10 |
+
+The held-out filter held 2 023 records over 212 093 n-grams. Packing measured 1.37 tokens per word on FineWeb-2 (105.4 M tokens in 336 s) and on Wikipedia (30.0 M tokens).
+
+**The QA blend.** The packed QA corpus is fixed text, so its block count is per tokenizer. Under BPE-128K, TyDiQA + ARCD train (14 160 records, 178.4 tokens per record) pack into **4 932 blocks** (`qa_blend/d6efaf936cb20550`, 8.6 s). For comparison, BPE-16K packs 5 919 and AraRooPat 10 396.
+
+`share: 0.025` gives 4 800 blocks, 0.973 of a pass — the same exposure as BPE-16K's 0.03 = 5 760 of 5 919. Phase 2 is then 187 200 raw blocks plus 4 800 QA blocks.
+
+**Config.** `configs/experiments/qwen_bpe128k_3phase_v5_distill.yaml`:
+- Phases 1 + 2 are `qwen_bpe16k_3phase_v3.yaml`'s.
+- Phase 3, `corpus_params` (the teacher overlay) and `sweep.tasks` are `qwen_bpe16k_3phase_v5_distill.yaml`'s byte for byte (asserted on generation).
+- The three phases are enabled in one run.
+- The mixture dry run is in `outputs/logs/plan_sft_mixture_bpe128k_2026-10-09.log`.
+
+The smoke copy is `configs/experiments/_smoke_bpe128k.yaml`: 30 / 32 / 30 micro-steps, a 60-example mixture, 10 free-form prompts, and the same pool fingerprint.
+
+**Smoke** (run `20261009-171826__smoke_bpe128k`, started from the console, exit 0, 31 min, of which 20 min pool and 8 min pack): every phase ran — Phase 1 30 micro-steps (loss 7.49), Phase 2 32 (6.51; raw blocks [240, 365) of 293 354 + QA blocks [0, 3) of 4 932), Phase 3 30 (best mixture eval 6.11 restored) — and the free-form eval generated 10 answers at a token cap of 814. The packed corpus holds 293 354 blocks (150.2 M tokens), against the 251 200 raw blocks Phases 1 + 2 draw. Parameters: 3 961 M (body 3 634 M + 327.7 M for the 128 000-row tied table).
+
+**Full run** started 2026-10-09 17:50 UTC from the console (`20261009-175005_qwen_bpe128k_3phase_v5_distill`; the pool, the pack and the QA blend are reused).
+
+*Outcome* (exit 0; 4 h 16 min end to end). Phase timings:
+
+| phase | steps | wall | BPE-16K v3 |
+|---|---|---|---|
+| Phase 1 | 8 000 | 2 047 s (final batch loss 4.89) | 1 861 s |
+| Phase 2 | 48 000 | 8 930 s (final batch loss 4.39) | 8 369 s |
+| Phase 3 | early-stopped at 20 500 | 3 873 s | — |
+
+- *Phase 3* restored step 18 000, i.e. 36 000 of the 45 000 mixture examples (AraRooPat v5 restored 34 000). Its per-token mixture dev loss was 1.7259: extractive 0.59, free-form 1.75, MCQ 0.15.
+- *Free-form eval* (250 prompts, token cap 963, 321 s): loop stop 17.2 %, EOS 82.0 %, cap 0.8 %, mean answer 478 characters (199 tokens), chrF 21.57, BERTScore-F1 0.851, reference round-trip chrF 100.0, degenerate 18.4 %, Latin 0.8 %.
+- *Intrinsic* (the pipeline's step): fertility 1.235, compression 4.76, UNK 0, coverage 1.0, RPS attainable 0.179 (ceiling 88.5 %), SFR 1.06.
+- *Embedding init:* `surface_avg` filled 127 612 of the 128 000 rows from surfaces, in 13.5 s.
+- *Held-out loss* (`scripts/diag_heldout_loss.py`; the 150 raw-text documents become 126 blocks at 4.59 characters per token):
+
+| measure | after Phase 2 | after Phase 3 |
+|---|---|---|
+| raw-text loss, nats per character | 0.856 | 0.873 |
+| answer NLL, nats per character | 0.987 | 0.979 |
+
+  BPE-16K v3 reads 0.85 and 0.86 for raw text; BPE-16K v5's answer NLL is 0.907.
+
+*R-128-4.*
+- 1 271 of 128 000 pieces (0.99 %) never occur in the 131 072 000 Phase 1 + 2 tokens, and 4 950 (3.87 %) occur one to nine times. Compare BPE-16K 3.06 % / 0.63 % and AraRooPat 4.87 % / 20.29 % (`m5/adaptation_token_counts.json`).
+- None of the 250 answers of any from-scratch arm (BPE-128K, BPE-16K v5, AraRooPat v5), re-encoded, contains a never-seen piece (`m5/unseen_in_answers.json`).
+- So the native-sized vocabulary's rare pieces are a cost on paper only; the answers do not use them.
+
+*Writing under the judges so far* (`falcon_h1_34b`, candidate C3, not the primary judge; the primary is chosen by S3). Mean 2.868 ± 0.078. Paired differences (`paired_compare.py`, 10 000 resamples, seed 0):
+
+| pair | Δ [95 % CI] | win / tie / loss |
+|---|---|---|
+| BPE-128K − BPE-16K | −0.272 [−0.424, −0.120] | 18 / 45 / 37 % |
+| BPE-128K − AraRooPat | −0.344 [−0.496, −0.192] | — |
+| BPE-128K − native | −0.436 [−0.592, −0.292] | — |
+
+Falcon-H1 compresses the arms' differences: under it, AraRooPat − BPE-16K is +0.072 [−0.068, +0.216], against +0.300 under Gemma and +0.172 under gpt-5.6-terra. So under the most compressing candidate, BPE-128K writes worse than every other arm. R-128-1 is read under the primary judge only.
+
+*Recognition* (`configs/experiments/mcq_v5/mcq_bpe128k_v5.yaml` → cell `bpe_128k_3phase_v5_distill_mcq4096`; console run `20261009-221239_mcq_bpe128k_v5`, 2 h 38 min). The protocol is §3.10's: `max_length 4096`, 3-shot, ACVA 0-shot, `char+pmi`.
+
+All rows:
+
+| benchmark | char / PMI |
+|---|---|
+| Arabic-Exam | 0.548 / 0.545 |
+| Culture-MMLU | 0.471 / 0.468 |
+| Alghafa | 0.626 / 0.625 |
+| ACVA | 0.412 / 0.735 |
+
+The untruncated intersection with the four v5-era cells is unchanged: Arabic-Exam 13 973, Culture-MMLU 14 327; BPE-128K truncates nothing the others did not. Accuracy on the intersection (char / PMI):
+- Arabic-Exam 0.560 / 0.557
+- Culture-MMLU 0.471 / 0.468
+- Alghafa choice-text MSA 0.681 / 0.448
+
+**R-128-2**, BPE-128K − BPE-16K (`scripts/mcq_compare.py` through `ae.mcq_compare`, 10 000 resamples, seed 0):
+
+| benchmark | char | PMI | McNemar |
+|---|---|---|---|
+| Arabic-Exam | −0.037 [−0.044, −0.029] | −0.033 [−0.041, −0.025] | 1 190 / 1 704 |
+| Culture-MMLU | −0.023 [−0.030, −0.016] | −0.027 [−0.034, −0.020] | — |
+| Alghafa MSA choice-text | −0.007 [−0.025, +0.011] | — | — |
+
+So under the standard decision BPE-128K recognises below BPE-16K on both letter tasks, close to AraRooPat's level (AraRooPat − BPE-16K −0.046 / −0.026 char).
+
+*Letter-fair* (§3.11). The five rotation cells `_letter_slot/bpe128k_v5_{rot0..3,0shot}` were run through the console, 9.7–10.0 min each. `scripts/mcq_letter_slot.py --arms araroopat_v5 bpe16k_v5 bpe128k_v5 native_v5 native_base --name letter_slot_bpe128k` adds the four BPE-128K pairs to `PAIRS`. They are kept only when the arm is named, so the default run's 8 845 values are identical to the committed `letter_slot.json`; the default run carries only the fields §3.12 added later.
+
+| measure | Arabic-Exam | Culture-MMLU |
+|---|---|---|
+| BPE-128K rotation-averaged accuracy | 0.519 | 0.474 |
+| BPE-128K − BPE-16K, rotation-averaged | −0.004 [−0.031, +0.024] | −0.034 [−0.059, −0.008] |
+| AraRooPat − BPE-128K, rotation-averaged | +0.003 | −0.005 |
+
+**R-128-3** (gold-أ gap BPE-128K − BPE-16K, standard decision): **−0.102 [−0.131, −0.074]** on Arabic-Exam and **−0.088 [−0.114, −0.062]** on Culture-MMLU. The brief expected near zero, because ` أ` is one piece in both vocabularies.
+
+So a first-option deficit appears with the larger BPE vocabulary too. It is about half of AraRooPat's (−0.202 / −0.149), even though the letter costs one piece. The letter prior of §3.11–§3.12 is therefore not only a matter of how many pieces the letter takes.
+
+### 3.16 Response time, tokenizer speed and compute (2026-10-09/10)
+
+**Response time** (`scripts/measure_response_time.py` → `<cell>/timing_v1.json`; chains/m8c_chain.sh, 2026-10-10 02:09–07:25 UTC, 48–64 min per cell; NVIDIA H100 80GB HBM3, driver 570.211.01, torch 2.11.0+cu128). The method:
+- The cell's checkpoint is loaded as `scripts/dump_eval_rows.py` does, with the cuDNN SDPA backend off.
+- Each answer is generated one at a time through the free-form task's own `generate_freeform`: the cell's dumped prompt strings, its decoding rules and its token cap.
+- Time to first piece is a separate one-token `generate`.
+- The tokenizer's share is the time spent in this process's `encode` / `decode`.
+- Batched throughput is measured at batch 16. MCQ scoring uses 500 rows per benchmark through `_compute_loglikelihood` at `max_length 4096` (PMI's unconditioned call excluded).
+- Energy comes from `nvidia-smi` sampled every 500 ms.
+- Repeat 1 covers all 250 prompts; repeats 2–3 cover a 50-prompt length-stratified subset (seed 0).
+
+| cell | s / answer (median) | ms / token | ms / 100 chars | TTFT ms | Wh / 1 000 answers | batch-16 chars/s | MCQ ms / row (Exam, Culture, ACVA, AlGhafa) |
+|---|---|---|---|---|---|---|---|
+| native base | 5.02 | 33.4 | 1 321 | 36.3 | 301 | 288 | 156, 161, 75, 128 |
+| native v5 | 5.12 | 33.0 | 1 307 | 35.8 | 310 | 389 | 155, 159, 74, 127 |
+| AraRooPat v5 | 5.99 | 34.4 | 1 696 | 37.6 | 393 | 262 | 166, 172, 78, 140 |
+| BPE-16K v5 | 4.98 | 34.0 | 1 177 | 36.8 | 276 | 440 | 155, 158, 75, 122 |
+| BPE-128K v5 | 3.67 | 34.1 | 1 029 | 36.7 | 215 | 397 | 152, 156, 74, 122 |
+
+*Reading.*
+- A decoding step costs about the same under every vocabulary: 33–34 ms per token at batch 1, with the GPU about a third busy at ~150 W.
+- Time per character therefore follows characters per token: AraRooPat 1.96 → slowest; BPE-128K 2.89 → fastest.
+- The output head's size (16 K to 152 K rows) does not show at batch 1.
+- Time to first piece is ~36–38 ms everywhere.
+- The tokenizer's own share of answer time is 0.02–0.07 %, AraRooPat's CAMeL encode included.
+- Repeats 2–3 on the subset agree with repeat 1 on the same prompts within 1.2 %.
+
+*Deviation from the brief.* The brief asked that the batch-1 answers equal the cell's dump on ≥ 95 % of prompts. They equal it on 27–37 %. The batch-16 pass reproduces the dump on 100 % in every cell, so the decoding rules are the eval's. The batch-1 divergence is bf16 batch-shape arithmetic over ~150–200 greedy steps. The batch-1 answers keep the eval's length and stop profile; for BPE-128K, 491 vs 478 characters, and eos 212 / loop 38 against 205 / 43 / cap 2.
+
+*Side finding.* The eval's `gen_tokens` (and `mean_gen_tokens`, `gen_tokens_per_sec`) counts the trailing pad tokens of a row that the loop or marker stop ended inside a batch. That is 199 for BPE-128K against 148 at batch 1. Characters are unaffected. §5 item.
+
+**Tokenizer speed** (`scripts/measure_tokenizer_speed.py` → `outputs/experiments/_tokenizer_speed/2026-10-09/speed_v1.json`, with its texts). The machine is an Intel Xeon Platinum 8481C with 26 cores, Python 3.10.12 and tokenizers 0.22.2. It was measured beside the BPE-128K GPU run; the load average is recorded.
+
+Each case runs in a fresh process: one untimed pass, then 5 timed passes. The texts are 20 000 ArabicText-Large eval texts (6.99 M words), the 250 references, and 1 000 Arabic-Exam 3-shot prompts.
+
+| tokenizer | µs per word, one text at a time | µs per word, batched (all cores) | decode µs per word |
+|---|---|---|---|
+| native Gemma-3 | 3.38 | 0.21 | 1.01 |
+| BPE-16K | 3.63 | 0.43 | 0.43 |
+| BPE-128K | 3.71 | 0.50 | 0.45 |
+| native Llama-3.2 | 4.91 | 0.43 | 0.83 |
+| native Qwen3 | 5.43 | 0.44 | 0.81 |
+| AraRooPat — cold (fresh analyser, first half of the texts) | 96.1 | — | — |
+| AraRooPat — warm (the same half again) | 10.2 | — | 2.8 |
+| AraRooPat — steady (new texts, analyser running) | 49.0 | — | — |
+
+- Whole texts come back exactly for 100 % of the five Rust tokenizers' eval texts and 0.2 % of AraRooPat's: punctuation is re-spaced, Latin words become `?`, and a dropped hamza is restored (§3.5). Single Arabic words come back exactly 99.3 % of the time (§3.15).
+- Native Gemma-3 was measured in a second run (`--only native_gemma3`, merged), because its download finished after the first reached it.
+
+**Compute** (the tables' T6; `scripts/count_phase3_tokens.py` → `_comparative_tables/m10/phase3_tokens.json`). Phase 3 trains on the same 45 000 examples under every vocabulary, so its token count differs per tokenizer.
+
+The mixture is rebuilt from the manifest's record ids and the cell's own `corpus_params` / exclusions, and tokenized by the training path's `tokenize_record`. The rebuilt loss tokens equal the manifest's exactly. For BPE-16K v5: 11.95 M input tokens (265.6 per example) and 10.6 M processed (40 000 examples).
+
+Training operations follow the brief's formulas: Phase 1 (2 × parameters + 4 × table parameters) × tokens; Phases 2–3 6 × parameters × tokens. Per stage they are in T6. For example, BPE-128K's Phase 2 is 2 337 PFLOPs against BPE-16K's 2 167; the larger table adds 8 %.
+
+*Equal text.* The 131 M Phase 1 + 2 tokens covered about 43 M words of web text under AraRooPat, 77 M under BPE-16K and 96 M under BPE-128K. Reading BPE-128K's 96 M words would take AraRooPat about 293 M tokens and BPE-16K about 163 M. This is applied to nothing, as in §5.
+
+### 3.17 Llama-3.2-3B and Gemma-3-4B (2026-10-10 → 10-13)
+
+Dr Amal's second request: run the same four arms (native, AraRooPat, BPE-16K, BPE-128K) and the untouched base on two more base models. The models are `meta-llama/Llama-3.2-3B` and `google/gemma-3-4b-pt` (the user chose Gemma-3-4B on 10-09).
+
+**Same treatment.**
+- Every config comes from `scripts/make_model_arm_configs.py` (`configs/experiments/models_x_tokenizers/`). The script asserts that each config's resolved training blocks equal the Qwen3-4B arm's, apart from the model.
+- The from-scratch arms read the same tokenizers (`bpe_16k_v3`, `bpe_128k_v1`, `araroopat_maxpat40k_v3`) and the same packed blocks. `count_adaptation_tokens.py` on the three Llama arms gives never-seen ids, block ranges and 1–9× counts identical to the Qwen arms' (`_comparative_tables/m5/adaptation_token_counts.json`).
+- `surface_avg / char_len` is computed from each base model's own tokenizer: 17 172 AraRooPat rows on Llama, as on Qwen.
+- Phase 3 is the v5 block with the teacher file of sha `8e4d9cd1…`.
+- The MCQ cells are eval-only at `max_length 4096` from the `mcq_v5` templates (`--mcq`).
+- Every cell lives in `outputs/experiments/{llama3b,gemma3_4b}_tokenizers/`.
+
+**The Gemma-3 wiring** (`src/arabic_eval/models/gemma3_adapter.py`, `tokenizers/native_gemma.py`; `tests/test_gemma3_support.py`, 13 tests on tiny random checkpoints). `gemma-3-4b-pt` is a vision-language checkpoint; the campaign uses its text model only. Three traps, each handled and tested:
+- **Plain `from_pretrained` loads a random text model.** `Gemma3ForCausalLM.from_pretrained` on the release checkpoint initialises every text weight at random with only a warning, because the keys are stored as `language_model.model.*`. The adapter loads with a `key_mapping` and refuses a load where any text weight is missing. The auto class instead gives the multimodal model.
+- **`save_pretrained` writes the multimodal layout back** unless `save_original_format=False`.
+- **The loss uses a stale vocabulary size.** `Gemma3ForCausalLM` reshapes its loss with a `vocab_size` attribute fixed at construction, so the adapter updates it after a resize.
+
+Other facts of the native wrapper:
+- The embeddings are scaled by √hidden; the resize and `surface_avg` keep the scale.
+- The text config pads the vocabulary to 262 208 rows; `native_gemma` reports that count, so the native resize is a no-op.
+
+Both Gemma smokes passed at the Qwen batch sizes (10-10 01:40–01:45). Peak memory was 55.5 GB for native SFT, with the 262 208-row head, and 42.3 GB for AraRooPat.
+
+`scripts/diag_heldout_loss.py` now loads a Gemma-3 cell through the adapter's loader too (10-10). Before this change, `--base` would have scored the multimodal model.
+
+**Llama-3.2-3B: training** (chains/m9_queue.sh through the console, 10-10 07:32–17:13 UTC; all exit 0; walls in seconds from `all_metrics.json`, peaks from chains/m9_peak_mem.jsonl).
+
+| arm | Phase 1 | Phase 2 | Phase 3 (micro-steps, best) | peak GB | loops | EOS | mean chars | chrF |
+|---|---|---|---|---|---|---|---|---|
+| AraRooPat | 1 191 | 5 518 | 2 606 (20 000, 17 500) | 33.3 | 12.8 % | 86.0 % | 462 | 21.7 |
+| BPE-16K | 1 189 | 5 519 | 2 440 (20 000, 17 500) | 33.1 | 18.4 % | 80.4 % | 516 | 21.1 |
+| BPE-128K | 1 388 | 6 085 | 2 841 (22 500, 20 000) | 38.6 | 23.6 % | 74.0 % | 505 | 20.7 |
+| native SFT | — | — | 2 754 (21 500, 19 000) | 57.9 | 14.8 % | 81.6 % | 533 | 21.8 |
+| native base | — | — | — | — | 33.2 % | 54.0 % | 282 | 10.6 |
+
+**Llama-3.2-3B: judges** (chains/m12_queue.sh, 10-10 17:13–17:23; gpt-oss 10–16 s per cell, Falcon 54–66 s; parse failures 0 %). The table gives the means, then the paired differences from `arabic_eval.analysis.judge_compare` (10 000 resamples, seed 0, the tables' numbers). The teacher cell is the Qwen folder's: the same 250 answers whatever the student. Its mean is 3.272 under gpt-oss and 4.176 under Falcon.
+
+| | gpt-oss-120b | Falcon-H1-34B |
+|---|---|---|
+| native SFT | 2.076 ± 0.120 | 2.968 ± 0.134 |
+| AraRooPat | 2.072 ± 0.120 | 2.960 ± 0.146 |
+| BPE-16K | 1.940 ± 0.108 | 2.932 ± 0.137 |
+| BPE-128K | 1.840 ± 0.113 | 2.680 ± 0.141 |
+| native base | 1.304 ± 0.079 | 1.648 ± 0.108 |
+| **G1** AraRooPat − BPE-16K | +0.132 [+0.004, +0.256] | +0.028 [−0.108, +0.160] |
+| **G2** AraRooPat − native | −0.004 [−0.132, +0.120] | −0.008 [−0.148, +0.132] |
+| BPE-16K − native | −0.136 [−0.268, −0.008] | −0.036 [−0.184, +0.112] |
+| **R-128-1** BPE-128K − BPE-16K | −0.100 [−0.220, +0.016] | −0.252 [−0.388, −0.116] |
+| **G5** share of the teacher (native · AraRooPat · BPE-16K · BPE-128K) | 0.63 · 0.63 · 0.59 · 0.56 | 0.71 · 0.71 · 0.70 · 0.64 |
+
+*Reading* (preliminary; the main judge is named at the end of P2 by rule S4, and M4 has not run):
+- **G1 holds in sign on Llama under both judges.** Under gpt-oss its range lies above zero by a hair (+0.004); under Falcon it includes zero. On Qwen3-4B the same two judges gave +0.212 [+0.088, +0.340] and +0.072 [−0.068, +0.216] (T7b).
+- **G2 is a tie on Llama** under both judges. On Qwen3-4B it was −0.152 [−0.284, −0.016] under gpt-oss.
+- **BPE-128K is the weakest writer** on both models, and its never-seen pieces do not explain it: its Llama answers use none of the 1 271 pieces the adaptation never showed.
+- Falcon scores about 0.9 higher than gpt-oss throughout. On the Llama AraRooPat cell their QWK is 0.491 and exact agreement 0.236.
+
+**Llama-3.2-3B: held-out loss** (`diag_heldout_rawtext_v1[_base].json`). Each arm gives raw text nats/char · answer NLL nats/char · EOS rank-1:
+- AraRooPat 0.898 · 0.844 · 0.656
+- BPE-16K 0.896 · 0.962 · 0.584
+- BPE-128K 0.889 · 1.025 · 0.536
+- native SFT 0.994 · 0.901 · 0.764
+- native base 0.967 · 0.911 · 0.784
+
+Two things differ from Qwen3-4B:
+- **Raw text:** the three adapted arms read Arabic web text better than native Llama (0.89–0.90 against 0.97–0.99). On Qwen the native v5 arm read it best: 0.840 against 0.864–0.880 for the adapted v5 arms.
+  - *Checked 2026-10-12 (the BOS check below).* The raw-text blocks carry no BOS by design, so Llama-3's and Gemma-3's BOS was tested separately. For Llama it changes almost nothing (native base 0.967 → 0.975), so this sentence stands. For Gemma it was a large artifact.
+- **Answer NLL:** AraRooPat has the lowest of the five (0.844 against native SFT's 0.901). On Qwen the two tied: 0.812 and 0.811.
+
+**Llama-3.2-3B: recognition** (chains/m12_queue.sh, the five `*_mcq4096` cells through the console, 10-10 17:25 – 10-11 02:55, 107–125 min each). These are `mcq_compare` numbers on the rows no Llama cell truncated (Exam 13 973, Culture 14 327; the tables' T3 / T3b). Char / PMI:
+
+| | Arabic exams | translated MMLU | AlGhafa MSA (char) |
+|---|---|---|---|
+| native SFT | 0.442 / 0.423 | 0.355 / 0.352 | 0.489 |
+| BPE-16K | 0.420 / 0.425 | 0.341 / 0.346 | 0.478 |
+| BPE-128K | 0.411 / 0.408 | 0.340 / 0.336 | 0.475 |
+| AraRooPat | 0.398 / 0.403 | 0.317 / 0.316 | 0.448 |
+| native base | 0.403 / 0.380 | 0.316 / 0.316 | 0.444 |
+
+- **G3 replicates.** The order is native > BPE-16K > BPE-128K > AraRooPat, under char on both benchmarks and under PMI on MMLU. Under PMI on the exams it is BPE-16K ≈ native > BPE-128K ≈ AraRooPat.
+- **AraRooPat − BPE-16K** is −0.021 [−0.030, −0.012] / −0.022 [−0.031, −0.013] on the exams and −0.024 [−0.033, −0.015] / −0.030 [−0.038, −0.021] on MMLU. That is about half Qwen3-4B's exam gap (−0.047 / −0.034) and close to its MMLU gap.
+- **R-128-2 (BPE-128K − BPE-16K):** −0.009 [−0.017, −0.000] / −0.018 [−0.026, −0.009] on the exams and −0.001 [−0.009, +0.007] / −0.009 [−0.017, −0.002] on MMLU. BPE-128K is not better than BPE-16K on either model.
+- **A difference from Qwen.** On Llama, AraRooPat's char scores sit at the untrained base's level on both benchmarks (exams 0.398 vs 0.403). On Qwen it was below the base on the exams (0.549 vs 0.598) and below it on MMLU too (0.472 vs 0.483).
+- The AraRooPat dumps look like Qwen's: the letter ` أ` is 3 pieces, and 17 exam rows reach the 4 096 cap.
+
+**Llama-3.2-3B: response time** (`measure_response_time.py`, the same method as §3.16, 10-11 02:55–06:18, 32–51 min per cell). Columns are median s / answer · ms / 100 chars · TTFT ms · Wh / 1 000 answers · batch-16 chars/s · MCQ ms per Exam question:
+- BPE-128K 2.51 · 769 · 25 · 171 · 498 · 106
+- BPE-16K 2.69 · 837 · 25 · 178 · 508 · 104
+- native SFT 3.15 · 942 · 25 · 227 · 401 · 108
+- AraRooPat 3.34 · 1 181 · 25 · 254 · 376 · 111
+- native base 1.15 · 1 142 · 25 · 139 · 202 · 106
+
+The order per 100 characters is Qwen's: BPE-128K fastest, AraRooPat slowest, following characters per piece. Llama's 3 B parameters make every step ~25 % cheaper than Qwen3-4B's (TTFT 25 ms against 36–38 ms). Batch-1 answers equal the evaluated ones on 37–42 % of prompts (73 % for the base, whose answers are shorter): the same bf16 batch-shape effect as §3.16.
+
+**The judge pass for the Qwen cells and S4** are in §3.14 (2026-10-11).
+
+**A queue fault, no effect on results (2026-10-11 06:27).**
+- **What happened.** `m14_queue.sh`'s first log line quoted m4's last line, `(QUEUE_DONE)`. `m15_queue.sh`'s unanchored `grep QUEUE_DONE` therefore started the Gemma evaluations while the first Gemma arm was still in its CPU stage.
+- **Effect.** The gpt-oss judge loaded, found no Gemma cell and exited 1, which stopped m15; m16 logged "NOT started". The training loaded its model at 06:32:18, after the judge had exited, so there was no GPU overlap and nothing was written under `gemma3_4b_tokenizers/`.
+- **Fix.** m15 / m16 now wait for a whole-line `QUEUE_DONE` and were re-armed. The false start's logs are kept in `chains/_false_start_2026-10-11/` with a README.
+
+**Gemma-3-4B: training** (chains/m14_queue.sh through the console, 10-11 06:26–21:35 UTC; all exit 0; walls in seconds from `all_metrics.json`, peaks from chains/m14_peak_mem.jsonl).
+
+| arm | Phase 1 | Phase 2 | Phase 3 (micro-steps, best) | peak GB | loops | EOS | mean chars | chrF |
+|---|---|---|---|---|---|---|---|---|
+| AraRooPat | 1 850 | 8 593 | 4 974 (21 500, 19 000) | 80.7* | 5.6 % | 94.4 % | 482 | 22.8 |
+| BPE-16K | 1 851 | 8 589 | 4 324 (20 500, 18 000) | 42.7 | 8.4 % | 90.8 % | 516 | 23.8 |
+| BPE-128K | 2 015 | 8 975 | 4 640 (21 500, 19 000) | 47.2 | 10.0 % | 90.0 % | 521 | 22.2 |
+| native SFT | — | — | 4 921 (22 000, 19 500) | 69.7 | 6.0 % | 93.6 % | 533 | 24.5 |
+| native base | — | — | — | 15.2 | 55.2 % | 6.8 % | 554 | 17.3 |
+
+\* nvidia-smi's reading includes the caching allocator's reserve, sampled once a second over 4.6 h; there was no OOM, and the phase walls match Qwen3-4B's. The same config on BPE-16K peaked at 42.7 GB.
+
+- Same treatment: `count_adaptation_tokens.py` gives never-seen ids and block ranges identical to the Qwen and Llama arms', and `surface_avg` covered 17 172 AraRooPat rows.
+- The untouched Gemma base writes in a loop on 55 % of prompts and ends on its own on 7 %. Its free-form numbers describe a model that never learned the instruction format, as the brief's untrained control intends.
+
+**Gemma-3-4B: judges** (chains/m15_queue.sh, 10-11 21:35; parse failures 0 %). Means are ± the judge stage's 95 % range; paired differences come from `judge_compare` (10 000 resamples, seed 0).
+
+| | gpt-oss-120b | Falcon-H1-34B |
+|---|---|---|
+| native SFT | 2.660 ± 0.153 | 3.544 ± 0.141 |
+| BPE-16K | 2.392 ± 0.142 | 3.340 ± 0.142 |
+| AraRooPat | 2.376 ± 0.126 | 3.252 ± 0.149 |
+| BPE-128K | 2.228 ± 0.135 | 3.108 ± 0.152 |
+| native base | 1.964 ± 0.126 | 2.748 ± 0.143 |
+| **G1** AraRooPat − BPE-16K | −0.016 [−0.144, +0.108] | −0.088 [−0.220, +0.048] |
+| **G2** AraRooPat − native | −0.284 [−0.416, −0.152] | −0.292 [−0.420, −0.172] |
+| BPE-16K − native | −0.268 [−0.400, −0.136] | −0.204 [−0.336, −0.072] |
+| **R-128-1** BPE-128K − BPE-16K | −0.164 [−0.288, −0.032] | −0.232 [−0.364, −0.104] |
+| **G5** share of the teacher (native · AraRooPat · BPE-16K · BPE-128K) | 0.81 · 0.73 · 0.73 · 0.68 | — |
+
+- **G1 does not replicate on Gemma.** AraRooPat and BPE-16K cannot be told apart under either judge, where Qwen3-4B and Llama-3.2-3B put AraRooPat ahead under gpt-oss.
+- **G2 is below zero on Gemma under both judges.** Gemma's own tokenizer writes best, by about 0.28.
+- **BPE-128K is the weakest trained writer on all three models.**
+
+**Gemma-3-4B: held-out loss** (`diag_heldout_rawtext_v1[_base][_bosblocks].json`). Each arm gives raw text nats/char without a BOS · with a BOS · answer NLL nats/char:
+- AraRooPat 0.843 · 0.847 · 0.761
+- BPE-16K 0.831 · 0.835 · 0.861
+- BPE-128K 0.835 · 0.838 · 0.926
+- native SFT **1.241 · 0.814** · 0.760
+- native base **1.229 · 0.761** · 0.709
+
+**The BOS check (chains/m15b_queue.sh, 10-12 19:06–19:09; `diag_heldout_loss.py --bos-blocks`, default unchanged).**
+- **Gemma.** Without a BOS, Gemma's own tokenizer looks far worse than it is: 1.23 → 0.76 nats/char for the base once every block opens with Gemma's BOS. With it, native Gemma reads the held-out web text best of the five, as native Qwen does.
+- **The adapted arms.** Their blocks never carried a BOS in training, so the BOS costs them 0.002–0.006.
+- **Llama.** The BOS changes almost nothing (native base 0.967 → 0.975, native SFT 0.994 → 0.997). The Llama sentence above stands: the adapted Llama arms read Arabic web text better than native Llama, with or without the BOS.
+- **Answer NLL** is identical in both runs (its encodings always kept the BOS).
+- **Tables.** T2-continued shows both variants for Llama and Gemma and explains why in a note.
+
+**Gemma-3-4B: recognition** (the five `*_mcq4096` cells through the console, 10-11 21:46 – 10-12 13:09, 174–198 min each). These are `mcq_compare` numbers on the rows no Gemma cell truncated (the tables' T3 / T3b). Char / PMI:
+
+| | Arabic exams | translated MMLU | AlGhafa MSA (char) |
+|---|---|---|---|
+| native SFT | 0.504 / 0.497 | 0.392 / 0.390 | 0.618 |
+| BPE-16K | 0.462 / 0.465 | 0.369 / 0.368 | 0.528 |
+| BPE-128K | 0.460 / 0.454 | 0.364 / 0.360 | 0.529 |
+| AraRooPat | 0.444 / 0.453 | 0.340 / 0.347 | 0.525 |
+| native base | 0.538 / 0.431 | 0.434 / 0.366 | 0.609 |
+
+- **G3 replicates on the third model.** The order is native > BPE-16K ≈ BPE-128K > AraRooPat.
+- **AraRooPat − BPE-16K** is −0.018 [−0.027, −0.009] / −0.013 [−0.022, −0.003] on the exams and −0.029 [−0.037, −0.020] / −0.021 [−0.029, −0.012] on MMLU.
+- **R-128-2 (BPE-128K − BPE-16K):** −0.003 [−0.011, +0.006] / −0.011 [−0.020, −0.002] on the exams and −0.004 / −0.007 on MMLU (ranges include zero).
+- **On Gemma the untouched base has the highest char score** on both benchmarks (exams 0.538, MMLU 0.434): the training recipe lowers Gemma's recognition under the standard decision.
+
+**Gemma-3-4B: response time** (10-12 13:09–19:05, 55–88 min per cell). Columns are median s / answer · ms / 100 chars · TTFT ms · Wh / 1 000 answers · batch-16 chars/s · MCQ ms per Exam question:
+- BPE-128K 4.30 · 1 128 · 42 · 238 · 416 · 180
+- BPE-16K 4.88 · 1 316 · 43 · 282 · 301 · 183
+- native SFT 5.44 · 1 409 · 42 · 320 · 357 · 183
+- AraRooPat 5.53 · 1 867 · 43 · 360 · 250 · 186
+- native base 6.27 · 2 084 · 44 · 453 · 215 · 189
+
+The order per 100 characters is the same on all three models: BPE-128K fastest, AraRooPat slowest. Batch-1 answers equal the evaluated ones on 38–46 %.
+
+**The letter-rotation cells on Llama and Gemma (P4; chains/m16_queue.sh, 10-12 19:09 – 10-13 03:14).** There were 50 eval-only cells, all exit 0: the Qwen3-4B `mcq_letter_slot/` protocol on the same 1 000-row subsets, from `make_model_arm_configs.py --rotations`. They feed `scripts/mcq_letter_slot.py` per model → `<model>_tokenizers/_letter_slot/letter_slot.json`. All values are char:
+
+| | Qwen3-4B | Llama-3.2-3B | Gemma-3-4B |
+|---|---|---|---|
+| **G4** AraRooPat − BPE-16K on gold أ, exams | −0.202 [−0.236, −0.169] | −0.086 [−0.119, −0.052] | **+0.217** [+0.182, +0.254] |
+| **G4** the same, MMLU | −0.149 [−0.180, −0.117] | −0.117 [−0.150, −0.084] | **+0.186** [+0.156, +0.217] |
+| **R-128-3** BPE-128K − BPE-16K on gold أ, exams / MMLU | −0.102 / −0.088 | −0.022 [−0.050, +0.009] / −0.087 | +0.021 [−0.010, +0.052] / −0.005 |
+| letter-fair AraRooPat − BPE-16K, exams | −0.001 [−0.030, +0.027] | +0.010 [−0.024, +0.045] | −0.025 [−0.059, +0.009] |
+| letter-fair AraRooPat − BPE-16K, MMLU | −0.039 [−0.068, −0.011] | −0.039 [−0.071, −0.007] | −0.026 [−0.056, +0.003] |
+| letter-fair accuracy, exams: base · native · AraRooPat · BPE-16K · BPE-128K | 0.576 · 0.577 · 0.522 · 0.523 · 0.519 | 0.434 · 0.383 · 0.370 · 0.360 · 0.389 | 0.526 · 0.463 · 0.388 · 0.413 · 0.429 |
+
+*Reading:*
+- **The أ gap exists on every model, but its sign depends on the model.** On Gemma, AraRooPat does *better* than BPE-16K on the questions whose answer is أ. So the letter preference is an interaction of the vocabulary and the base model, not a fixed property of AraRooPat. §3.12 traced it to the embedding stage on Qwen.
+- **Under the letter-fair decision, AraRooPat's exam gap to BPE-16K disappears on all three models.** The MMLU gap stays at −0.026 to −0.039: its range lies below zero on Qwen and Llama and includes zero on Gemma.
+- **On Llama and Gemma the untouched base beats every trained version under the letter-fair decision on the exams.** On Qwen it ties native v5. The trained versions' standard-decision scores on Llama owe part of their edge to letter preferences. This is recorded as a reading, with no cause claimed.
+- Letter-fair scoring remains a proposal applied to no headline number (§3.11).
+
+**Pending:** the human rating (51 / 200): S3, J11, and — if S3 names Falcon — a Falcon re-judge of the Qwen, ablation and bake-off cells with the tables regenerated. Everything else of brief v6 has run.
+
+**Verification of brief v6's final report (2026-10-13, Fable session, against the files; no GPU, nothing in the experiment folders changed except two `_mcq_compare/verif_fable_2026-10-13.*` files I wrote).** *Reproduced exactly:* the fifteen paired judge differences of T7 / T7b under gpt-oss-120b and Falcon-H1-34B (`paired_compare.py`, 10 000 resamples, seed 0) — Qwen AraRooPat − BPE-16K +0.212 [+0.088, +0.340], AraRooPat − native −0.152 [−0.284, −0.016], BPE-128K − BPE-16K −0.064; Llama +0.132 [+0.004, +0.256] / −0.004 / −0.100; Gemma −0.016 / −0.284 [−0.416, −0.152] / −0.164; Gemma under Falcon −0.088 / −0.292 / −0.232; Qwen under Falcon +0.072 / −0.092; the judge means and the G5 teacher shares (teacher 3.272 under gpt-oss, 4.176 under Falcon); the greedy repeats (gpt-oss 249 / 250 score-exact, Falcon 250 / 250, parse 100 %); the untruncated-intersection MCQ accuracies of the ten Llama and Gemma cells (`mcq_compare.py`; T3 rows identical: Llama exams 0.442 / 0.398 / 0.420 / 0.411 char for native / AraRooPat / BPE-16K / BPE-128K, Gemma 0.504 / 0.444 / 0.462 / 0.460) and hence the G3 orders; the letter-fair accuracies of every arm (`_letter_slot/letter_slot*.json`: AraRooPat − BPE-16K −0.001 / +0.010 / −0.025 on the exams, −0.039 / −0.039 / −0.026 on MMLU; the untrained base above every trained arm on the exams for Llama 0.434 and Gemma 0.526, and on MMLU for Gemma 0.449 but not Llama 0.360 vs native v5 0.373); the gold-أ gaps (−0.202 / −0.086 / +0.217 exams); the BOS diagnostic (Gemma base 1.229 → 0.761, SFT 1.241 → 0.814, AraRooPat 0.843 → 0.847 nats/char; answer NLL unchanged); the Gemma response time (AraRooPat 1 867 ms per 100 chars, dump-equal share 0.456); R-128-4 (0 unseen pieces in the answers); the GPU-time sum 81.9 h; the tests (the 17 files, **337 passed** in 281 s). *Checked by hand:* the 150 held-out raw-text documents are absent from the BPE-128K pool `bcc25c16069c1153` (0 of 271 660 documents by sha1 of the text); `heldout_sets.yaml` and `exclusions.json` are byte-identical to HEAD and the 50 M / 80 M pools untouched (manifests of 2026-09-22), so the AraRooPat and BPE-16K arms of the new models trained on the same text as the Qwen arms; the blind set is untouched (51 of 200, last write 2026-09-26, no cell revealed); the report gained 601 lines and lost none; `git status` lists 46 entries; the tables document holds 2 051 sourced numbers and the xlsx exists. *What a reader must know:* (a) **the Qwen3-4B 'AraRooPat not separable from native' claim of the deck is judge-dependent** — below zero under gpt-oss (−0.152), includes zero under Gemma, GPT-5.6 and Falcon; the report's J6 says so and the deck's wording must carry the judge; (b) the response-time latencies are measured on batch-1 greedy answers that equal the batched dump on only 27–46 % of prompts (bf16 batch-shape effects), so they are latencies of equivalent, not identical, text — the per-100-character unit is the right one to quote; (c) Mistral-Small-3.2 was dropped on 2026-10-10 because vLLM 0.29 and the judge venv's transformers disagree on a Pixtral class, so the vendor variety rests on gpt-oss and Falcon; (d) one stale sentence in the tables document: T7's note says the rotation cells 'exist for Qwen3-4B-Base only so far' while the Llama and Gemma rows carry their values — a builder text fix. *Open:* the rating (149 items) → S2 / S3, possibly the Falcon re-judge; the commit; the T7 note.
+
 ## 4. What the campaign established
 
 1. The native model's loops were partly measurement (the first loop rule) and partly a greedy attractor of the base model; under the corrected rules the untrained base loops on 6.8 % of prompts and the SFT arm on 12.4 %. SFT on the 30 000-record mixture learns the references' register and length but not their content: judge 2.28 vs 2.42, CI including zero.
@@ -1460,6 +2008,15 @@ The Arabic-Exam `Language` observation under the official prompt is a separate, 
 
 8. (§3.10) On recognition the order is not the generation order. With the MCQ scorer's continuation window fixed (it had skipped the first continuation token and scored `</s>` for every from-scratch tokenizer) and every arm evaluated at 4 096 tokens on the rows no arm truncates, the letter-scored benchmarks rank native v5 ≥ BPE-16K v5 > AraRooPat v5: AraRooPat trails BPE-16K by 3–5 points (Arabic-Exam −0.047 / −0.034, Culture-MMLU −0.029 / −0.037, char / PMI, every CI below 0) and native v5 by 4–7, while BPE-16K and native v5 are within a point under PMI — where the judge had AraRooPat 0.30 above BPE-16K. The distilled Phase 3 did not cost recognition: every arm gained over its predecessor, AraRooPat the most (+5–8 points over its Phase 2 checkpoint, halving its deficit to BPE-16K). ACVA and Alghafa's fixed-label sub-configs cannot rank tokenizers under this protocol: one label takes 89–100 % of the predictions whenever a label's unconditioned prior is several nats off the others' — and a label spelled in characters (AraRooPat's ` ايجابي`) is exactly such a label. *Restated on the MSA scope (§3.11, 2026-09-25):* the two letter-scored benchmarks are MSA and stand as above; the in-scope Alghafa number is the MSA choice-text group (1 772 rows), where AraRooPat v5 trails BPE-16K v5 by −0.021 [−0.042, −0.002] char (−0.058 PMI) and native v5 by −0.052 char (−0.011 [−0.030, +0.009] PMI) — most of the §3.10 Alghafa choice-text loss sat on the dialect rows, out of scope (−0.052 to BPE-16K on the 4 500 dialect rows proper). The letter-task gaps are partly a letter-prior effect of the official prompt: under a letter-invariant (rotation-averaged) decision, on 1 000-row subsets, AraRooPat − BPE-16K is −0.001 [−0.030, +0.027] on Arabic-Exam and −0.039 [−0.068, −0.011] on Culture-MMLU, and AraRooPat still trails native v5 by 0.05 on both — the order native ≥ BPE-16K ≥ AraRooPat survives, the Arabic-Exam gap to BPE-16K does not.
 9. (§3.10 *Few-shot handling*) AraRooPat v5's recognition deficit on the two letter-scored benchmarks is confined to the rows whose answer is أ — the first option; letter and position are confounded on these benchmarks: on every other row it equals BPE-16K (Δ +0.000 / +0.001, CIs within ±0.011) and slightly exceeds native v5 (+0.017 / +0.020, CIs above 0). No cell copies the 3-shot demonstrations above chance, the synthetic MCQ training set's gold letter is uniform, and a per-position calibration does not move any v5 arm — **§3.11 identified the cause**: rotating the letters over the slots, AraRooPat v5's deficit to BPE-16K follows the *letter* أ to every slot (−0.202 / −0.149 on gold letter أ, −0.027 / −0.052 on gold slot 1; G_letter +0.230 / +0.140, G_slot −0.003 / +0.010), not the first slot. The pre-registered per-arm rule reads *both* (E_letter +0.131 / +0.140, E_slot +0.197 / +0.141), but the slot effect is shared by every trained arm and only the letter effect differs in sign: every arm under-selects slot 1, and native and BPE-16K favour the letter أ while AraRooPat favours د, so on the official prompt (أ always on slot 1) their prior compensates and AraRooPat's compounds. It is not the three-token spelling (`[LIT_BEGIN]` / `[LIT_END]` ≈ 0.002 / 0.001 nats), not the demonstrations (the gold-أ gap is −0.120 / −0.099 at 0-shot). **§3.12 found its origin:** the AraRooPat − BPE-16K gap on gold أ is already −0.201 / −0.155 in the embedding-only Phase 1 checkpoint (−0.288 / −0.261 after Phase 2, −0.202 / −0.149 at v5), so the AraRooPat-specific deficit comes with the vocabulary — the three-token literal spelling, its initialisation or Phase 1's raw-text statistics, which those cells cannot separate — not with Phase 3. What Phase 3 adds is a letter-prior shift shared by every arm (ΔE_أ +0.274 / +0.250 AraRooPat, +0.372 / +0.399 BPE-16K, +0.116 / +0.177 native) that flattens BPE-16K's أ preference to ≈ 0 and pushes AraRooPat's weaker one into an aversion, plus AraRooPat's د preference; the from-scratch arms' slot-1 aversion is present from Phase 1 in both vocabularies alike. The ACVA "win" is the label prior of §3.10 (a), not recognition. **§3.13 located the letter-invariant Culture-MMLU residual (−0.039):** it is a broad recognition gap. No category separates (p 0.054, so rule R1 misses by 0.004; every full-dump category trails BPE-16K by −0.015 to −0.035), and it does not track how much more AraRooPat fragments the prompt (p 0.40 / 0.36). The Arabic-Exam control is silent (p 0.49).
+
+10. (§3.14–§3.17, brief v6, 2026-10-09 → 10-13) **Across three base models.** The setup was Qwen3-4B-Base, Llama-3.2-3B and Gemma-3-4B, four tokenizers each, one recipe, judged by gpt-oss-120b (the primary by rule S4 until the human rating is complete).
+    - **Recognition replicates on every model.** On the letter-scored benchmarks the order is native > BPE > AraRooPat. AraRooPat − BPE-16K runs −0.013 to −0.047, every range below zero. Under the letter-fair decision the exam gap disappears on all three models, and the MMLU gap stays at −0.026 to −0.039.
+    - **Writing does not replicate uniformly.** AraRooPat − BPE-16K is above zero on Qwen (+0.212) and Llama (+0.132, by a hair) and includes zero on Gemma (−0.016). AraRooPat − native is below zero on Qwen (−0.152) and Gemma (−0.284) and a tie on Llama.
+    - **A native-sized BPE (128 000 pieces) never helps.** It is the weakest trained writer on all three models, and on recognition it equals BPE-16K or trails it. 0.99 % of its pieces never occur in the adaptation text, and its answers use none of them.
+    - **Response time follows characters per piece on every model.** BPE-128K is fastest per 100 characters; AraRooPat is 41–44 % slower than BPE-16K. The tokenizers' own CPU time is under 0.1 % of an answer.
+    - **The sign of the gold-أ letter gap depends on the base model.** AraRooPat − BPE-16K is negative on Qwen and Llama and positive on Gemma.
+    - **Judges.** On Qwen, AraRooPat − BPE-16K keeps its sign under four judges; Falcon-H1 does not separate the two. gpt-oss also ranks the chosen teacher first.
+    - **A measurement trap.** Without its BOS, Gemma's own tokenizer looks 0.47 nats/char worse on raw text than it is.
 
 ## 5. Open items and next steps (in the order proposed)
 
@@ -1496,6 +2053,14 @@ The Arabic-Exam `Language` observation under the official prompt is a separate, 
     - Outcome: J1 fires (AraRooPat − BPE-16K +0.172 [+0.048, +0.300]); J2 holds (AraRooPat − native v5 −0.048 [−0.172, +0.080]); J3 QWK 0.737–0.808 per cell; J4 the gap survives on length-matched prompts under both judges.
     - What remains is the rater (item 15). The API judge's scale is compressed at the top: the teacher 3.308 against Gemma's 3.652, few 5s. So distillation gains read smaller under it. If a third judge is ever added, choose one with a different scale behaviour, not another reasoning-API model of the same kind.
 
+28. **The blind rating** (`v5_blind`, 149 of 200 left). Then S2 / S3 (§3.14). If S3 names Falcon-H1: re-judge the Qwen, ablation and bake-off cells with Falcon (Falcon's own bake-off cell flagged, J10), regenerate the tables, and have the report state both judges.
+29. **`gen_tokens` counts trailing pads** (§3.16 side finding). The free-form eval's `gen_tokens` / `mean_gen_tokens` / `gen_tokens_per_sec` include the pad tokens of a row that stopped early inside a batch. Count up to each row's stop instead; characters are unaffected.
+30. **The raw-text diagnostic and BOS** (§3.17). The default blocks carry no BOS, which is right for Qwen3 and for the adapted arms but wrong for a BOS-trained base model (native Gemma 1.23 → 0.76 nats/char with it). Make `--bos-blocks` the default for tokenizers whose native training always opens with a BOS, or report both, as T2-continued now does.
+31. **The training recipe is Qwen-tuned.** On Llama and Gemma the untouched base beats every trained version on the exams under the letter-fair decision, and on Gemma under the standard decision too (§3.17). A per-model learning-rate check is the first test. Applied to nothing; the brief fixes one recipe for all models.
+32. **Response time costs about 1 h per 4 B cell** with HF `generate` at batch 1 (14.6 GPU-h for fifteen cells). Batch-1 answers also differ from the batched evaluation's on 54–73 % of prompts (bf16 batch shape). A static-cache or server-based timing would be cheaper; applied to nothing.
+33. **Queue chains** (`_comparative_tables/chains/`): a waiter must match a whole-line `QUEUE_DONE`. A quoted marker started a queue early once (10-11 06:27; no effect on results).
+34. **Item 2 still stands for the default held-out file.** Only the BPE-128K configs name `heldout_sets_v2.yaml`, which registers the raw-text set. Register it in `heldout_sets.yaml` when the next pool family is built from scratch.
+
 ## 6. GPU time (2026-09-22 onwards)
 Four training runs 8 h 52 min (1 h 15 lost attempt + 3 h 17 v3 + 0 h 56 lost attempt + 3 h 25 BPE), probe ~35 min, six diagnostics ~6 min, judge passes ~10 min — ≈ 9 h 43 min. Earlier: v1 ~1 h, v2 ~1.5 h (+ 45 min resume), native runs and re-evals ~2 h.
 
@@ -1514,6 +2079,19 @@ Four training runs 8 h 52 min (1 h 15 lost attempt + 3 h 17 v3 + 0 h 56 lost att
 Analysis tab (2026-09-25, tooling): the local Gemma-4-31B server for the protocol and fp8 tests, 20:41–21:08 UTC — **≈ 27 min** (three cold starts of 2.5–4.5 min, 15 benchmark questions, one headless page check).
 
 §3.13 (2026-09-26): **none.** CPU only: the residual script took 24 s per run (two runs); the five named test files 70 passed in about 20 s (21 / 8 / 20 / 9 / 12); the full suite on CPU 1 596 passed, 2 skipped (the `bpe_32k` / `wordpiece_32k` round-trip tests: those tokenizers are not on this machine) in 394 s. API (gpt-5.6-terra, no GPU): 1 250 verdicts in all — attempt 1 made no call (no network in the sandbox); the first invocation (attempt 2) made 500 verdicts plus 68 refused `HTTP 429` retries before the credits ran out (482 s); the second invocation (Fable session) made 750 (490 s). The P1 analysis scripts run in 6 s and < 10 s on CPU; the set build is instant.
+
+Brief v6 (2026-10-09 → 10-13; `_comparative_tables/chains/*_timing.jsonl`, the stage reports). Total **≈ 81.9 GPU-h** against the brief's ~67 h:
+
+| stage | GPU-h | parts |
+|---|---|---|
+| P0 + P1 | 14.2 | BPE-128K on Qwen 4.3; its judge, diag, MCQ and rotations 3.7; response time ×5 5.3; probes, S1 and smokes 0.9 |
+| P2, Llama-3.2-3B | 22.8 | arms 9.6, MCQ 9.5, response time 3.4, judges + diag 0.2 |
+| M4 re-judge | 0.13 | |
+| P3, Gemma-3-4B | 36.7 | arms 15.2, MCQ 15.4, response time 6.0, judges + diag 0.2 |
+| BOS check | 0.06 | |
+| P4 rotations | 8.1 | Llama 3.5, Gemma 4.6 |
+
+The overrun is response time: 14.6 h for fifteen cells against ~2.5 h estimated. Every judge pass together came to about 0.8 h.
 
 ## 7. References
 - Xu, J. et al. (2022). *Learning to Break the Loop: Analyzing and Mitigating Repetitions for Neural Text Generation* (DITTO). NeurIPS.
@@ -1559,6 +2137,21 @@ Thesis-supervisor deck (2026-09-26): `outputs/experiments/qwen_native_vs_araroop
 
 *Verification of the deck (2026-10-01, Fable session; no GPU, nothing in `_presentation/` changed).* Confirmed against the file: 53 slides (45 main + 8 appendix), 16:9, notes on every slide, 20 figures, `deck_kit.audit` 0 findings, 716 registry lines in `numbers_used.md`. Every registered number of three or more digits occurs in this report, `CLAUDE.md` or the AraRooPat handoff except four that come from the demo files (token ids 296 / 4574, row indices 8090 / 3750 — checked there). Recomputed with `paired_compare.py`: ffstop − v3 +0.148 [+0.036, +0.260], BPE ffstop − BPE v3 +0.004 [−0.128, +0.136], v4 − ffstop +0.032 [−0.092, +0.156], v5 − v4 +0.248, native v5 − native SFT +0.240, BPE v5 − BPE ffstop +0.136 [−0.012, +0.280] — all as on the slides. Read from the cells: the 13 judge means / SEs / loop rates of the appendix cells table, the nine rows of the free-form table (stop shares, mean chars, raw-text and answer NLL per character), the benchmark sizes (9 000 / 22 977 / 14 455 / 14 327), fertility 3.22 / 1.51 / 2.30, the GPU-time table against §6, and the values behind `fig_intrinsic`, `fig_trajectory`, `fig_residual`. **Corrections owed before the deck is shown** (text only, no number is wrong at its source): (a) slides 2 and 11 show `والكتاب` (glossed ‘and the book’) with the pattern فُعّال — the saved vocabulary really emits `[PAT_1ُ2ّا3ِ]` (the reading كُتّاب) for `والكتاب` while `الكتاب` and `كتاب` get `[PAT_1ِ2ا3ِ]`; `والكاتب` gives the textbook فاعِل at the same 14 tokens for the sentence; (b) slide 4's rule 5 is a clause of this report's rule 1 and rule 5 (*one teacher, whole*) is missing, although the slide cites §3.8; (c) slide 39's text gives the category-spread p as 0.054 (rotation-averaged, 1 000-row subset) beside a chart titled p = 0.237 (standard decision, full dumps) and calls 0.054 simply not significant; (d) slide 38 says BPE-16K's أ preference is flattened to about zero — E_أ at v5 is −0.100; (e) slide 35 says one label takes 89–100 % of predictions on these sets beside a chart showing 0.50 and 0.62 for two arms — true of the collapsed cases only; (f) slide 9 says every from-scratch tokenizer was retrained after the alef fold was switched off — only the campaign's two were; (g) slide 23 says 37 M tokens is two to three orders of magnitude below 2.5–10 B — it is 68 to 270 times less, about two; (h) slide 31's title starts the loop trajectory at v3's 31.2 % although the chart's first point is v2's 27.6 %; (i) slide 32's rating count (51 of 200) is dated 26 Sep; (j) the words *granularity confound*, *ablation*, *gate*, *probe* and *tercile* are on slides without a glossary line, and *prior* survives in the notes of slide 35. Not verified here: the rendering in PowerPoint (no LibreOffice on this machine; 17 of the 53 PIL previews were read), the 14 other charts' values, and a rebuild from the scripts. **An engine observation that came out of (a), measured on three surfaces only:** the pattern token of a noun can change with its proclitic — CAMeL's top reading is chosen per surface form, so `الكتاب` and `والكتاب` share the root token and decode correctly but carry different pattern tokens. How often this happens in the corpus is not measured; a candidate item for the next vocabulary, applied to nothing.
 
+Brief v6 artifacts (2026-10-09 → 10-13):
+- **The deliverable:** `docs/comparative_tables_2026-10.md`, regenerated by `scripts/build_comparative_tables.py`. The CSVs, `comparative_tables.xlsx` and `numbers_sources.md` are in `outputs/experiments/_comparative_tables/<date>/`; the build refuses an unsourced number.
+- **The running record:** `_comparative_tables/ROADMAP.md`, `HANDOVER.md`, and `stage_reports/{P0_P1_2026-10-10,P2_2026-10-11,P3_P4_final_2026-10-13}.md`.
+- **The judge choice:** `_comparative_tables/judge_selection.json`; the re-judge snapshot is `_comparative_tables/m4/before/`; the judge probes are in `outputs/judge_probes/2026-10-0{9,10}/`.
+- **Coverage and compute:** `_comparative_tables/m5/{tokenizer_basics,adaptation_token_counts,unseen_in_answers}.json` and `m10/phase3_tokens.json`.
+- **Speed and time:** tokenizer speed in `outputs/experiments/_tokenizer_speed/2026-10-09/speed_v1.json`; response time in `<cell>/timing_v1.json`; the raw-text check in `<cell>/diag_heldout_rawtext_v1[_base]_bosblocks.json`.
+- **Letter slot:** `qwen_native_vs_araroopat/_letter_slot/letter_slot_bpe128k.json` and `{llama3b,gemma3_4b}_tokenizers/_letter_slot/letter_slot.{md,json}`.
+- **Configs:**
+  - `configs/experiments/qwen_bpe128k_3phase_v5_distill.yaml`, `mcq_v5/mcq_bpe128k_v5.yaml`, `mcq_letter_slot/bpe128k_v5_*.yaml`;
+  - `configs/experiments/models_x_tokenizers/` (from `scripts/make_model_arm_configs.py --model <m> [--mcq | --rotations]`);
+  - `configs/judges/{gptoss_120b,falcon_h1_34b,mistral_small_32,phi4}_local.yaml`;
+  - `configs/contamination/heldout_sets_v2.yaml`.
+- **Code:** `src/arabic_eval/models/gemma3_adapter.py`, `tokenizers/native_gemma.py`, and the scripts listed in the stage reports.
+- **Commits:** none yet (the user commits).
+
 ## 9. Cells of `outputs/experiments/qwen_native_vs_araroopat/`
 Current: `native_qwen3_base_m2_c2400`, `native_qwen3_sft_m2_c2400`, `araroopat_3phase_v2`, `araroopat_3phase_v3`, `bpe_16k_3phase_v3`, **`araroopat_3phase_v3_ffstop`**, **`bpe_16k_3phase_v3_ffstop`** (§3.6: the same recipe with the free-form-aware early stop), **`araroopat_3phase_v4`** (§3.7: Phase 3 at 45 000 × 25/15/60, max_length 1 024 — judge 2.18, the highest AraRooPat cell but not separable from ffstop; the current best arms of each vocabulary are v4 / ffstop for AraRooPat and ffstop for BPE). Older rule sets, kept: `native_qwen3` (untrained base, v1 template), `native_qwen3_base`, `native_qwen3_sft`, `araroopat` (v1). Under `_superseded/`: `native_qwen3_base_after_loop_fix`, `native_qwen3_sft_reeval`, `native_qwen3_{base,sft}_m2_c1200`, the two lost v3 attempts.
 
@@ -1573,3 +2166,13 @@ New in §3.11 (eval only, schema-3 row dumps, in the sub-folder `_letter_slot/` 
 New in §3.12 (eval only, schema-3 row dumps, in `_letter_slot/` too): `araroopat_p1_rot0..3`, `araroopat_p2_rot0..3`, `bpe16k_p1_rot0..3`, `bpe16k_p2_rot0..3` — the Phase 1 (`embedding_alignment`, embedding-only) and Phase 2 (`warmup`) checkpoints of `araroopat_3phase_v3` / `bpe_16k_3phase_v3` (the checkpoints the v5 arms' Phase 3 started from) under rotations 0–3, 3-shot, Arabic-Exam and Culture-MMLU on the 1 000-row subsets. `letter_slot_trajectory.{md,json}` sits in the same folder.
 
 New in §3.13 (no cells): `_letter_slot/residual_by_subject.{md,json}` and `_letter_slot/_audit/residual_gold_slot_split.{py,json}`. Kept under `araroopat_3phase_v5_distill/freeform_judge/_superseded/` with a README: `gpt56_terra_2026-09-24_cells_probe.parquet`, the 09-24 verification verdicts of the judge stage's `--cells` feature, copied before the five-cell `gpt56_terra` run, whose first invocation replaced the live file beside it at 08:04. Every cell of the v5 comparison — `teacher_aya_expanse_32b_m2_c2400`, `araroopat_3phase_v5_distill`, `bpe_16k_3phase_v5_distill`, `native_qwen3_sft_v5_distill`, `native_qwen3_base_m2_c2400` — now holds `freeform_judge/gpt56_terra.parquet` beside `gemma4_31b.parquet`. The experiment folder gains `freeform_rating/v5_blind.json`, the blind set with its hidden cells. `araroopat` (v1) and `araroopat_3phase_v2` also hold older `gpt56_terra` files, untouched.
+
+New in brief v6 (2026-10-09 → 10-13):
+- **In this folder:** `bpe_128k_3phase_v5_distill` (BPE-128K, Phases 1–3 in one run) and `bpe_128k_3phase_v5_distill_mcq4096`, plus `_letter_slot/bpe128k_v5_{rot0..3,0shot}`.
+  - Every free-form cell here holds `freeform_judge/gptoss_120b.parquet`, the primary judge since 10-11.
+  - The five v5-era cells and BPE-128K also hold `falcon_h1_34b.parquet`.
+  - `araroopat_3phase_v5_distill` holds the two `_repeat` files.
+- **Two new experiment folders,** `outputs/experiments/llama3b_tokenizers/` and `outputs/experiments/gemma3_4b_tokenizers/`, with the same layout:
+  - the cells `araroopat_3phase_v5_distill`, `bpe_16k_3phase_v5_distill`, `bpe_128k_3phase_v5_distill`, `native_sft_v5_distill` and `native_base_m2_c2400`, each with `timing_v1.json` and both raw-text diagnostics;
+  - their `*_mcq4096` cells (`native_base_mcq4096` for the base);
+  - `_letter_slot/<arm>_<cond>` (25 cells) and `letter_slot.{md,json}`.

@@ -1,0 +1,24 @@
+# Local open judge candidate C2 (brief v6, 2026-10-09): mistralai/Mistral-Small-3.2-24B-Instruct-2506,
+# Apache-2.0, 24 B dense, a second vendor; Arabic among its languages. The checkpoint is vision-language
+# (Mistral3ForConditionalGeneration); the judge is text-only — VllmBackend sets limit_mm_per_prompt to 0.
+# Loaded the way vLLM recommends for Mistral-Small-3.x (mistral tokenizer / config / weights format); if the
+# HF-format path gives the same verdicts on the probe, the simpler one is preferred and the report says which.
+# revision pinned to the snapshot downloaded on 2026-10-09 (the repo is not gated).
+judge:
+  name: "mistral_small_32"
+  backend: "vllm"
+  model: "mistralai/Mistral-Small-3.2-24B-Instruct-2506"
+  revision: "95a6d26c4bfb886c58daf9d3f7332c857cb27b43"   # snapshot downloaded 2026-10-09 (session 77; consolidated + HF shards)
+  rubric: "default_v1"
+  temperature: 0.0
+  max_tokens: 256
+  seed: 0
+  structured_json: true
+  max_model_len: 4096
+  gpu_memory_utilization: 0.92
+  dtype: "bfloat16"
+  batch_size: 64
+  engine_kwargs:
+    tokenizer_mode: "mistral"
+    config_format: "mistral"
+    load_format: "mistral"

@@ -70,6 +70,9 @@ def test_strip_specials_and_blocks():
     assert blocks == [[5, 6, 7, 2]]                       # [8, 9, 2] tail dropped
     assert D.blocks_from([[5] * 10], eos=2, block=4) == [[5, 5, 5, 5], [5, 5, 5, 5]]
     assert D.blocks_from([], eos=2, block=4) == []
+    # --bos-blocks: BOS first, then block − 1 text tokens; same block length, same scored positions per block
+    assert D.blocks_from([[5, 6, 7], [8, 9]], eos=2, block=4, bos=1) == [[1, 5, 6, 7], [1, 2, 8, 9]]
+    assert D.blocks_from([[5] * 10], eos=2, block=4, bos=1) == [[1, 5, 5, 5], [1, 5, 5, 5], [1, 5, 5, 5]]
 
 
 def test_answer_encodings_current_and_v1_template():

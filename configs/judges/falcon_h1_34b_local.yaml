@@ -1,0 +1,25 @@
+# Local open judge candidate C3 (brief v6, 2026-10-09): tiiuae/Falcon-H1-34B-Instruct under vLLM on the H100.
+# TII's hybrid Mamba-attention model. It was a teacher bake-off *candidate* (not the teacher — that is
+# Aya-Expanse-32B); re-admitted as a judge on 2026-10-09 with one safeguard: its verdicts on its own bake-off
+# cell (teacher_bakeoff/falcon_h1_34b) are flagged and left out of the bake-off order (docs/report.md §3.14, J10).
+# Loader facts from the bake-off (configs/distill/teacher_candidates.yaml): bf16 at vLLM's default max_num_seqs
+# OOMs — the Mamba state cache is 73 GiB on top of 63 GiB of weights — so max_num_seqs 32 at 0.95.
+# Run from the judge venv with scripts/judge/run_judge.sh, HF_HUB_OFFLINE=1. Cannot share the GPU with a run.
+judge:
+  name: "falcon_h1_34b"
+  backend: "vllm"
+  model: "tiiuae/Falcon-H1-34B-Instruct"
+  revision: "6e6890e26cba1f58b1e6ee70d654ddf054f9fce8"
+  rubric: "default_v1"
+  temperature: 0.0
+  max_tokens: 256
+  seed: 0
+  structured_json: true
+  max_model_len: 4096
+  gpu_memory_utilization: 0.95
+  dtype: "bfloat16"
+  batch_size: 32
+  engine_kwargs:
+    max_num_seqs: 32
+  chat_template_kwargs:
+    enable_thinking: false

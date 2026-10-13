@@ -285,6 +285,24 @@ class TestRating:
         assert (repo / "outputs/experiments/sweep/freeform_rating/v1.agreement.json").exists()
         assert R.list_sets(repo, "outputs/experiments/sweep")["sets"][0]["raters"] == [{"rater": "alice", "n_rated": 12}, {"rater": "bob", "n_rated": 12}]
 
+    def test_agreement_reads_judges_added_after_the_build(self, repo):
+        # docs/report.md §3.14 S2: a judge that runs after the set was built is read from the cells' files
+        R.build_set(repo, "outputs/experiments/sweep", name="v1", n_prompts=6, variants_per_prompt=2, seed=1)
+        doc = json.loads((repo / "outputs/experiments/sweep/freeform_rating/v1.json").read_text(encoding="utf-8"))
+        assert doc["judges"] == ["ja", "jb"]
+        for c, off in (("native_llama", 0), ("bpe_32k", 2)):        # jc = ja shifted by one point
+            write_report_table(repo / "outputs/experiments/sweep" / c / "freeform_judge" / "jc.parquet",
+                               _judge_rows(12, off, 1), JUDGE_FIELDS, metadata={"judge": {"model": "model/jc"}})
+        for it in doc["items"]:
+            R.submit(repo, "outputs/experiments/sweep", "v1", "alice", it["item_id"], 3)
+        ag = R.agreement(repo, "outputs/experiments/sweep", "v1")
+        assert ag["judges_at_build"] == ["ja", "jb"] and ag["judges_from_cells"] == ["jc"]
+        assert ag["judge_items_covered"] == {"ja": 12, "jb": 12, "jc": 12}
+        assert ag["raters"]["alice"]["vs_judge"]["jc"]["n"] == 12 and "ja|jc" in ag["judge_vs_judge_on_items"]
+        assert all("jc" in v["judges"] for v in ag["per_cell"].values())
+        old = R.agreement(repo, "outputs/experiments/sweep", "v1", extra_judges_from_cells=False)
+        assert old["judges_from_cells"] == [] and set(old["raters"]["alice"]["vs_judge"]) == {"ja", "jb"}
+
     def test_validation(self, repo):
         R.build_set(repo, "outputs/experiments/sweep", name="v1", n_prompts=4, variants_per_prompt=2)
         with pytest.raises(R.FreeformError, match="1–5"):

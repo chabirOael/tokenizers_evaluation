@@ -1,0 +1,9 @@
+# Wraps the pretrained Gemma-3 tokenizer; train() is a no-op. vocab_size reports the text model's padded
+# embedding rows (262 208 for gemma-3-4b-pt; the tokenizer has 262 144 entries) so the resize is a no-op.
+# Pair it with model.type: gemma3 (the text model of the multimodal checkpoint, src/arabic_eval/models/gemma3_adapter.py).
+tokenizer:
+  type: "native_gemma"
+  vocab_size: 262208
+  params:
+    model_name_or_path: "google/gemma-3-4b-pt"
+  save_path: "outputs/tokenizers/native_gemma"

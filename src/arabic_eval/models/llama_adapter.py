@@ -88,12 +88,7 @@ class LlamaAdapter(BaseModelAdapter):
 
         logger.info("Loading model: %s (dtype=%s, device=%s)", model_name_or_path, dtype, device)
         configure_sdpa_backends()
-        self._model = AutoModelForCausalLM.from_pretrained(
-            model_name_or_path,
-            torch_dtype=torch_dtype,
-            device_map=device if device != "cpu" else None,
-            trust_remote_code=True,
-        )
+        self._model = self._load_model(model_name_or_path, torch_dtype, device)
         if device == "cpu":
             self._model = self._model.to("cpu")
 
@@ -110,6 +105,16 @@ class LlamaAdapter(BaseModelAdapter):
         # the attention mask before passing it to the transformer.
         self._charformer_downsample_rate: int = 1
         logger.info("Model loaded — parameters: %d", sum(p.numel() for p in self._model.parameters()))
+
+    def _load_model(self, model_name_or_path: str, torch_dtype: torch.dtype, device: str):
+        """The pretrained causal LM. A subclass overrides it when a checkpoint needs another
+        loader (``Gemma3Adapter``: the text model of a multimodal checkpoint)."""
+        return AutoModelForCausalLM.from_pretrained(
+            model_name_or_path,
+            torch_dtype=torch_dtype,
+            device_map=device if device != "cpu" else None,
+            trust_remote_code=True,
+        )
 
     def adapt_to_tokenizer(self, tokenizer: BaseTokenizer) -> None:
         """Adapt model's embedding/output layers for the given tokenizer."""

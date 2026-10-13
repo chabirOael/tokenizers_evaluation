@@ -25,8 +25,24 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
 from arabic_eval.judge.freeform_judge import (  # noqa: E402
-    JudgeConfig, build_messages, discover_cells, format_table, load_generations, make_backend, run,
+    JudgeConfig, VllmBackend, build_messages, discover_cells, format_table, load_generations, make_backend, run,
 )
+
+
+def _rendered_chat(cfg: JudgeConfig, messages) -> str:
+    """The exact text a local judge sees: the model's own chat template over the messages with the YAML's
+    chat_template_kwargs, from the cached tokenizer only (no download). A Mistral judge loaded with
+    tokenizer_mode=mistral renders through mistral_common instead — the HF template is shown for reference."""
+    if cfg.backend != "vllm":
+        return "(API judge: the messages above are sent as they are)"
+    try:
+        from transformers import AutoTokenizer
+        tok = AutoTokenizer.from_pretrained(cfg.model, revision=cfg.revision, local_files_only=True)
+        text = tok.apply_chat_template(messages, tokenize=False, add_generation_prompt=True, **cfg.chat_template_kwargs)
+        note = " (HF template; vLLM renders through mistral_common)" if cfg.engine_kwargs.get("tokenizer_mode") == "mistral" else ""
+        return f"rendered chat for {cfg.name}{note}:\n{text}"
+    except Exception as e:  # noqa: BLE001 — a dry run never fails on the rendering
+        return f"(chat template of {cfg.model} not rendered: {type(e).__name__}: {e})"
 
 
 def main() -> int:
@@ -52,9 +68,16 @@ def main() -> int:
             return 1
         gens, meta = load_generations(cells[0])
         print(f"cell {cells[0].name}: {len(gens)} generations (token cap {meta.get('token_cap')})\n")
+        for c in cfgs:
+            opts = VllmBackend.engine_options(c) if c.backend == "vllm" else {}
+            print(f"judge {c.name}: {c.backend} {c.model} engine options {opts} chat_template_kwargs {c.chat_template_kwargs}")
+        print()
         for g in gens[:2]:
-            print(build_messages(g["instruction"], g.get("context") or "", g["reference"], g["generation"], cfgs[0].rubric)[0]["content"])
-            print("\n" + "=" * 80 + "\n")
+            msgs = build_messages(g["instruction"], g.get("context") or "", g["reference"], g["generation"], cfgs[0].rubric)
+            print(msgs[0]["content"])
+            print("\n" + "-" * 80)
+            print(_rendered_chat(cfgs[0], msgs))
+            print("=" * 80 + "\n")
         return 0
     backends = {c.name: make_backend(c) for c in cfgs}
     report = run(args.experiment, cfgs, backends, baseline=args.baseline, limit=args.limit,

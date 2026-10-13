@@ -58,6 +58,66 @@ class TestConfig:
         cfg2 = J.JudgeConfig(name="j", backend="openai", model="m", api_key_env="MYKEY", structured_json=False)
         assert "response_format" not in J.OpenAICompatibleBackend(cfg2)._body([])
 
+    # brief v6 (2026-10-09): the local open-judge candidates need loader / chat options per model
+    def test_candidate_yamls_load(self):
+        f = J.JudgeConfig.from_yaml(REPO / "configs/judges/falcon_h1_34b_local.yaml")
+        assert f.revision == "6e6890e26cba1f58b1e6ee70d654ddf054f9fce8"
+        assert f.engine_kwargs == {"max_num_seqs": 32} and f.chat_template_kwargs == {"enable_thinking": False}
+        assert f.gpu_memory_utilization == 0.95 and f.temperature == 0.0 and f.seed == 0 and f.structured_json
+        g = J.JudgeConfig.from_yaml(REPO / "configs/judges/gptoss_120b_local.yaml")
+        assert g.engine_kwargs == {"reasoning_parser": "openai_gptoss"} and g.chat_template_kwargs == {"reasoning_effort": "low"}
+        assert g.dtype == "auto" and g.max_tokens == 1024
+        m = J.JudgeConfig.from_yaml(REPO / "configs/judges/mistral_small_32_local.yaml")
+        assert m.engine_kwargs == {"tokenizer_mode": "mistral", "config_format": "mistral", "load_format": "mistral"}
+        p = J.JudgeConfig.from_yaml(REPO / "configs/judges/phi4_local.yaml")
+        assert p.engine_kwargs == {} and p.chat_template_kwargs == {}
+        # the committed Gemma judge gains nothing: its engine options are empty
+        assert J.VllmBackend.engine_options(J.JudgeConfig.from_yaml(REPO / "configs/judges/gemma4_31b_local.yaml")) == {}
+
+    def test_engine_options_merge_order(self):
+        cfg = J.JudgeConfig(name="j", backend="vllm", model="m", revision="abc", quantization="fp8",
+                            engine_kwargs={"max_num_seqs": 32, "quantization": "awq"})
+        opts = J.VllmBackend.engine_options(cfg)
+        assert opts == {"revision": "abc", "tokenizer_revision": "abc", "quantization": "awq", "max_num_seqs": 32}
+
+    def test_local_options_refused_on_api_backend_and_bad_types(self, tmp_path):
+        for kw in ({"revision": "abc"}, {"quantization": "fp8"}, {"engine_kwargs": {"max_num_seqs": 2}},
+                   {"chat_template_kwargs": {"enable_thinking": False}}):
+            with pytest.raises(ValueError, match="vllm backend only"):
+                J.JudgeConfig(name="j", backend="openai", model="m", **kw)
+        with pytest.raises(ValueError, match="must be a mapping"):
+            J.JudgeConfig(name="j", backend="vllm", model="m", engine_kwargs=["max_num_seqs"])
+        p = tmp_path / "j.yaml"
+        p.write_text("judge: {name: j, backend: vllm, model: m, engine_kwargs: null, chat_template_kwargs: null}\n",
+                     encoding="utf-8")
+        cfg = J.JudgeConfig.from_yaml(p)
+        assert cfg.engine_kwargs == {} and cfg.chat_template_kwargs == {}
+
+    def test_vllm_complete_passes_chat_template_kwargs(self):
+        calls = []
+
+        class _Out:
+            def __init__(self, t):
+                self.outputs = [type("o", (), {"text": t})()]
+
+        class _LLM:
+            def chat(self, batch, sampling, use_tqdm=False, **kw):
+                calls.append(kw)
+                return [_Out('{"score": 3}') for _ in batch]
+
+        def backend(cfg):
+            b = object.__new__(J.VllmBackend)
+            b.cfg, b.llm, b.sampling = cfg, _LLM(), None
+            return b
+
+        convs = [[{"role": "user", "content": str(i)}] for i in range(5)]
+        with_kw = J.JudgeConfig(name="j", backend="vllm", model="m", batch_size=2, chat_template_kwargs={"enable_thinking": False})
+        assert backend(with_kw).complete(convs) == ['{"score": 3}'] * 5
+        assert calls == [{"chat_template_kwargs": {"enable_thinking": False}}] * 3
+        calls.clear()
+        backend(J.JudgeConfig(name="j", backend="vllm", model="m")).complete(convs[:1])
+        assert calls == [{}]                     # the Gemma judge's call is unchanged
+
 
 class TestPromptAndParsing:
     def test_messages(self):

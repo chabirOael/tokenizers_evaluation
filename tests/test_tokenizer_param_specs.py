@@ -28,7 +28,7 @@ from arabic_eval.tools.experiment_console import ConsolePaths, param_warnings, p
 
 REPO = Path(__file__).resolve().parents[1]
 REAL = ConsolePaths(REPO)
-NATIVE = {"native_llama", "native_qwen3"}
+NATIVE = {"native_llama", "native_qwen3", "native_gemma"}
 FROM_SCRATCH = ["bpe", "wordpiece", "morpho_bpe", "character_bert", "farasa_character_bert", "char_jaber", "charformer", "araroopat"]
 
 
@@ -84,6 +84,8 @@ def test_constructor_defaults_equal_the_spec():
     from arabic_eval.tokenizers.native_qwen3 import DEFAULT_MODEL as QWEN, NativeQwen3Tokenizer
     assert spec_defaults(NativeLlamaTokenizer.param_spec()) == {"model_name_or_path": LLAMA}
     assert spec_defaults(NativeQwen3Tokenizer.param_spec()) == {"model_name_or_path": QWEN} and LLAMA != QWEN
+    from arabic_eval.tokenizers.native_gemma import DEFAULT_MODEL as GEMMA, NativeGemmaTokenizer
+    assert spec_defaults(NativeGemmaTokenizer.param_spec()) == {"model_name_or_path": GEMMA} and GEMMA not in (LLAMA, QWEN)
 
 
 def test_tokenizer_presets_are_declared_typed_and_differ_only_where_documented():

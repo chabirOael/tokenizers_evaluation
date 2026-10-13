@@ -1,0 +1,16 @@
+# Local open judge candidate C4, optional (brief v6, 2026-10-09): microsoft/phi-4, MIT, 14 B dense, a fourth
+# vendor; moderate Arabic. Run only if the user downloads it. revision: pinned after the download.
+judge:
+  name: "phi4_14b"
+  backend: "vllm"
+  model: "microsoft/phi-4"
+  revision: null
+  rubric: "default_v1"
+  temperature: 0.0
+  max_tokens: 256
+  seed: 0
+  structured_json: true
+  max_model_len: 4096
+  gpu_memory_utilization: 0.92
+  dtype: "bfloat16"
+  batch_size: 64
