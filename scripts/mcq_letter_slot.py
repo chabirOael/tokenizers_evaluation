@@ -69,6 +69,10 @@ PAIRS = (
     ("araroopat_v5", "bpe16k_v5"), ("araroopat_v5", "native_v5"), ("bpe16k_v5", "native_v5"),
     ("araroopat_v5", "native_base"), ("bpe16k_v5", "native_base"), ("native_v5", "native_base"),
 )
+#: BPE-128K (brief v6 §4.3, 2026-10-10): added by default_pairs only when --arms names bpe128k_v5
+EXTRA_PAIRS = (
+    ("bpe128k_v5", "bpe16k_v5"), ("araroopat_v5", "bpe128k_v5"), ("bpe128k_v5", "native_v5"), ("bpe128k_v5", "native_base"),
+)
 #: Training-stage families of the trajectory (§3.12), each in training order: (stage label, arm).
 FAMILIES = (
     ("AraRooPat", (("P1", "araroopat_p1"), ("P2", "araroopat_p2"), ("v5", "araroopat_v5"))),
@@ -626,7 +630,7 @@ def zero_shot_rule(zp: Dict[str, Any]) -> Dict[str, Any]:
 def default_pairs(arms: Sequence[str]) -> List[Tuple[str, str]]:
     """PAIRS then STAGE_PAIRS, each kept when both arms are analysed (the default four arms → PAIRS exactly)."""
     have = set(arms)
-    return [p for p in dict.fromkeys(tuple(PAIRS) + tuple(STAGE_PAIRS)) if p[0] in have and p[1] in have]
+    return [p for p in dict.fromkeys(tuple(PAIRS) + tuple(STAGE_PAIRS) + tuple(EXTRA_PAIRS)) if p[0] in have and p[1] in have]
 
 
 def analyze(experiment: Path, rows_dir: Path, tasks: Sequence[str] = TASKS, arms: Sequence[str] = ARMS,

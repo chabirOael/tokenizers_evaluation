@@ -227,7 +227,13 @@ def _pair_stats(x: Sequence[int], y: Sequence[int]) -> Dict[str, Any]:
             "mean_x": round(sum(x) / len(x), 4) if x else None, "mean_y": round(sum(y) / len(y), 4) if y else None}
 
 
-def agreement(repo_root: Path, experiment: str, name: str) -> Dict[str, Any]:
+def agreement(repo_root: Path, experiment: str, name: str, extra_judges_from_cells: bool = True) -> Dict[str, Any]:
+    """Reveal the cells and compare the raters with every judge on the rated items.
+
+    Judge scores are read from the cells' ``freeform_judge/*.parquet`` files at call time (``load_cell``),
+    so a judge that ran after the set was built is included — ``judges_from_cells`` names those,
+    ``judges_at_build`` the ones the set recorded. ``extra_judges_from_cells=False`` keeps only the
+    judges recorded at build time (docs/report.md §3.14, S2)."""
     repo_root = Path(repo_root)
     exp_dir = _experiment_dir(repo_root, experiment)
     doc = _load_set(exp_dir, name)
@@ -245,7 +251,14 @@ def agreement(repo_root: Path, experiment: str, name: str) -> Dict[str, Any]:
         r = next((x for x in cells[cell]["rows"] if x["id"] == it["prompt_id"]), None)
         for jn, v in ((r or {}).get("judges") or {}).items():
             judge_score.setdefault(jn, {})[it["item_id"]] = None if not v or v.get("score") is None else int(v["score"])
-    out: Dict[str, Any] = {"set": name, "n_items": len(doc["items"]), "raters": {}, "rater_vs_rater": {},
+    at_build = list(doc.get("judges") or [])
+    if not extra_judges_from_cells:
+        judge_score = {jn: js for jn, js in judge_score.items() if jn in at_build}
+    out: Dict[str, Any] = {"set": name, "n_items": len(doc["items"]), "judges_at_build": at_build,
+                           "judges_from_cells": sorted(jn for jn in judge_score if jn not in at_build),
+                           "judge_items_covered": {jn: sum(1 for v in js.values() if v is not None)
+                                                   for jn, js in sorted(judge_score.items())},
+                           "raters": {}, "rater_vs_rater": {},
                            "judge_vs_judge_on_items": {}, "per_cell": {}}
     for rn, ratings in raters.items():
         entry: Dict[str, Any] = {"n_rated": len(ratings), "vs_judge": {}}

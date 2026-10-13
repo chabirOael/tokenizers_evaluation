@@ -52,6 +52,9 @@ def main() -> None:
                              "(default: configs/base.yaml, the same block the pipeline uses)")
     parser.add_argument("--no-preprocessing", action="store_true",
                         help="Train on the raw texts (no normalization at all)")
+    parser.add_argument("--cache-dir", type=str, default=None,
+                        help="datasets cache directory (default: the base config's data.cache_dir, the one the "
+                             "pipeline reads — so both entry points load the same prepared corpus, also offline)")
     parser.add_argument("--params", type=str, default=None,
                         help='JSON dict of tokenizer constructor params, e.g. '
                              '\'{"max_patterns": 4000}\' (matches the params block '
@@ -69,11 +72,13 @@ def main() -> None:
     # Preprocessing: the pipeline's block, validated through DataConfig so a
     # typo in the YAML fails here rather than being silently ignored.
     preprocessing = None
+    base_path = Path(args.base_config) if args.base_config else \
+        Path(__file__).resolve().parent.parent / "configs" / "base.yaml"
+    base_data = DataConfig(**(load_yaml(base_path).get("data") or {}))
+    cache_dir = args.cache_dir if args.cache_dir is not None else base_data.cache_dir
+    print(f"Datasets cache: {cache_dir}")
     if not args.no_preprocessing:
-        base_path = Path(args.base_config) if args.base_config else \
-            Path(__file__).resolve().parent.parent / "configs" / "base.yaml"
-        raw_cfg = load_yaml(base_path)
-        preprocessing = DataConfig(**(raw_cfg.get("data") or {})).preprocessing
+        preprocessing = base_data.preprocessing
         print(f"Preprocessing ({base_path}): {preprocessing}")
     else:
         print("Preprocessing: none (--no-preprocessing)")
@@ -82,6 +87,7 @@ def main() -> None:
     print(f"Loading dataset: {args.dataset}")
     dataset = load_arabic_dataset(
         dataset_name=args.dataset,
+        cache_dir=cache_dir,
         max_train_samples=args.max_samples,
         preprocessing_config=preprocessing,
         seed=args.seed,

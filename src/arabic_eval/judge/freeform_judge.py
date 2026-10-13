@@ -110,6 +110,12 @@ class JudgeConfig:
     gpu_memory_utilization: float = 0.92
     dtype: str = "bfloat16"
     batch_size: int = 64
+    revision: Optional[str] = None                      # pinned weights (also used as the tokenizer revision)
+    quantization: Optional[str] = None
+    # merged into LLM(**kw) last: capacity / loader knobs (Falcon-H1's max_num_seqs, Mistral's
+    # tokenizer_mode / config_format / load_format, gpt-oss's reasoning_parser)
+    engine_kwargs: Dict[str, Any] = field(default_factory=dict)
+    chat_template_kwargs: Dict[str, Any] = field(default_factory=dict)   # passed to llm.chat (enable_thinking, reasoning_effort)
     # openai-compatible
     base_url: Optional[str] = None
     api_key_env: str = "OPENAI_API_KEY"
@@ -125,6 +131,16 @@ class JudgeConfig:
             raise ValueError(f"judge {self.name!r}: unknown rubric {self.rubric!r}; known: {sorted(RUBRICS)}")
         if not re.fullmatch(r"[A-Za-z0-9_.-]+", self.name):
             raise ValueError(f"judge name {self.name!r} must be a file-safe identifier")
+        for key in ("engine_kwargs", "chat_template_kwargs", "extra_body"):
+            val = getattr(self, key)
+            if val is None:
+                setattr(self, key, {})
+            elif not isinstance(val, dict):
+                raise ValueError(f"judge {self.name!r}: {key} must be a mapping, got {type(val).__name__}")
+        if self.backend != "vllm":
+            local_only = [k for k in ("revision", "quantization", "engine_kwargs", "chat_template_kwargs") if getattr(self, k)]
+            if local_only:
+                raise ValueError(f"judge {self.name!r}: {local_only} apply to the vllm backend only")
 
     @classmethod
     def from_yaml(cls, path: Path | str) -> "JudgeConfig":
@@ -254,6 +270,7 @@ class VllmBackend:
         self.cfg = cfg
         kw: Dict[str, Any] = dict(model=cfg.model, dtype=cfg.dtype, max_model_len=cfg.max_model_len,
                                   gpu_memory_utilization=cfg.gpu_memory_utilization, limit_mm_per_prompt={"image": 0, "audio": 0})
+        kw.update(self.engine_options(cfg))
         try:
             self.llm = LLM(**kw)
         except TypeError:
@@ -269,12 +286,27 @@ class VllmBackend:
                 from vllm.sampling_params import GuidedDecodingParams
                 sp["guided_decoding"] = GuidedDecodingParams(json=VERDICT_SCHEMA)
         self.sampling = SamplingParams(**sp)
-        logger.info("[judge:%s] vLLM %s, structured_json=%s", cfg.name, cfg.model, cfg.structured_json)
+        logger.info("[judge:%s] vLLM %s, structured_json=%s, engine options %s, chat_template_kwargs %s",
+                    cfg.name, cfg.model, cfg.structured_json, self.engine_options(cfg), cfg.chat_template_kwargs)
+
+    @staticmethod
+    def engine_options(cfg: JudgeConfig) -> Dict[str, Any]:
+        """The LLM(**kw) entries beyond the base ones: pinned revision, quantization, then
+        ``engine_kwargs`` last (so a YAML can override anything)."""
+        kw: Dict[str, Any] = {}
+        if cfg.revision:
+            kw["revision"] = cfg.revision
+            kw["tokenizer_revision"] = cfg.revision
+        if cfg.quantization:
+            kw["quantization"] = cfg.quantization
+        kw.update(cfg.engine_kwargs)
+        return kw
 
     def complete(self, conversations: Sequence[List[Dict[str, str]]]) -> List[str]:
+        extra = {"chat_template_kwargs": dict(self.cfg.chat_template_kwargs)} if self.cfg.chat_template_kwargs else {}
         out: List[str] = []
         for s in range(0, len(conversations), self.cfg.batch_size):
-            res = self.llm.chat(list(conversations[s:s + self.cfg.batch_size]), self.sampling, use_tqdm=False)
+            res = self.llm.chat(list(conversations[s:s + self.cfg.batch_size]), self.sampling, use_tqdm=False, **extra)
             out.extend(r.outputs[0].text for r in res)
         return out
 
