@@ -1,0 +1,7 @@
+# Gemma-3-4B, pretrained checkpoint (not -it). The adapter loads the TEXT model of the multimodal checkpoint and
+# refuses a partly random load (src/arabic_eval/models/gemma3_adapter.py).
+model:
+  type: "gemma3"
+  name_or_path: "google/gemma-3-4b-pt"
+  dtype: "bfloat16"
+  device: "auto"
