@@ -822,7 +822,7 @@ reads the pre-registered findings across the three base models.
 **What it shows.** Where each finding of the campaign replicates across the three base models and where it does not.
 
 - The writing readings use gpt-oss-120b (the main judge); T2b of each model has the other judges' columns.
-- G4 and R-128-3 need the four letter-rotation cells of each version (optional stage P4); they exist for Qwen3-4B-Base only so far.
+- G4 and R-128-3 need the four letter-rotation cells of each version (optional stage P4); they exist for all three base models.
 - '≈' and 'includes zero' mean the two versions cannot be told apart with these questions, not that they are equal.
 
 *Source:* the same files as T2b, T3, T3b and T3c of each model, plus _comparative_tables/m5/{adaptation_token_counts,unseen_in_answers}.json

@@ -1278,7 +1278,7 @@ def t7(res_by_model: Dict[str, Optional[Dict[str, Any]]], primary: Optional[str]
     t.notes = [f"The writing readings use {jl}{' (the main judge)' if primary else ' (candidate C1, the main judge by default until the human rating names one — docs/report.md §3.14, S4)'}; "
                "T2b of each model has the other judges' columns.",
                "G4 and R-128-3 need the four letter-rotation cells of each version (optional stage P4); they exist "
-               "for Qwen3-4B-Base only so far.",
+               "for all three base models.",
                "'≈' and 'includes zero' mean the two versions cannot be told apart with these questions, not that they are equal."]
 
     # T7b — the judge readings J6 (the three headline differences under every judge) and J10 (the bake-off order)
