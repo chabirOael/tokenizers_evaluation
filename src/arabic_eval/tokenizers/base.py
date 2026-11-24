@@ -106,6 +106,15 @@ class BaseTokenizer(ABC):
     def pad_token_id(self) -> int:
         return self.special_tokens["pad_token"]
 
+    @property
+    def reuses_model_embeddings(self) -> bool:
+        """True when this tokenizer IS the base model's own (the ``native_*`` wrappers):
+        its ids index the pretrained embedding rows, so ``model.embedding_init`` must
+        never overwrite them. False for every other tokenizer — including a foreign
+        vocabulary whose size happens to equal the base model's row count (Fanar-1's
+        128 256 on Llama-3.2-3B), whose rows the initialiser must build (2026-11-08)."""
+        return False
+
     def get_embedding_config(self) -> Dict[str, Any]:
         """Extra config for the embedding layer. Override for char-level tokenizers."""
         return {}

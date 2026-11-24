@@ -53,8 +53,15 @@ TOKENIZERS: Dict[str, Any] = {
     "bpe_16k": ("bpe", "outputs/tokenizers/bpe_16k_v3", {}),
     "bpe_128k": ("bpe", "outputs/tokenizers/bpe_128k_v1", {}),
     "araroopat": ("araroopat", "outputs/tokenizers/araroopat_maxpat40k_v3", {}),
+    # the tokenizer benchmark (2026-11-08): two released tokenizers as shipped, Farasa-BPE-16K (variant A = the arm,
+    # Farasa on every encode through its per-word tables; variant B = the gate-measured object, raw-text inference)
+    "jais2_150k": ("hf_pretrained", "outputs/tokenizers/jais2_150k", {}),
+    "fanar1_128k": ("hf_pretrained", "outputs/tokenizers/fanar1_128k", {}),
+    "farasa_bpe_16k_v1a": ("farasa_bpe", "outputs/tokenizers/farasa_bpe_16k_v1a", {}),
+    "farasa_bpe_16k_v1": ("farasa_bpe", "outputs/tokenizers/farasa_bpe_16k_v1", {}),
 }
-RUST_TYPES = {"bpe", "native_qwen3", "native_llama", "native_gemma"}
+# farasa_bpe is not listed: its encode_batch backend would skip the Farasa joiners of variant A
+RUST_TYPES = {"bpe", "native_qwen3", "native_llama", "native_gemma", "hf_pretrained"}
 
 
 def rss_mb(pid: Optional[int] = None) -> Optional[float]:

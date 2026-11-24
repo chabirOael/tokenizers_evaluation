@@ -104,6 +104,14 @@ class _SurfaceTokenizer(BaseTokenizer):
         return {i: self._surfaces.get(i, []) for i in range(self._n)}
 
 
+class _NativeStandIn(_SurfaceTokenizer):
+    """A stand-in for the ``native_*`` wrappers: the model's own vocabulary."""
+
+    @property
+    def reuses_model_embeddings(self) -> bool:
+        return True
+
+
 SMALL = 12
 SURFACES = {
     5: [("كتاب", 1.0)],                    # one piece → that row
@@ -233,7 +241,7 @@ class TestAdapter:
     def test_native_vocab_is_never_touched(self, tiny_qwen3_path):
         a = _adapter(tiny_qwen3_path, method="mean")
         before = a.model.model.embed_tokens.weight.detach().clone()
-        a.adapt_to_tokenizer(_SurfaceTokenizer(TINY_VOCAB, {}))
+        a.adapt_to_tokenizer(_NativeStandIn(TINY_VOCAB, {}))
         assert torch.equal(a.model.model.embed_tokens.weight.detach(), before)
         assert a.embedding_init_report is None
 
@@ -245,6 +253,99 @@ class TestAdapter:
         assert b._embedding_init == a._embedding_init
         with pytest.raises(TypeError):
             Qwen3Adapter(str(tiny_qwen3_path), device="cpu", dtype="float32", embedding_init="mean")
+
+
+class TestEqualSizeRule:
+    """``reuses_model_embeddings`` decides the skip, not size equality (2026-11-08).
+
+    Fanar-1's 128 256 pieces equal Llama-3.2-3B's 128 256 rows; under the old rule the
+    initialiser was skipped and Llama's pretrained rows stood in id by id for Fanar's
+    pieces. Jais-2's 150 272 on Llama is the first larger-than-base vocabulary.
+    """
+
+    SURF = {5: [("كتاب", 1.0)], 6: [("ال كتاب", 1.0)], 7: [("على", 1.0)]}
+
+    @staticmethod
+    def _llama_path(tmp_path_factory) -> Path:
+        from transformers import LlamaConfig, LlamaForCausalLM
+        cfg = LlamaConfig(vocab_size=TINY_VOCAB, hidden_size=TINY_HIDDEN, intermediate_size=64, num_hidden_layers=2,
+                          num_attention_heads=4, num_key_value_heads=2, max_position_embeddings=256,
+                          tie_word_embeddings=True, bos_token_id=0, eos_token_id=TINY_VOCAB - 1)
+        torch.manual_seed(1)
+        path = tmp_path_factory.mktemp("tiny_llama_tied")
+        LlamaForCausalLM(cfg).save_pretrained(path)
+        return path
+
+    @pytest.fixture(scope="class")
+    def model_paths(self, tiny_qwen3_path, tmp_path_factory):
+        return {"qwen3": tiny_qwen3_path, "llama": self._llama_path(tmp_path_factory)}
+
+    @staticmethod
+    def _make(kind: str, path: Path, **init):
+        if kind == "llama":
+            from arabic_eval.models.llama_adapter import LlamaAdapter
+            return LlamaAdapter(str(path), device="cpu", dtype="float32", embedding_init=init or None)
+        return _adapter(path, **init)
+
+    @pytest.mark.parametrize("kind", ["qwen3", "llama"])
+    def test_foreign_equal_size_is_initialised(self, kind, model_paths, base_hf_dir):
+        a = self._make(kind, model_paths[kind], method="surface_avg", base_tokenizer=str(base_hf_dir))
+        before = a.model.model.embed_tokens.weight.detach().clone()
+        a.adapt_to_tokenizer(_SurfaceTokenizer(TINY_VOCAB, self.SURF))
+        emb = a.model.model.embed_tokens.weight.detach()
+        assert emb.shape == before.shape
+        assert not torch.equal(emb, before), "a foreign vocabulary of equal size must not keep the pretrained rows"
+        assert torch.allclose(emb[5], before[2], atol=1e-6)   # 'كتاب' = base row 2
+        rep = a.embedding_init_report
+        assert rep is not None and rep.rows_total == TINY_VOCAB and rep.rows_from_surfaces == 3
+        assert a.model.lm_head.weight.data_ptr() == a.model.model.embed_tokens.weight.data_ptr()
+
+    @pytest.mark.parametrize("kind", ["qwen3", "llama"])
+    def test_native_equal_size_stays_byte_identical(self, kind, model_paths, base_hf_dir):
+        a = self._make(kind, model_paths[kind], method="surface_avg", base_tokenizer=str(base_hf_dir))
+        before = a.model.model.embed_tokens.weight.detach().clone()
+        a.adapt_to_tokenizer(_NativeStandIn(TINY_VOCAB, self.SURF))
+        assert torch.equal(a.model.model.embed_tokens.weight.detach(), before)
+        assert a.embedding_init_report is None
+
+    @pytest.mark.parametrize("kind", ["qwen3", "llama"])
+    def test_foreign_larger_than_base(self, kind, model_paths, base_hf_dir):
+        n = TINY_VOCAB + 32
+        a = self._make(kind, model_paths[kind], method="surface_avg", base_tokenizer=str(base_hf_dir), weighting="char_len")
+        a.adapt_to_tokenizer(_SurfaceTokenizer(n, self.SURF))
+        m = a.model
+        emb = m.model.embed_tokens.weight
+        assert emb.shape[0] == n and m.lm_head.out_features == n
+        assert m.lm_head.weight is emb or m.lm_head.weight.data_ptr() == emb.data_ptr(), "tie must survive a grow"
+        assert torch.isfinite(emb).all()
+        rep = a.embedding_init_report
+        assert rep.rows_total == n and rep.rows_from_surfaces == 3 and rep.rows_fallback_mean == n - 3
+        out = a.forward({"input_ids": torch.tensor([[5, n - 1, 7]]), "attention_mask": torch.ones(1, 3, dtype=torch.long),
+                         "labels": torch.tensor([[5, n - 1, 7]])})
+        assert torch.isfinite(out["loss"]) and out["logits"].shape[-1] == n
+
+    def test_phase_checkpoint_reload_is_never_reinitialised(self, tiny_qwen3_path, tmp_path, base_hf_dir):
+        import shutil
+        from arabic_eval.models.llama_adapter import is_phase_checkpoint_dir
+        ckpt = tmp_path / "cell" / "training" / "warmup"
+        shutil.copytree(tiny_qwen3_path, ckpt)
+        assert is_phase_checkpoint_dir(ckpt) and not is_phase_checkpoint_dir(tiny_qwen3_path)
+        a = _adapter(ckpt, method="surface_avg", base_tokenizer=str(base_hf_dir))
+        before = a.model.model.embed_tokens.weight.detach().clone()
+        a.adapt_to_tokenizer(_SurfaceTokenizer(TINY_VOCAB, self.SURF))
+        assert torch.equal(a.model.model.embed_tokens.weight.detach(), before)
+        assert a.embedding_init_report is None
+
+    def test_real_wrappers_declare_the_flag(self):
+        from arabic_eval.tokenizers.bpe import BPETokenizer
+        from arabic_eval.tokenizers.hf_pretrained import HFPretrainedTokenizer
+        from arabic_eval.tokenizers.native_gemma import NativeGemmaTokenizer
+        from arabic_eval.tokenizers.native_llama import NativeLlamaTokenizer
+        from arabic_eval.tokenizers.native_qwen3 import NativeQwen3Tokenizer
+        for cls in (NativeLlamaTokenizer, NativeQwen3Tokenizer, NativeGemmaTokenizer):
+            assert cls.reuses_model_embeddings.fget(None) is True
+        assert BPETokenizer().reuses_model_embeddings is False
+        assert HFPretrainedTokenizer().reuses_model_embeddings is False
 
 
 # ---------------------------------------------------------------------------

@@ -1,0 +1,185 @@
+% Draft v2 of 2026-11-10, written after the tokenizer benchmark (docs/report.md §3.18; outputs/experiments/_tokenizer_benchmark/).
+% The reference arm is the model as shipped (its own vocabulary, no training of ours), per the user's decision of 2026-11-10;
+% the native arm trained through the pipeline is not used. Every number is listed with its source in numbers_sources.md;
+% every citation was verified against its ACL Anthology, arXiv or publisher page on 2026-11-10 (references.bib; verified
+% entries not cited here are in references_pool.bib). The v1 draft of 2026-11-08 is kept in _v1_2026-11-08/. Not committed.
+% Generated from introduction.md by md_to_tex.py — edit the Markdown, not this file.
+% Requirements of the main file (not set here): natbib (ACL style), XeLaTeX/LuaLaTeX with polyglossia and an Arabic
+% font, e.g.  \usepackage{polyglossia} \setotherlanguage{arabic} \newfontfamily\arabicfont[Script=Arabic]{Amiri}
+% so that \textarabic{...} is defined. \tok below prints an AraRooPat token such as [ROOT_كتب].
+\providecommand{\tok}[2]{\texttt{[#1\_}\textarabic{#2}\texttt{]}}
+
+\section{Introduction}
+\label{sec:intro}
+
+Every Arabic word a language model reads or writes passes through a tokenizer that cannot see how the word is built. An
+Arabic word is a consonantal root carrying the core meaning, a pattern that makes it a particular word, and clitics on
+either side: \textarabic{بالقلم} (\textit{bi-l-qalam}, `with the pen') is the root \textarabic{ق-ل-م} in the pattern
+\textarabic{فَعَل} behind the clitics \textarabic{ب} `with' and \textarabic{ال} `the'. The tokenizers of current models
+learn their units from frequency
+\citep{sennrich-etal-2016-neural,kudo-richardson-2018-sentencepiece,mielke-2021-tokenization} and, inside a sentence,
+write \textarabic{بالقلم} as \textarabic{بالق} + \textarabic{لم} (an Arabic BPE of 16\,000 tokens) or as
+\textarabic{بال} + \textarabic{ق} + \textarabic{لم} (Qwen3's vocabulary), splitting the root both times. The tokenizer
+is the one component of a model fixed before training and never revised, so every cut it makes is paid at every step;
+and multilingual vocabularies pay twice on Arabic, spending 2.30, 2.26 and 2.08 tokens per word (Qwen3-4B-Base,
+Llama-3.2-3B, Gemma-3-4B) where that Arabic BPE spends 1.50 \citep[fertility;][]{rust-etal-2021-good}, a cost in context
+and compute that falls unequally across languages \citep{petrov-2023-unfairness}.
+
+Should a tokenizer follow morphology, then? A long line of evidence says yes. Morphological complexity makes language
+modelling harder and linguistically motivated segmentation eases it \citep{park-2021-morphology}; segmentations closer
+to morphemes helped a masked model interpret derived words \citep{hofmann-2021-superbizarre}, gave a unigram model an
+edge over BPE \citep{bostrom-2020-bpe}, and have been built into tokenizers and models for Kinyarwanda
+\citep{nzeyimana-2022-kinyabert}, Turkish \citep{toraman-2023-tokenization} and English
+\citep{jabbar-2023-morphpiece,bauwens-2024-bpeknockout,libovicky-2024-lexically}. For Arabic, AraBERT pre-segmented its
+text with Farasa \citep{antoun-2020-arabert}, BPE over Farasa segmentation led several tasks with small models
+\citep{alrefaie2024exploring}, and MorphBPE, which keeps BPE merges inside morpheme boundaries at training time and
+leaves inference unchanged, lowered cross-entropy and improved reading comprehension for Arabic with models trained from
+scratch \citep{asgari2025morphbpe,asgari-2026-morphbpe}. The most recent evidence says it may not matter. Six Arabic
+tokenizers compared on classification left no single best choice \citep{alyafeai-2023-tokenizers}; across seven LLMs,
+``tokenizer morphological alignment is not necessary nor sufficient for morphological generation''
+\citep{alakeel2026morphemes}; producing inflected forms remains hard for current models, Arabic-specialised ones
+included \citep{reda2026yallamorph}; how consistently a subword vocabulary segments inflected forms is itself in
+question \citep{dimarco-2024-subword}; and the handicap of morphologically complex languages has been traced to data
+volume rather than to morphology \citep{arnett-2025-morphology}. Meanwhile the tokenizer has been promoted from
+preprocessing step to design decision
+\citep{rust-etal-2021-good,ali-2024-tokenizer,dagan-2024-tokenizer,alqahtani-2026-tokenizers} without an agreed way to
+measure one: compression alone does not predict performance
+\citep{goldman-2024-unpacking,schmidt-2024-compression,lotz-2025-beyondcompression}, and intrinsic morphological scores
+are still being built \citep{batsuren-2024-alien,uzan-2024-greed}.
+
+Both sides can be right, because neither has isolated the tokenizer, and neither has watched the model write.
+Comparisons of existing models differ at once in pretraining data, size, vocabulary, instruction data and decoding
+\citep{alakeel2026morphemes,reda2026yallamorph}, so a difference cannot be attributed to the tokenizer; studies that
+train one model per tokenizer
+\citep{alyafeai-2023-tokenizers,toraman-2023-tokenization,alrefaie2024exploring,asgari-2026-morphbpe}, up to the
+fourteen otherwise identical models of TokSuite \citep{altintas-2025-toksuite}, hold the tokenizer as the only variable,
+but with models trained from scratch, not with a pretrained generative model; and the line of work that replaces or
+extends the vocabulary of a pretrained model --- embedding initialisation
+\citep{minixhofer-etal-2022-wechsel,dobler-de-melo-2023-focus,mundra2024empirical}, token alignment and transplantation
+\citep{li-2025-tokalign,goddard-2025-omp}, controlled comparisons of adaptation methods
+\citep{andriushchenko-2025-tokenizer-russian} and Arabic vocabulary extension
+\citep{bari-2025-allam,zhu-2025-arallama,kashirskiy-2025-aratoken} --- asks how to transfer a vocabulary, not which
+vocabulary design writes better. The measure is the deeper problem. Almost every number above is accuracy on
+classification or multiple choice scored by log-likelihood. Such a score reads a tokenizer through the tokens of its
+answer labels --- the letter's own tokenization moves multiple-choice accuracy by up to 11\,\% and reshuffles model
+rankings \citep{zheng2024large,sanz-guerrero-2025-mindthegap} --- and the format is a poor proxy for what a model
+writes: selecting an option is a different skill from producing an answer \citep{balepur-2025-mcqa}, log-likelihood
+scoring misaligns with the model's own generated answers \citep{lyu-2024-beyondprobabilities}, multiple-choice and
+open-ended results disagree across models \citep{wei-2024-rethinking}, and free-form answers matched against a reference
+measure generative ability where option formats cannot \citep{myrzakhan-2024-openllm,chandak-2025-answermatching}. A
+tokenizer's effect on downstream performance is itself stronger on generation than on classification
+\citep{goldman-2024-unpacking}, and log-likelihood never touches the half of a tokenizer that acts when the model
+writes: whether the decoded text is the intended word, whether the model ends its answer, whether it loops. We therefore
+argue that open-ended generation is the best available test of a tokenizer: it is the only measure that exercises both
+halves, encoding and decoding, and it is how a user meets one. Scored by reference-guided LLM judges, which track human
+preference well \citep{zheng2023judging}, it is also the direction Arabic evaluation has taken
+\citep{elfilali-2024-aragen}.
+
+This paper runs that experiment. We built AraRooPat, a vocabulary of 17\,184 tokens in which a content word is a root
+token followed by a pattern token: \textarabic{يكتبون} (\textit{yaktubūna}, `they write', root \textarabic{ك-ت-ب})
+becomes \tok{ROOT}{كتب} \tok{PAT}{يَفْعُلُونَ}, and \textarabic{بالقلم} becomes \tok{CLITICP}{ب} \tok{CLITICP}{ال}
+\tok{ROOT}{قلم} \tok{PAT}{فَعَلِ} (patterns written with the template letters \textarabic{ف-ع-ل}). Clitics and
+closed-class words are tokens of their own; names and unanalysable words are spelled in characters between markers;
+analyses come from CAMeL Tools \citep{obeid-etal-2020-camel}, weak radicals (\textarabic{قال} / \textarabic{يقول}, `said
+/ says') are kept as a marked slot of the root, and the \textarabic{لِ} + \textarabic{الـ} contraction
+(\textarabic{للولد}, `for the boy') is undone at encoding and redone at decoding. The decoder rebuilds the inflected
+stem from the (root, pattern) pair in its most frequent written spelling: 99.3\,\% of 2\,000 corpus words come back
+exactly, and our 250 reference answers reach chrF 99.0 with diacritics removed (91.1 with them). Roots stay whole ---
+inside one token for 41.8\,\% of the words where that is possible at all, against 5.3\,\% for BPE-16K and 8.8\,\% for
+Qwen3 --- at a price in length: 3.19 tokens per word, against 1.50 and 2.30. Then we hold everything but the vocabulary
+fixed. A new vocabulary's embedding rows start from the base model's embeddings of the strings each token stands for
+\citep{minixhofer-etal-2022-wechsel,dobler-de-melo-2023-focus,mundra2024empirical}; the model is adapted on 131 M tokens
+of filtered Arabic web text and Wikipedia, embeddings first, then all weights; every adapted arm is then fine-tuned on
+the same 45\,000 examples, whose 27\,000 free-form answers come from one neutral teacher, Aya-Expanse-32B
+\citep{dang2024ayaexpanse}, chosen in a bake-off on development prompts \citep[sequence-level
+distillation;][]{kim-rush-2016-sequence}, under five rules of equal treatment: one teacher; the same answers for every
+arm; no test prompt ever shown to the teacher; faulty teacher answers dropped, not repaired; results read against the
+teacher's own score. The reference is the model as shipped: its own vocabulary and no training of ours. Six vocabularies
+go through the pipeline on Qwen3-4B-Base, Llama-3.2-3B and Gemma-3-4B
+\citep{yang2025qwen3,grattafiori2024llama3,gemmateam2025gemma3}: two BPEs trained on AraRooPat's corpus, of 16\,000
+tokens (size-matched) and 128\,000 (native-sized); AraRooPat; and, in a second round under the identical pipeline, the
+tokenizers shipped with two Arabic LLMs --- Jais-2's byte-level BPE \citep{anwar2026jais2}, 150\,222 entries in a
+150\,272-row table, and Fanar-1-9B's \citep{fanarteam2025fanar}, 128\,256 tokens of which 4\,773 contain an Arabic
+letter --- and a second morphology-aware design of our own, Farasa-BPE-16K, a BPE of 16\,000 tokens whose merges may not
+cross Farasa morpheme boundaries \citep{abdelali-etal-2016-farasa}, trained with BPE-16K's corpus and settings:
+MorphBPE's recipe, whose tokenizers are not released, and the strategy that led in \citet{alrefaie2024exploring}.
+
+Every arm answers the same 250 held-out CIDAR instructions \citep{alyafeai2024cidar}, screened for paraphrases of
+training prompts, by greedy decoding under one set of stop rules and a 2\,400-character budget. An LLM judge then scores
+each answer against a human-written reference on a five-point scale \citep{zheng2023judging}: 5 is a correct, complete,
+fluent Modern Standard Arabic answer that does exactly what the instruction asks; 4 has minor omissions or small
+language errors and is still clearly useful; 3 is partially correct or only partly follows the instruction; 2 is mostly
+wrong or off-topic but contains some relevant Arabic; 1 is empty, not Arabic, a repetition loop, gibberish or entirely
+off-topic. The judge is told that the reference is a guide and not the only acceptable answer, not to reward length, and
+to judge meaning rather than wording; it also returns sub-scores for correctness, fluency and instruction following and
+flags for repetition, wrong language, empty, off-topic and truncated answers. The primary judge is gpt-oss-120b (pooled
+quadratic-weighted $\kappa$ 0.817 with Gemma-4-31B over 24 cells), with Falcon-H1-34B on every model and Gemma-4-31B and
+GPT-5.6 also on Qwen3. A cell's score is the mean of its 250 integer scores; a difference between two arms is the mean
+of their per-prompt differences, with a 95\,\% interval from 10\,000 bootstrap resamples of the prompts and the share of
+prompts the first arm wins, ties and loses.
+
+Four findings follow, each on three base models.
+
+\begin{itemize}
+  \item \textbf{Morphology helps at equal size, by an amount that depends on the model.} AraRooPat writes better than
+  BPE-16K on Qwen3 ($+0.212$ [$+0.088$, $+0.340$] judge points) and Llama ($+0.132$ [$+0.004$, $+0.256$]) and cannot be
+  separated from it on Gemma ($-0.016$ [$-0.144$, $+0.108$]); on Qwen3 the sign holds under all four judges, with
+  intervals above zero under three. Its answers are stopped as repetition loops
+  \citep{holtzman2020curious,xu2022learning} less often than BPE-16K's on every model (6.8 vs 15.6\,\%, 12.8 vs
+  18.4\,\%, 5.6 vs 8.4\,\%), and of the adapted vocabularies it gives the reference answers the lowest negative
+  log-likelihood per character on all three (Qwen3: 0.812 nats; BPE-16K 0.907). The native-sized BPE-128K improves on
+  BPE-16K on no model ($-0.064$ to $-0.164$).
+  \item \textbf{Against the model as shipped, AraRooPat comes closest where the shipped model is strong.} Off the shelf,
+  Qwen3-4B-Base answers the task well (judge 2.376, loops on 6.8\,\% of answers). AraRooPat is the adapted arm nearest
+  to it ($-0.064$ [$-0.200$, $+0.068$]); Farasa-BPE-16K ($-0.128$) and the shipped Jais-2 vocabulary ($-0.132$) also
+  stay within their intervals of it, while BPE-16K ($-0.276$ [$-0.428$, $-0.128$]), BPE-128K ($-0.340$ [$-0.492$,
+  $-0.188$]) and Fanar-1's vocabulary ($-0.212$ [$-0.344$, $-0.084$]) fall clearly below; under the second judge only
+  BPE-128K does. The shipped Llama-3.2-3B and Gemma-3-4B loop on 33\,\% and 55\,\% of their answers, and every adapted
+  arm is far above them ($+0.26$ to $+0.77$ under the primary judge; AraRooPat $+0.768$ [$+0.644$, $+0.900$] and
+  $+0.412$ [$+0.276$, $+0.548$]); that gap measures what the pipeline gives a model that never learned the task, and is
+  read as such.
+  \item \textbf{Recognition disagrees with generation, for a reason that is not the vocabulary's quality.} On two
+  letter-scored multiple-choice benchmarks, Arabic exams and translated MMLU, log-likelihood scoring puts AraRooPat
+  0.013 to 0.046 in accuracy behind BPE-16K on all three models, every interval below zero. AraRooPat spells the answer
+  letters in three tokens where the others use one --- the label-tokenization effect
+  \citet{sanz-guerrero-2025-mindthegap} measure: averaged over rotations of the letters (a diagnostic, not the official
+  scoring), the exam gap can no longer be separated from zero on any model (Qwen3: $-0.001$ [$-0.030$, $+0.027$]), while
+  an MMLU gap of $-0.026$ to $-0.039$ remains. A judged answer is not scored through option letters --- the measurement
+  argument above, seen in our own numbers.
+  \item \textbf{Against the tokenizers Arabic LLMs ship, and against a second morphology-aware design, AraRooPat holds.}
+  A pre-registered gate decided how Farasa-BPE-16K runs: with inference unchanged, as in MorphBPE, its merges put only
+  65.5\,\% of Farasa's boundaries on token boundaries, below the 0.90 we had set, so the arm segments every input with
+  Farasa before encoding (96.0\,\%), at 6.3 µs per word against 3.6 for the same merges on raw text \citep[how a
+  vocabulary is applied at inference is a choice of its own;][]{uzan-2024-greed}. The morpheme constraint helped on
+  Qwen3 ($+0.148$ [$+0.040$, $+0.264$]) and Llama ($+0.128$ [$+0.008$, $+0.248$]) and not on Gemma ($-0.064$ [$-0.192$,
+  $+0.064$]) --- the same model-dependence as AraRooPat's, the second judge agreeing in sign on every model --- and
+  Farasa-BPE-16K and AraRooPat end level everywhere (within $\pm$0.07 under either judge). The tokenizer of Jais-2
+  trails AraRooPat on all three models ($-0.068$, $-0.160$ [$-0.292$, $-0.024$], $-0.128$ [$-0.248$, $-0.004$]) and
+  Fanar-1's on Qwen3 ($-0.148$ [$-0.268$, $-0.028$]) and Llama ($-0.084$), with a tie on Gemma ($+0.020$); every new arm
+  matches or beats the native-sized BPE-128K. Two facts frame the shipped tokenizers. Fanar-1's vocabulary is
+  Arabic-poor by construction --- 3.7\,\% of its tokens bear an Arabic letter, close to the native vocabularies'
+  2.4-$-3.2$\,\% --- and 56\,\% of its tokens never occur in our 131 M adaptation tokens (Jais-2 38\,\%, Farasa-BPE-16K
+  3\,\%); it is level with the 16 K designs even so. And the four tokenizers we trained, on a whitespace-collapsed
+  corpus, cannot write a line break while the shipped and native ones can: a layout advantage that every
+  shipped-versus-ours difference carries and that AraRooPat leads against anyway. Tables keep the groups
+  \textit{released as shipped} and \textit{trained by us under identical conditions} apart, since only a comparison
+  within the second is controlled.
+\end{itemize}
+
+Our contributions are:
+
+\begin{itemize}
+  \item \textbf{A single-factor protocol} for comparing tokenizers on a pretrained generative model --- the vocabulary
+  is the only change; initialisation, adaptation budget, teacher answers, decoding, prompts and judges are shared under
+  five stated rules of equal treatment; every comparison is paired on the same prompts --- together with \textbf{the
+  case for open-ended generation as the primary measure of a tokenizer}, backed by our own multiple-choice results.
+  \item \textbf{AraRooPat}, a root-and-pattern vocabulary of 17\,184 tokens whose decoder rebuilds the written word
+  (99.3\,\% of corpus words exactly), with its measured trade-off: whole roots on 41.8\,\% of the words where this is
+  possible, at 3.19 tokens per word.
+  \item \textbf{A six-vocabulary, three-model benchmark on open-ended generation} against the models as shipped, with
+  paired intervals under up to four judges: morphology helps at equal size on two models of three, AraRooPat comes
+  closest to the shipped Qwen3, a Farasa-constrained BPE and AraRooPat are level, and AraRooPat leads the tokenizers
+  shipped with Jais-2 and Fanar-1 on five of six model comparisons, three of them with intervals that exclude zero.
+  \item \textbf{The platform} --- pipeline, held-out sets, pre-registered readings, judge configurations and tables ---
+  with the provenance of every number documented.
+\end{itemize}

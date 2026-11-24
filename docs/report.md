@@ -1998,6 +1998,388 @@ The order per 100 characters is the same on all three models: BPE-128K fastest, 
 
 **Verification of the results deck for Dr Amal (2026-10-13, Fable session, against the files; nothing changed).** Confirmed from `outputs/experiments/_comparative_tables/_presentation/supervisor_results_deck_2026-10-13.pptx`: 60 slides (23 main + 37 appendix), 16:9, notes on every slide, 15 pictures, `deck_kit.audit` 0 findings, `build_report.json` 2 725 registered numbers. **Appendix = CSV:** every one of the 1 965 non-empty cells of the 36 CSVs appears on its appendix slide (whitespace-normalised string match, my own check). **Figures:** of the 739 plotted values in `figures_manifest.json`, 739 name a CSV row and column and 739 equal that cell exactly (0 mismatches; 0 entries point outside the CSVs, e.g. `speed_v1.json`, and were not re-traced). **Scope:** the 20 content slides each cite one of the five requests in the footer; the closing slide maps request → slides → appendix tables; no slide carries campaign history, measurement faults, engine history, the rotation mechanism, the bake-off or the 26 Sep deck's material; the one judge caveat sits on slide 2, and slide 23's only pending item is the rating (count only, 51 of 200; the rating file is untouched, last write 2026-09-26). **Data-driven titles checked against the CSVs:** 'last or tied last on the exams' (T3: AraRooPat 0.550 / 0.398 / 0.444 plain, 0.556 vs BPE-128K 0.557, 0.403 vs 0.408, 0.453 vs 0.454 corrected), 'BPE-128K fastest per character, AraRooPat slowest' (T4 ms per 100 chars 1 029 < 1 177 < 1 307 < 1 696; 769 < 837 < 942 < 1 181; 1 128 < 1 316 < 1 409 < 1 867), 'AraRooPat most energy, BPE-128K least' (T4 Wh per 1 000: 392.7 / 215.1, 253.7 / 171.3, 359.9 / 238.2), '8–17 % of the model' (T6 shares 9.7, 8.3, 12.3, 12.2, 17.3, 9.3 %), 'loops least / most' (T2 continued), 'writes best or ties' (Llama native 2.076 vs AraRooPat 2.072). **Tables regeneration:** `git diff` of `docs/comparative_tables_2026-10.md` and of `scripts/build_comparative_tables.py` is the one T7 sentence ('for all three base models'); the CSVs' cells are unchanged by construction (the appendix check above reads today's files). **Plain language:** the banned words are absent from the main slides and the notes; 'prior-corrected', 'kappa', 'PMI' and 'nats' occur only in appendix cells copied from the CSV headers, and 'prior' once in the glossary where it is explained. **One gap in the tables, not the deck:** `llama3b_T2b.csv` and `gemma3_4b_T2b.csv` carry only the gpt-oss column although Falcon-H1 judged every Llama and Gemma cell (its Gemma differences are in §3.17 / the stage report: −0.088 / −0.292 / −0.232), so slide 7's Llama and Gemma panels show one judge; adding the Falcon column to T2b of the new models is a builder change for the next regeneration, not a number error. Not verified: rendering in PowerPoint (PIL previews only; I read nine of the 60); the 2 725-entry number registry beyond the build's own check. The deck is ready for Dr Amal with the judge caveat it already carries; the presenter's name and the time slot are the user's.
 
+### 3.18 The tokenizer benchmark on free-form generation: Jais-2, Fanar-1 and Farasa-BPE-16K (2026-11-08 → …)
+
+The brief is `_briefs/opus_prompt_tokenizer_benchmark_2026-11-08.md`. The campaign folder is `outputs/experiments/_tokenizer_benchmark/` (`ROADMAP.md`, `paper/`, the m-folders). It adds three tokenizers to the AraRooPat comparison, on the free-form task only. Each goes through the pipeline every trained arm got: the `qwen_bpe128k_3phase_v5_distill.yaml` template, with Phases 1–2 from v3 and Phase 3 from the v5 block, unchanged. The base models are Qwen3-4B-Base, Llama-3.2-3B and Gemma-3-4B. The record is the experiment record of a paper that benchmarks AraRooPat against other tokenizers on free generation (`paper/design.md`).
+
+**Why these three, and what each actually is.**
+- **Jais-2 (released).** The tokenizer of `inceptionai/Jais-2-8B-Chat` @ `da0e1639`, unchanged: a byte-level BPE with 150 222 entries in a 150 272-row table. No base Jais-2 repository is public.
+- **Fanar-1 (shipped tokenizer).** The tokenizer `QCRI/Fanar-1-9B` ships, @ `d33480ed`, unchanged: a SentencePiece-style BPE with byte fallback, 128 256 pieces, 4 773 of them containing an Arabic letter.
+  - "Fanar MorphBPE" does not exist as an artifact. The paper (arXiv 2502.00894) says code and tokenizers "will be available"; the GitHub repository holds only a README heading.
+  - So Fanar-1's tokenizer is evaluated as shipped and is never called MorphBPE.
+- **Farasa-BPE-16K (ours, MorphBPE-style).** Trained by us on the corpus, preprocessing, trainer settings and special tokens of `bpe_16k_v3`. It differs from BPE-16K in one step: Farasa's morpheme boundaries constrain the merges at training time.
+
+**Two groups, in every table.**
+- *Released, evaluated as shipped:* Jais-2, Fanar-1.
+- *Trained by us under identical conditions:* BPE-16K, BPE-128K, AraRooPat, Farasa-BPE-16K.
+- Comparisons inside a group are clean. A comparison across the groups reads as "a shipped vocabulary against our pipeline", not as a verdict on a design.
+
+**Pre-registered readings (written 2026-11-08 ≈ 10:10 UTC, before any number that could answer them existed; they decide nothing — no arm is stopped, re-run or re-tuned because of one).** They apply per model, for X ∈ {Jais-2, Fanar-1, Farasa-BPE-16K}. The primary judge is gpt-oss-120b, with Falcon-H1-34B beside it. Intervals are 95 % paired bootstrap (10 000 resamples, seed 0) on the 250 held-out prompts.
+- **W1** X − BPE-16K. For Farasa-BPE-16K this isolates morphological pre-segmentation at equal size, corpus and trainer: the cleanest morphology test of the campaign.
+- **W2** X − AraRooPat. For Farasa-BPE-16K: two morphology-aware designs at equal size.
+- **W3** X − native, the model's own tokenizer.
+- **W4** X − BPE-128K. The size-matched pairing for Jais-2 and Fanar-1: a released large vocabulary against our large vocabulary, under the same adaptation.
+- **W5** the share of the teacher's judge score retained by X, next to the four existing arms'.
+- **F1** never-seen and rare-piece shares of X at 131 M pieces, next to BPE-128K's (1.0 % / 3.9 %), and the share of answer pieces never seen in adaptation.
+- **F2** Farasa-BPE-16K's `morpheme_integrity_rate` against the 0.90 gate, and the same metric for every arm.
+- **F3** Fanar-1's Arabic-bearing share (4 773 / 128 256) next to its W1–W4: the shipped-tokenizer finding, said plainly.
+- **R** (across models), for each of W1–W4: *replicates* = the interval excludes zero with the same sign on Qwen, Llama and Gemma; *consistent* = the same sign, but an interval covers zero somewhere; *mixed* = opposite signs.
+
+**The gate (pre-registered, written before the measurement).**
+- **Measure.** `morpheme_integrity_rate` of the variant-B Farasa-BPE-16K tokenizer, on 5 000 distinct held-out words (eval split, seed 42, length ≥ 3, `morph_sample_size 5000`). This is the share of Farasa boundaries that fall on piece boundaries.
+- **≥ 0.90:** variant B is the arm. The constraint acts at training time only, and inference runs on raw text with no Farasa.
+- **< 0.90:** variant A is the arm. Farasa runs on every encode, and the metric is 1.0 by construction (said in the table).
+- The same metric is reported for every arm.
+
+**Deviations from the brief so far** (each with its reason; details in `ROADMAP.md`'s log):
+1. **Farasa runs once per distinct whitespace word (one word per line), not over the running texts.**
+   - Farasa's segmenter scores a word on its own: on a 3 000-text debug build, 100 / 100 texts segmented identically in and out of context, and the full build re-checks this on 500 texts.
+   - One word per line also gives an exact word ↔ output correspondence.
+   - The corpus' 2 659 080 distinct words (232.6 M occurrences) took 60 s on 16 workers, not ≈ 2.5 h.
+2. **The joiner is U+E000.** U+2060 occurs in 14 of the 668 959 training texts; U+E000 is the brief's fallback.
+3. **The equal-size fix (`reuses_model_embeddings`) keeps one guard.** A model loaded from a phase checkpoint `<cell>/training/<phase>/` is never re-initialised. Every Phase-3-only config loads such a checkpoint, and none would be byte-identical otherwise if `embedding_init` were set.
+
+**P0 — the CPU stage (2026-11-08 09:50 → 10:50 UTC; no GPU).**
+
+*The wrapper and the equal-size fix.*
+- `hf_pretrained` (`src/arabic_eval/tokenizers/hf_pretrained.py`) is a subclass of `BPETokenizer` over the raw `tokenizers.Tokenizer` of a released `tokenizer.json`, unchanged. It sets `vocab_size = max(vocab_rows, len)` and reads the special ids from the files' names. It sets `unk_token` only when the file's BPE model declares one: Jais-2 has none, Fanar-1 has `<unk>` 3.
+- `BaseTokenizer.reuses_model_embeddings` is False by default and True for `NativeLlamaTokenizer` (inherited by `native_qwen3` / `native_gemma`).
+- `LlamaAdapter._should_init_rows` applies the embedding init in four cases:
+  - natives: as before, the rows are built only when the sizes differ (never);
+  - a foreign tokenizer of another size: as before;
+  - a foreign tokenizer of the **same** size: now built (Fanar-1's 128 256 on Llama-3.2-3B);
+  - except when the model is a phase checkpoint `<cell>/training/<phase>/` (`is_phase_checkpoint_dir`): never re-initialised. All 21 checkpoint `name_or_path` values of `configs/experiments/` match it.
+- Tests: `test_embedding_init.py` 23 passed. Six are new: equal size foreign / native, larger than base, checkpoint reload, on tiny tied Qwen3 and Llama. The old stub "native" test now uses a `reuses_model_embeddings=True` stand-in. `test_hf_pretrained_tokenizer.py` 5 passed.
+
+*The released-tokenizer checks* (`_tokenizer_benchmark/m2/released_tokenizers_check.json`). Every acceptance value of the brief holds. Both tokenizers add a BOS and no EOS on encode, and round-trip exactly: 250 / 250 references, 2 000 / 2 000 words, 1 000 / 1 000 eval texts.
+- **Jais-2:** BOS 0, EOS 150 024, pad 1. It has 150 222 entries = 150 000 + 222 added (the brief's 224 counted two base pieces), plus 50 padding rows. 47 717 pieces are Arabic-bearing (31.8 %). It averages 1.43 pieces per eval word and 2.97 characters per reference piece.
+  - Raw `tokenizers` = the wrapper = `AutoTokenizer` on 1 250 / 1 250 texts.
+  - **`fix_mistral_regex=True` changes the ids on 66.3 % of them.** The released file is used as is (`threats.md` §2).
+- **Fanar-1:** BOS 2, EOS 1, pad 0, unk 3. **4 773 of 128 256 pieces are Arabic-bearing (3.72 %).** It averages 2.14 pieces per eval word and 2.49 characters per reference piece.
+- Saved objects: `outputs/tokenizers/{jais2_150k,fanar1_128k}` (marker with the `tokenizer.json` sha256).
+
+*Farasa-BPE-16K.*
+- **Segmentation.** Farasa ran over the 668 959 texts in 246 s (`outputs/data_cache/farasa_segmented/1fd406b007b7b39b/`; per distinct word, deviation 1 above).
+  - 2 659 080 word types, 232 588 314 occurrences.
+  - Boundaries kept 194 443 625 (83.6 per 100 words), dropped 2 782 073. Words with a dropped boundary: 1.19 %.
+  - Farasa rewrites 1.59 % of words. The most frequent rewrites are a lone U+200F and the لِ + الـ contraction (`للسكان` → `ل+ال+سكان`).
+  - In-context check: 500 / 500 texts identical.
+- **Training.** BPE 404 s, 16 000 pieces, 0 pieces containing the joiner (`outputs/tokenizers/farasa_bpe_16k_v1`, variant B).
+- **The gate fired: `morpheme_integrity_rate` (variant B) = 0.6548 < 0.90, so the arm is variant A** (`m3/gate.json`).
+  - On the same protocol (first 5 000 eval texts, `morph_sample_size` 5 000, `m4/intrinsic/`): BPE-16K 0.369, BPE-128K 0.224, Jais-2 0.258, Fanar-1 0.365, AraRooPat 0.994 (alignment coverage 0.16), native Qwen3 0.536 / Llama 0.420 / Gemma 0.380.
+  - Variant A = the same `tokenizer.json` (sha256-asserted), saved as `outputs/tokenizers/farasa_bpe_16k_v1a` with `inference_segmentation: farasa`. It carries per-word segment tables (corpus + both pools, 5.15 M words) so encode does not call Farasa word by word.
+  - The variant-B object is kept as measured (deviation: a new folder, not a re-save).
+- **Variant A measures** (`m4/intrinsic/farasa_bpe_16k_v1a.json`): `morpheme_integrity_rate` **0.960, not 1.0 "by construction"**. The residual is the alignment rule's dropped boundaries where Farasa rewrites a word. Also CSA 0.925, fertility 2.01 (BPE-16K 1.51), 2.14 characters per reference piece (BPE-16K 2.49). Round trips are exact on the eval texts and the 2 000 words. On the 250 references 0.768 are exact (BPE-16K the same): the 58 references that contain a line break do not come back, the newline finding below. Their round-trip chrF is still 100, because chrF ignores whitespace (`paper/tables/P1`, corrected 2026-11-09).
+- Tests: `test_farasa_bpe.py` 7 passed.
+
+*Pools and packs* (`m5/prepack_summary.json`; packed on CPU before any GPU run, the shared cache entries the runs reuse):
+- **Jais-2:** 110 M pool `bcc25c16069c1153`, pack `3b01ee96701fbb07`, exact-share budget 153.4 M ≥ 128.5 M ✓; QA blend 4 859 blocks → share 0.025.
+- **Fanar-1 — the second trap fired.** On the 80 M pool its pack took **all 131 048 FineWeb-2 documents** (> the 128 754 limit), so the 150 raw-text held-out documents would have been in its training text.
+  - The cause: its FineWeb fertility (2.06) is *below* its Wikipedia fertility (2.16), so FineWeb, not Wikipedia, binds the exact-share budget. The brief's expectation that "a tokenizer with more pieces per word takes fewer documents" does not hold: what matters is the ratio between sources.
+  - By the brief's rule Fanar-1 moved to the 110 M pool: pack `dbfe0864b45004f8`, budget 226.3 M ✓; QA 6 886 blocks → 0.035. The 80 M Fanar pack `73f861c2f365f4d1` stays in the cache unused.
+- **Farasa-BPE-16K (variant A):** 80 M pool, pack `debc6dc32fe9b37c`, budget 167.3 M ✓; **FineWeb-2 docs taken 127 900 ≤ 128 754 ✓**; QA 7 193 blocks → 0.035.
+
+*Configs and dry runs.*
+- `configs/experiments/qwen_{jais2,fanar1,farasa_bpe16k}_3phase_v5_distill.yaml` are rendered from the BPE-128K template by `_tokenizer_benchmark/m5/make_qwen_configs.py`. Its `--check` asserts that the resolved diff is limited to the allowed paths.
+- The six Llama / Gemma configs come from `scripts/make_model_arm_configs.py`; the ten existing ones regenerated byte-identical. The five smokes come from `m5/make_smokes.py`.
+- Phase 3 mixture dry runs (`m5/mixture_dry_runs.json`):
+
+| arm | truncated + cut-answer drops | loss tokens | free-form share of loss tokens |
+|---|---|---|---|
+| Jais-2 | 76 + 52 | 4.61 M | 97.5 % |
+| Fanar-1 | 190 + 124 | 6.80 M | 97.6 % |
+| Farasa-BPE-16K | 208 + 180 | 7.19 M | 98.0 % |
+
+
+*Tokenizer speed* (`_tokenizer_benchmark/m4/speed/speed_v1.json`; `scripts/measure_tokenizer_speed.py`, the same machine — Xeon Platinum 8481C — and the same 20 000 eval texts as the 2026-10-09 run in `_tokenizer_speed/2026-10-09/speed_v1.json`; median of 5 repeats, one text at a time, µs per word):
+
+| tokenizer | encode | decode | batch, parallel | load | memory after load |
+|---|---|---|---|---|---|
+| Jais-2 | 3.90 | 0.50 | 0.40 | 0.75 s | +105 MB |
+| Fanar-1 | 2.73 | 0.86 | 0.19 | 0.48 s | +88 MB |
+| Farasa-BPE-16K, variant A (the arm) | **6.32** | 0.43 | — | **16.1 s** | **+1 020 MB** |
+| Farasa-BPE-16K, variant B (raw text) | 3.58 | 0.45 | — | 0.03 s | +15 MB |
+| BPE-16K (10-09) | 3.63 | 0.43 | 0.43 | 0.03 s | +15 MB |
+| BPE-128K (10-09) | 3.71 | 0.45 | 0.50 | 0.28 s | +78 MB |
+| native Qwen3 (10-09) | 5.43 | 0.81 | 0.44 | 0.36 s | +127 MB |
+
+- Variant A pays for Farasa: 1.74× variant B's encode time, a 16 s load and 1 GB for the per-word segment tables (5.15 M words). On these texts almost every word is in the tables; an unseen word goes to Farasa in a batch, so text far from the corpus costs more.
+- No batch figure for Farasa-BPE: a batch backend would skip the joiners (`farasa_bpe` stays out of `RUST_TYPES`).
+- Round trips exact for all four objects on these 20 000 eval texts. Those texts are whitespace-collapsed, so they hold no line break; on the references see the newline finding.
+
+
+*Smokes (M6, 2026-11-08 12:40–12:56 UTC; `_tokenizer_benchmark/chains/m6_smokes.log`, checks in `m6/smoke_checks.json`).*
+- Five smokes ran (Qwen × Jais-2 / Fanar-1 / Farasa-BPE A, Llama × Jais-2 / Fanar-1; 30 / 32 / 30 micro-steps, 10 prompts), all exit 0, 160–204 s each.
+- In every smoke:
+  - the embedding start was applied;
+  - the losses are finite;
+  - the reference round-trip chrF is 100;
+  - the Phase-3 checkpoint holds the expected tied rows.
+- **The equal-size fix works:** Fanar-1 on Llama-3.2-3B (128 256 = 128 256) logs "the rows are built, not kept": 127 993 rows from surfaces, 263 mean fallback.
+- Jais-2 on Llama is resized 128 256 → 150 272 (148 748 from surfaces, 1 524 fallback, 0 random) and stays tied.
+
+*Finding: our own tokenizers cannot write a line break* (`paper/threats.md` §11).
+- In BPE-16K, BPE-128K and Farasa-BPE-16K, `encode("\n")` is `<s> <unk> </s>`, and `<unk>` decodes to nothing.
+- The cause: the tokenizer corpus is whitespace-collapsed, so the newline byte never reaches the BPE trainer.
+- AraRooPat drops the newline as plain whitespace (`أولا:\nكتاب` decodes as `أولا : كتاب`).
+- Effect: on Qwen the v5 answers that contain a newline number 0 for BPE-16K, BPE-128K and AraRooPat, against 192 / 250 for native Qwen3. Jais-2 and Fanar-1 round-trip newlines exactly.
+- Exact reference round trip is 0.768 for BPE-16K, BPE-128K and Farasa-BPE-16K: exactly the 192 of 250 references without a line break. Jais-2, Fanar-1, Llama and Gemma get 1.000 (`m4/tokenizer_basics.json`).
+- This holds for every arm trained since the panel began. It is not corrected here (no vocabulary changes; Farasa-BPE-16K copies BPE-16K's settings).
+- Every comparison across the released / ours groups carries it: line layout (lists, paragraphs) is open only to the released and native tokenizers.
+
+
+*Qwen3-4B-Base (M6–M7, 2026-11-08 12:56 → 11-09 01:09 UTC; stage report `_tokenizer_benchmark/stage_reports/S1_qwen_2026-11-09.md`, readings `m7/readings_qwen.md`).*
+
+- **Cells** (all `qwen_native_vs_araroopat/`, through the console, exit 0):
+
+| cell | run | wall | peak | Phase 3 stop / restored |
+|---|---|---|---|---|
+| `jais2_3phase_v5_distill` | 20261108-125636 | 4 h 03 min | 50.4 GB | 20 000 / 17 500 |
+| `fanar1_3phase_v5_distill` | 20261108-165958 | 4 h 03 min | 50.0 GB | 20 000 / 17 500 |
+| `farasa_bpe16k_3phase_v5_distill` | 20261108-210239 | 3 h 51 min | 44.7 GB | 18 500 / 16 000 |
+
+  - M6 took 12.2 GPU-hours against an estimate of 14.
+- **Judges** (local, offline, one pass each over the three cells, baseline `native_qwen3_sft_v5_distill`, no overwrite):
+  - gpt-oss-120b: 750 verdicts, 0 parse failures, 3.4 min.
+  - Falcon-H1-34B: 750 verdicts, 0 parse failures, 5.9 min.
+  - Agreement on the new cells: QWK 0.47–0.58, Spearman 0.75–0.78.
+- **Scores** (± SE; share of the teacher's score: gpt-oss 3.272, Falcon 4.176):
+
+| arm | gpt-oss | share | Falcon | share |
+|---|---|---|---|---|
+| Jais-2 | 2.244 ± 0.069 | 0.686 | 3.108 ± 0.079 | 0.744 |
+| Fanar-1 | 2.164 ± 0.058 | 0.661 | 3.192 ± 0.074 | 0.764 |
+| Farasa-BPE-16K | 2.248 ± 0.070 | 0.687 | 3.268 ± 0.077 | 0.783 |
+| BPE-16K | 2.100 | — | 3.140 | — |
+| AraRooPat | 2.312 | — | 3.212 | — |
+| BPE-128K | 2.036 | — | 2.868 | — |
+| native SFT | 2.464 | — | 3.304 | — |
+
+- **Generation behaviour** (`all_metrics.json`):
+
+| arm | loops | EOS | mean answer |
+|---|---|---|---|
+| Jais-2 | 11.2 % | 86.8 % | 577 chars |
+| Fanar-1 | 12.4 % | 86.4 % | 541 chars |
+| Farasa-BPE-16K | 10.4 % | 88.0 % | 553 chars |
+
+- **The pre-registered readings** (X − comparator, 95 % paired bootstrap, 10 000 resamples, seed 0; `m6/paired/qwen/<judge>/`), each as gpt-oss / Falcon:
+
+| reading | Jais-2 | Fanar-1 | Farasa-BPE-16K |
+|---|---|---|---|
+| **W1** (− BPE-16K) | **+0.144 [+0.028, +0.260]** / −0.032 [−0.156, +0.092] | +0.064 [−0.048, +0.180] / +0.052 [−0.084, +0.192] | **+0.148 [+0.040, +0.264]** / +0.128 [−0.012, +0.268] |
+| **W2** (− AraRooPat) | −0.068 [−0.192, +0.060] / −0.104 [−0.236, +0.028] | **−0.148 [−0.268, −0.028]** / −0.020 [−0.156, +0.116] | −0.064 [−0.188, +0.060] / +0.056 [−0.080, +0.192] |
+| **W3** (− native SFT) | **−0.220 [−0.344, −0.096]** / **−0.196 [−0.320, −0.076]** | **−0.300 [−0.424, −0.176]** / −0.112 [−0.236, +0.012] | **−0.216 [−0.340, −0.092]** / −0.036 [−0.164, +0.096] |
+| **W4** (− BPE-128K) | **+0.208 [+0.084, +0.332]** / **+0.240 [+0.100, +0.380]** | +0.128 [−0.008, +0.260] / **+0.324 [+0.168, +0.484]** | **+0.212 [+0.088, +0.332]** / **+0.400 [+0.264, +0.540]** |
+| **W5** (share of the teacher's score) | 0.686 / 0.744 | 0.661 / 0.764 | 0.687 / 0.783 |
+
+  - For W5, native keeps 0.753 / 0.791, AraRooPat 0.707 / 0.769, BPE-16K 0.642 / 0.752, BPE-128K 0.622 / 0.687.
+- **F1 — pieces never seen in Phases 1 + 2** (`m6/adaptation_token_counts.json`):
+  - Jais-2 37.9 %, **Fanar-1 56.1 %**, Farasa-BPE-16K 2.8 %; BPE-128K 1.0 %, BPE-16K 3.1 %, AraRooPat 4.9 %.
+  - Answer pieces never seen: Jais-2 1.1 % (almost all the markdown piece `**:`, taught by the Phase 3 teacher answers), Fanar-1 0.2 %, Farasa-BPE 0 (`m6/unseen_in_answers.json`).
+- **F2 — `morpheme_integrity_rate`:** Farasa-BPE-16K (variant A) 0.960; BPE-16K 0.369, BPE-128K 0.224, Jais-2 0.258, Fanar-1 0.365, AraRooPat 0.994, native Qwen3 0.536.
+- **F3:** Fanar-1 has 3.72 % Arabic-bearing pieces and 56 % never seen, and still does not fall below BPE-16K on Qwen (W1 +0.06 / +0.05, both intervals across zero).
+- **R:** waits for Llama and Gemma.
+- **Language model** (nats per character; `diag_heldout_rawtext_v1*.json`):
+  - Raw text after Phase 3, with BOS blocks in brackets: Jais-2 0.860 (0.864), Fanar-1 0.872 (0.880), Farasa-BPE 0.857; native SFT 0.840, BPE-16K 0.864, AraRooPat 0.880, BPE-128K 0.873.
+  - Answer NLL per character: Jais-2 0.972, Fanar-1 0.940, Farasa-BPE 0.888; native 0.811, AraRooPat 0.812, BPE-16K 0.907, BPE-128K 0.979.
+- **Phase 3 data** (`m6/phase3_tokens.json`): input tokens of the 45 000 drawn examples, Jais-2 9.55 M, Fanar-1 13.81 M, Farasa-BPE 14.43 M; loss tokens 4.61 / 6.80 / 7.19 M.
+- **Read plainly, on one model of three:**
+  - Constraining BPE-16K's merges to Farasa's morpheme boundaries helped under gpt-oss (+0.15). Falcon agrees in sign, with its interval touching zero.
+  - The two shipped Arabic-LLM vocabularies sit with it, between BPE-16K and AraRooPat.
+  - All three beat the 128 K plain BPE, and all three trail the native vocabulary under gpt-oss.
+  - The released tokenizers and native can write line breaks and ours cannot (see the finding above). That is part of every released-vs-ours difference here.
+
+
+*Llama-3.2-3B (M8–M9, 2026-11-09 01:13 → 09:41 UTC; stage report `_tokenizer_benchmark/stage_reports/S2_llama3b_2026-11-09.md`, readings `m7/readings_llama3b.md`).*
+
+- **Cells** (`llama3b_tokenizers/`, through the console, exit 0):
+
+| cell | run | wall | peak |
+|---|---|---|---|
+| `jais2_3phase_v5_distill` | 20261109-011258 | 2 h 50 min | 39.8 GB |
+| `fanar1_3phase_v5_distill` | 20261109-040239 | 2 h 52 min | 38.6 GB |
+| `farasa_bpe16k_3phase_v5_distill` | 20261109-065420 | 2 h 35 min | 32.2 GB |
+
+  - M8 took 8.3 GPU-hours against 9.5.
+  - Fanar-1's equal-size embedding start was applied in the full run: 127 993 rows from surfaces.
+- **Judges:** 750 + 750 verdicts, 0 parse failures. Agreement on the new cells: QWK 0.52–0.53.
+- **Scores** (± SE; share of the teacher's score):
+
+| arm | gpt-oss | share | Falcon | share |
+|---|---|---|---|---|
+| Jais-2 | 1.912 ± 0.061 | 0.584 | 2.764 ± 0.074 | 0.662 |
+| Fanar-1 | 1.988 ± 0.061 | 0.608 | 2.828 ± 0.071 | 0.677 |
+| Farasa-BPE-16K | 2.068 ± 0.064 | 0.632 | 2.960 ± 0.075 | 0.709 |
+| BPE-16K | 1.940 | — | 2.932 | — |
+| AraRooPat | 2.072 | — | 2.960 | — |
+| BPE-128K | 1.840 | — | 2.680 | — |
+| native SFT | 2.076 | — | 2.968 | — |
+
+- **Generation behaviour:**
+
+| arm | loops | EOS |
+|---|---|---|
+| Jais-2 | 17.2 % | 82.4 % |
+| Fanar-1 | 15.2 % | 83.2 % |
+| Farasa-BPE-16K | 8.8 % | 90.4 % |
+
+- **The pre-registered readings**, each as gpt-oss / Falcon:
+
+| reading | Jais-2 | Fanar-1 | Farasa-BPE-16K |
+|---|---|---|---|
+| **W1** (− BPE-16K) | −0.028 [−0.160, +0.100] / **−0.168 [−0.308, −0.028]** | +0.048 [−0.068, +0.168] / −0.104 [−0.244, +0.036] | **+0.128 [+0.008, +0.248]** / +0.028 [−0.104, +0.160] |
+| **W2** (− AraRooPat) | **−0.160 [−0.292, −0.024]** / **−0.196 [−0.336, −0.048]** | −0.084 / −0.132 [−0.264, +0.000] | −0.004 / +0.000 |
+| **W3** (− native SFT) | **−0.164 [−0.292, −0.036]** / **−0.204 [−0.348, −0.060]** | −0.088 [−0.208, +0.036] / **−0.140 [−0.272, −0.012]** | −0.008 / −0.008 |
+| **W4** (− BPE-128K) | +0.072 / +0.084 (both across zero) | **+0.148 [+0.024, +0.276]** / **+0.148 [+0.004, +0.292]** | **+0.228 [+0.108, +0.352]** / **+0.280 [+0.152, +0.408]** |
+
+- **F1:** identical to Qwen by construction (one pack per tokenizer).
+- **Language model** (nats per character):
+  - Raw text after Phase 3: Jais-2 0.880, Fanar-1 0.910, Farasa-BPE 0.881.
+  - Answer NLL per character: Jais-2 1.025, Fanar-1 0.992, Farasa-BPE 0.938 (AraRooPat 0.844, native 0.901).
+- **The newline finding holds:** answers with line breaks are Jais-2 177, Fanar-1 201, native 175, and 0 for all four of ours.
+- **R so far (Qwen, Llama; formal after Gemma):**
+  - Farasa-BPE − BPE-16K is above zero on both models under gpt-oss (+0.148 / +0.128).
+  - Farasa-BPE − BPE-128K and Jais-2 − native hold their sign on both models under both judges.
+  - Jais-2 − BPE-16K and Farasa-BPE − native vary.
+
+
+*Gemma-3-4B (M10–M11, 2026-11-09 09:41 → 22:33 UTC; stage report `_tokenizer_benchmark/stage_reports/S3_gemma3_4b_2026-11-09.md`, readings `m7/readings_gemma3_4b.md`).*
+
+- **Cells** (`gemma3_4b_tokenizers/`, through the console, exit 0):
+
+| cell | run | wall | peak |
+|---|---|---|---|
+| `jais2_3phase_v5_distill` | 20261109-094100 | 4 h 10 min | 48.9 GB |
+| `fanar1_3phase_v5_distill` | 20261109-135122 | 4 h 14 min | 48.1 GB |
+| `farasa_bpe16k_3phase_v5_distill` | 20261109-180523 | 4 h 15 min | 42.7 GB |
+
+  - M10 took 12.7 GPU-hours against 12.5.
+- **Judges:** 750 + 750 verdicts, 0 parse failures. Agreement QWK 0.55–0.57.
+- **Scores** (± SE; share of the teacher's score):
+
+| arm | gpt-oss | share | Falcon | share |
+|---|---|---|---|---|
+| Jais-2 | 2.248 ± 0.070 | 0.687 | 3.216 ± 0.076 | 0.770 |
+| Fanar-1 | 2.396 ± 0.069 | 0.732 | 3.332 ± 0.072 | 0.798 |
+| Farasa-BPE-16K | 2.328 ± 0.074 | 0.712 | 3.284 ± 0.079 | 0.786 |
+| BPE-16K | 2.392 | — | 3.340 | — |
+| AraRooPat | 2.376 | — | 3.252 | — |
+| BPE-128K | 2.228 | — | 3.108 | — |
+| native SFT | 2.660 | — | 3.544 | — |
+
+- **The pre-registered readings**, each as gpt-oss / Falcon:
+
+| reading | Jais-2 | Fanar-1 | Farasa-BPE-16K |
+|---|---|---|---|
+| **W1** (− BPE-16K) | **−0.144 [−0.276, −0.012]** / **−0.124 [−0.252, −0.004]** | +0.004 / −0.008 | −0.064 [−0.192, +0.064] / −0.056 [−0.184, +0.076] |
+| **W2** (− AraRooPat) | **−0.128 [−0.248, −0.004]** / −0.036 | +0.020 / +0.080 | −0.048 / +0.032 |
+| **W3** (− native SFT) | **−0.412 [−0.548, −0.276]** / **−0.328 [−0.452, −0.204]** | **−0.264 [−0.388, −0.148]** / **−0.212 [−0.332, −0.096]** | **−0.332 [−0.468, −0.196]** / **−0.260 [−0.392, −0.136]** |
+| **W4** (− BPE-128K) | +0.020 / +0.108 | **+0.168 [+0.052, +0.284]** / **+0.224 [+0.096, +0.356]** | +0.100 [−0.028, +0.228] / **+0.176 [+0.048, +0.308]** |
+
+- **Line breaks:** Jais-2 191, Fanar-1 204, native 200, and 0 for ours.
+- **Answer NLL per character:** Jais-2 0.932, Fanar-1 0.858, Farasa-BPE 0.849 (AraRooPat 0.761, native 0.760).
+- The native Gemma raw-text file (1.241 nats per character) is the October BOS artefact and is not compared.
+
+*R — replication across the three models* (`_tokenizer_benchmark/m7/replication.md`).
+- Classes:
+  - **replicates:** the interval excludes zero with the same sign on all three;
+  - **consistent:** the same sign, an interval covers zero somewhere;
+  - **mixed:** opposite signs.
+- **Replicates:**
+  - W3 Jais-2 − native, below zero under both judges;
+  - W4 Fanar-1 − BPE-128K and W4 Farasa-BPE − BPE-128K, above zero under Falcon (consistent under gpt-oss).
+- **Consistent:**
+  - W3 Fanar-1 / Farasa-BPE − native (−);
+  - W4 Jais-2 − BPE-128K (+);
+  - W2 Jais-2 − AraRooPat (−);
+  - W2 Farasa-BPE − AraRooPat (within ±0.07 on every model; − under gpt-oss, + under Falcon);
+  - Farasa-BPE − Jais-2 (+).
+- **Mixed:**
+  - **W1 Farasa-BPE − BPE-16K: +0.148 / +0.128 / −0.064 under gpt-oss, +0.128 / +0.028 / −0.056 under Falcon.** The morpheme constraint helped on Qwen and Llama and not on Gemma, the same model-dependence AraRooPat − BPE-16K showed in October.
+  - W1 Jais-2 − BPE-16K under gpt-oss;
+  - W1 Fanar-1 − BPE-16K under Falcon;
+  - W2 Fanar-1 − AraRooPat;
+  - Farasa-BPE − Fanar-1.
+- **Read plainly:**
+  - No shipped Arabic-LLM vocabulary and no Farasa constraint reaches the model's own vocabulary under our 131 M-token adaptation.
+  - All of them match or beat a plain 128 K BPE.
+  - Among the 16–17 K designs, the Farasa constraint and the root-and-pattern design end level with each other, and their edge over plain BPE-16K depends on the base model.
+
+
+*What Fanar-1's result does and does not say.*
+- **What it says.** It measures the tokenizer Fanar-1 ships, under our adaptation: 131 M pieces of Arabic text, then the same Phase 3. That tokenizer is Arabic-poor:
+  - 3.72 % of its pieces bear an Arabic letter, about as few as the native vocabularies (Qwen3 2.40 %, Llama-3.2 2.95 %, Gemma-3 3.17 %; `_tokenizer_benchmark/m12/arabic_bearing_all.json`);
+  - 56 % of its pieces never occur in the adaptation text.
+  - Even so, it is level with BPE-16K and AraRooPat on every model, beats BPE-128K under Falcon on all three, and is the best new arm on Gemma.
+- **What it does not say.**
+  - Nothing about MorphBPE: that paper released no tokenizer.
+  - Nothing about Fanar-1 the model.
+  - Nothing about a Fanar tokenizer trained on Arabic.
+- **Why a poor vocabulary does not hurt here:** a model that writes Arabic needs few Arabic pieces, provided they are frequent enough to be learned in 131 M pieces.
+
+*Judge passes (one per judge per model, over the three new cells; no `--overwrite`).*
+
+| judge | Qwen | Llama | Gemma | verdicts | parse failures | agreement (QWK) |
+|---|---|---|---|---|---|---|
+| gpt-oss-120b | 206 s (cold start) | 109 s | 104 s | 2 250 | 0 | — |
+| Falcon-H1-34B | 354 s | 233 s | 233 s | 2 250 | 0 | 0.47–0.58 on the nine new cells (`paper/tables/P8`) |
+
+*Deviations from the brief* (all in `_tokenizer_benchmark/paper/design.md`):
+1. Farasa runs per distinct word.
+2. The joiner is U+E000.
+3. The phase-checkpoint guard on the equal-size fix.
+4. Variant A is saved as a new folder.
+5. Fanar-1 is on the 110 M pool.
+6. The two Llama smokes were brought forward to M6.
+7. The judges and diagnostics ran locally.
+8. The newline finding is reported, not corrected.
+
+No run failed or was retried.
+
+*The paper record* (`_tokenizer_benchmark/paper/`):
+- `design.md`, `methods.md`, `threats.md`;
+- `tables/` P1–P9: CSV, Markdown and `paper_tables.xlsx`;
+- `figures_data/figures_data.csv`;
+- `numbers_sources.md`: 1 407 numbers → files.
+
+*The supervisor tables* (`docs/comparative_tables_2026-10.md`, rebuilt 2026-11-09):
+- The three new arms are added to T1, T2, T5, T6 and T8.
+- T7 gains W1–W4 columns; W5 is the G5 column.
+- The multiple-choice columns of the new arms read "not run (free generation only)".
+- All 1 517 cells shared with the 2026-10-13 build are identical, and the T2c agreement row now pools nine cells per model.
+
+**Verification (2026-11-10, Fable session, against the outputs — the final report `_tokenizer_benchmark/stage_reports/FINAL_2026-11-09.md` and the paragraphs above).** *Reproduced exactly from the files:* the judge means and standard errors of the seven arms on the three models under both judges (the parquet means equal the `all_metrics.json` summaries; 250 rows and 0 parse failures in every one of the 42 judge files, hence 2 250 verdicts per judge over the nine new cells; the teacher 3.272 / 4.176); every row of `m7/replication.md` — the 90 point estimates recomputed from the judge files as the mean paired difference agree to the third decimal, the 30 classes follow the stated rule, and three intervals re-run through `paired_compare.compare` (10 000 resamples, seed 0) reproduce to the third decimal (the function takes the baseline first, so its sign is the mirror of the table's); the loop, EOS and mean-character rates of the nine cells; the Phase 3 stops and restored steps (Qwen 20 000 / 17 500, 20 000 / 17 500, 18 500 / 16 000; Llama 21 000 / 18 500, 22 500 / 20 000, 20 000 / 17 500; Gemma 20 500 / 18 000, 21 000 / 18 500, 21 000 / 18 500) and the embedding start of every new cell (Jais-2 148 748 rows from surfaces + 1 524 fallback; Fanar-1 127 993 + 263 on Qwen and Llama, 127 992 + 264 on Gemma; Farasa-BPE 15 806 + 194; tied in all nine); the 30 diagnostic JSONs of the new cells (ten per model, every timing line exit 0) and the comparators' — the raw-text and answer NLL per character quoted above to the third decimal, Gemma's native 1.241 included; the nine runs' walls from `chains/*_timing.jsonl` (14 602 / 14 562 / 13 841 s on Qwen, 10 181 / 10 301 / 9 281 on Llama, 15 021 / 15 242 / 15 322 on Gemma), their peaks from `*_peak_mem.jsonl`, exit 0 in all nine run folders and in the five smokes (204 / 181 / 200 / 160 / 161 s, every check flag true, the Llama × Fanar-1 smoke at 128 256 = 128 256 with 127 993 rows built); the GPU hours (12.41 / 8.41 / 12.79 = 33.6); the judge passes (206 / 109 / 104 s and 354 / 233 / 233 s; the first gpt-oss pass loaded its weights in 97 s plus 43 s of engine start, the later ones in 10–15 s; 250 verdicts in 11–15 s per cell under gpt-oss and 65–68 s under Falcon — the 19 and 3.7 per second of the final report); the gate (variant B 0.6548, variant A 0.9596, CSA 0.925, fertility 2.01) and the integrity of every arm; 0 of the 16 000 trained pieces decode to the joiner; the BPE training in 404 s; the segmentation manifest (2 659 080 types, 232 588 314 occurrences, 194 443 625 boundaries kept and 2 782 073 dropped, 1.19 % of words with a dropped boundary, 1.59 % rewritten, 500 / 500 in context, 245.9 s, 14 texts holding U+2060); F1 (37.9 / 56.1 / 2.8 %) and the unseen answer pieces (1.10 / 0.18 / 0 % on Qwen, at most 0.92 % on the other two models); F3 (3.72 / 2.40 / 2.95 / 3.17 / 31.76 %, ours 89.8–92.2 %); the released-tokenizer check with every acceptance flag true (Jais-2 150 222 / 150 272, BOS 0, EOS 150 024, pad 1, 47 717 Arabic-bearing pieces, 1.43 pieces per word, 2.97 characters per piece, 66.3 % of texts changed by `fix_mistral_regex`; Fanar-1 128 256, BOS 2, EOS 1, pad 0, unk 3, 2.14 and 2.49; 250 / 2 000 / 1 000 exact round trips each); the packs (Jais-2 `3b01ee96701fbb07`, 153.4 M, 4 859 QA blocks at 0.025; Fanar-1's 80 M attempt taking all 131 048 FineWeb-2 documents, its 110 M pack `dbfe0864b45004f8` at 226.3 M with 6 886 blocks at 0.035; Farasa-BPE `debc6dc32fe9b37c`, 167.3 M, 127 900 documents, 7 193 blocks at 0.035); the mixture dry runs (76 + 52, 190 + 124, 208 + 180 drops; 4.61 / 6.80 / 7.19 M loss tokens; 97.5 / 97.6 / 98.0 % free-form) and the Phase 3 token counts; the speed table (3.90 / 2.73 / 6.32 / 3.58 µs per word to encode, 0.50 / 0.86 / 0.43 / 0.45 to decode, 0.40 / 0.19 in a batch, loads 0.75 / 0.48 / 16.1 / 0.03 s, +105 / +88 / +1 020 / +15 MB); the newline finding (answers with a line break: Qwen native 192, Jais-2 188, Fanar-1 204; Llama 175 / 177 / 201; Gemma 200 / 191 / 204; 0 in every arm we trained; exact reference round trip 0.768 for BPE-16K, BPE-128K and both Farasa-BPE objects); the paper record (16 tables as CSV and Markdown plus the workbook, 303 figure rows, 1 407 sourced numbers); the supervisor rebuild (2 696 sourced numbers; a cell-by-cell comparison of the 2026-10-13 and 2026-11-09 CSVs finds the 1 517 shared cells identical and none different; the deck folder untouched since 2026-10-13); `exclusions.json` at `7a56322b…`; the judge revisions `b5c939de…` / `6e6890e2…` pinned in the YAMLs; §4 finding 11, §5 items 35–39, the §6 table, §8 and §9. The ten test files of the P0 list, re-run on 2026-11-10: 166 passed, 2 skipped in 41.7 s (the two skips are the pre-existing `bpe_32k` / `wordpiece_32k` ones of `test_tokenizer_roundtrip.py`), the count the report gives. *Read with care, none of it an error:* (a) the "GB" of the peak-memory columns is MiB ÷ 1 000 (50 357 MiB is 49.2 GiB or 52.8 GB) — a label, not a number; (b) the gate's "5 000 distinct held-out words" are the words of the first 5 000 eval texts that pass the length rule, 4 639 of them (`m3/gate.json`), and 0.6548 is far from the threshold either way; (c) `m4/tokenizer_basics.json` gives native Qwen3 a reference round trip of 0.884 exact — 29 of the 250 references change under its own tokenizer — which the newline paragraph above does not mention when it lists Llama and Gemma at 1.000; (d) the final report's replication summary leaves out two rows of the full table (Fanar-1 − BPE-16K under gpt-oss, consistent; Jais-2 − Fanar-1, mixed under gpt-oss and consistent under Falcon). *Reading.* The final report stands as written. One consequence of the gate must reach the paper's introduction: the arm is variant A, which runs Farasa on every input (6.3 µs per word, a 16 s load, 1 GB of tables), so "trained exactly as our BPE-16K apart from that constraint" is true of the training and not of inference — the `[TBD: variant fixed by the pre-registered gate, F2]` placeholder is where that sentence goes.
+
+
+### 3.19 Human evaluation v2 — three annotators on the Qwen3 and Llama arms (2026-11-12 → 11-21)
+
+**Design** (2026-11-12, to the supervisor's TODO on the paper draft `ARA_version1.pdf` §4.6; `scripts/build_human_eval_v2.py`, `outputs/experiments/_human_eval_v2/README.md`). Two blind sets named `human_v2`, one per experiment folder (`qwen_native_vs_araroopat/freeform_rating/`, `llama3b_tokenizers/freeform_rating/`): per model 20 held-out prompts drawn with seed 7 in balance over the length strata (Qwen 7 / 7 / 6, Llama 6 / 7 / 7), disjoint between the models, every prompt answered by the three v5 arms AraRooPat, BPE-16K and Farasa-BPE-16K — 60 items per model, 120 in all, 20 per arm–model cell, shuffled, opaque item ids (`h2q-…`, `h2l-…`), the arm only in the set file's `hidden` field. The annotators rated in Excel workbooks (`scripts/build_human_eval_v2_xlsx.py`: the judge's `default_v1` rubric in English and Arabic on a Guide sheet, Arabic cells right-to-left, a 1–5 validation on the score, a flags dropdown). **Raters:** Nada, Nouha and Wael; workbooks returned 2026-11-21 under `_human_eval_v2/returned/<rater>/` and imported with `scripts/import_human_ratings.py`. Every item carries three ratings except Llama item `h2l-012`, which Nouha left unscored; the Llama numbers are on the 59 items all three scored (the report's completeness guard was relaxed from 100 % to 95 % per rater for that one item). Report: `scripts/human_eval_v2_report.py` → `_human_eval_v2/report.{md,json}`; ratings in `<experiment>/freeform_rating/human_v2.ratings/<rater>.json`. CPU only.
+
+**Rater scales.** Wael scores high — mean 4.283 on Qwen and 4.475 on Llama, 60 % / 59 % of the items at 5, one 1 in 119 — while Nada and Nouha use the whole scale (means 2.967 / 2.683 on Qwen, 2.831 / 2.966 on Llama; 9–20 % at 5, 12–18 % at 1). That offset is what the exact-category agreement pays for: Fleiss' κ **0.066** on Qwen and **−0.041** on Llama. Ordinally, Nada and Nouha agree moderately (QWK 0.646 on Qwen, 0.504 on Llama); Wael against either is 0.17–0.35.
+
+**Human versus judge** (consensus = the mean of the three raters, rounded to the scale; QWK / Spearman / exact): Qwen — Falcon-H1-34B 0.544 / 0.539 / 0.367, Gemma-4-31B 0.525 / 0.686 / 0.225, GPT-5.6 0.527 / 0.718 / 0.275, gpt-oss-120b 0.444 / 0.601 / 0.267; Llama — Falcon 0.608 / 0.631 / 0.458, gpt-oss 0.306 / 0.641 / 0.068; pooled over both models Falcon QWK 0.569, gpt-oss 0.372. The judges order the items like the humans (Spearman 0.54–0.72) on a lower scale than the consensus (gpt-oss arm means 2.0–2.6 against human 3.1–3.5; Falcon's arm means sit within 0.3 of the human ones), which the QWK and exact figures pay for. Per rater and per model, over the items a judge scored, Nada and Nouha agree with the judges at QWK 0.37–0.69, Wael at 0.10–0.36 (Gemma-4 and GPT-5.6 cover only the AraRooPat and BPE-16K items of the Qwen set, 40 of 60 — the Farasa-BPE-16K cell was judged by gpt-oss and Falcon only).
+
+**Per-arm human means** (consensus, ± SE over the prompts): Qwen AraRooPat **3.433 ± 0.216**, BPE-16K 3.133 ± 0.201, Farasa-BPE-16K 3.367 ± 0.255; Llama AraRooPat 3.263 ± 0.182, BPE-16K 3.467 ± 0.198, Farasa-BPE-16K 3.533 ± 0.202.
+
+**The ranking under human scores** (paired on the prompts, 10 000 resamples, seed 0; the primary judge on the same prompts in the last column):
+
+| pair, Qwen3-4B-Base (20 prompts) | human consensus | Nada alone | Nouha alone | Wael alone | gpt-oss-120b, same prompts |
+|---|---|---|---|---|---|
+| AraRooPat − BPE-16K | +0.300 [+0.033, +0.583] | +0.450 [+0.050, +0.800] | +0.200 [−0.050, +0.450] | +0.250 [−0.200, +0.700] | +0.300 [+0.000, +0.600] |
+| Farasa-BPE-16K − BPE-16K | +0.233 [−0.117, +0.617] | +0.200 [−0.350, +0.800] | +0.350 [+0.100, +0.650] | +0.150 [−0.350, +0.700] | +0.350 [−0.050, +0.700] |
+| AraRooPat − Farasa-BPE-16K | +0.067 [−0.183, +0.350] | +0.250 [−0.200, +0.700] | −0.150 [−0.400, +0.100] | +0.100 [−0.300, +0.550] | −0.050 [−0.350, +0.250] |
+
+| pair, Llama-3.2-3B (19 prompts for the AraRooPat pairs, 20 for Farasa − BPE-16K) | human consensus | Nada alone | Nouha alone | Wael alone | gpt-oss-120b, same prompts |
+|---|---|---|---|---|---|
+| AraRooPat − BPE-16K | −0.210 [−0.509, +0.088] | −0.210 [−0.737, +0.316] | −0.368 [−0.842, +0.105] | −0.053 [−0.421, +0.316] | +0.105 [−0.210, +0.421] |
+| Farasa-BPE-16K − BPE-16K | +0.067 [−0.333, +0.417] | +0.150 [−0.400, +0.650] | +0.000 [−0.550, +0.600] | +0.050 [−0.350, +0.450] | +0.150 [−0.050, +0.350] |
+| AraRooPat − Farasa-BPE-16K | −0.246 [−0.579, +0.175] | −0.316 [−0.789, +0.210] | −0.421 [−0.895, +0.105] | +0.000 [−0.316, +0.368] | +0.000 [−0.368, +0.368] |
+
+Pooled over the two models under the human consensus: AraRooPat − BPE-16K +0.051 [−0.162, +0.282] (39 prompts; win / tie / loss 38 % / 23 % / 38 %; gpt-oss on the same 39 prompts +0.205 [+0.000, +0.436], Falcon +0.205 [−0.051, +0.462]), Farasa-BPE-16K − BPE-16K +0.150 [−0.125, +0.417] (40), AraRooPat − Farasa-BPE-16K −0.086 [−0.308, +0.162] (39). The other judges on the Qwen prompts give AraRooPat − BPE-16K +0.300 [−0.050, +0.700] (Falcon), +0.400 [+0.050, +0.800] (Gemma-4), +0.200 [+0.000, +0.400] (GPT-5.6); Falcon on the Llama prompts +0.105 [−0.263, +0.421].
+
+*Reading.* (1) **On Qwen3 the human check confirms the judged result**: AraRooPat above BPE-16K by +0.30 with the interval above zero, the same sign under each rater alone (Nada's interval excludes zero on its own), and the same size the judges give on these 20 prompts (+0.2 to +0.4). (2) **On Llama it does not**: the consensus points the other way (−0.21, interval through zero) and so does every rater alone, while the judges on the same 19 prompts give +0.105 with intervals through zero — the subset carries the full-set Llama effect (+0.132 [+0.004, +0.256], §3.17) only weakly, and the humans do not reproduce it. (3) The paper's wording follows: the morphology benefit at equal size is human-confirmed on Qwen3; on Llama it rests on the judges, and a 20-prompt human sample leans against it; pooled, humans cannot separate the two arms. (4) Farasa-BPE-16K and AraRooPat are level under humans as under the judges (+0.07 / −0.25, intervals through zero), the §3.18 reading. (5) Inter-rater agreement is low in exact terms (Fleiss' κ ≈ 0) and moderate ordinally between two of the three raters; the compressed high scale of one rater is the main source. A calibration round (a shared pass over ten items, then re-rating) or an adjudicated consensus would lift it; neither was done, and the report states the per-rater results so a reader can see that the Qwen sign does not depend on any one rater. (6) The consensus-vs-judge QWK of 0.44–0.61 is in the range the two LLM judges show with each other on the new cells (0.47–0.58, §3.18): the judges are as close to the humans as to one another, and closer in ordering (Spearman) than in level.
+
 ## 4. What the campaign established
 
 1. The native model's loops were partly measurement (the first loop rule) and partly a greedy attractor of the base model; under the corrected rules the untrained base loops on 6.8 % of prompts and the SFT arm on 12.4 %. SFT on the 30 000-record mixture learns the references' register and length but not their content: judge 2.28 vs 2.42, CI including zero.
@@ -2019,6 +2401,24 @@ The order per 100 characters is the same on all three models: BPE-128K fastest, 
     - **The sign of the gold-أ letter gap depends on the base model.** AraRooPat − BPE-16K is negative on Qwen and Llama and positive on Gemma.
     - **Judges.** On Qwen, AraRooPat − BPE-16K keeps its sign under four judges; Falcon-H1 does not separate the two. gpt-oss also ranks the chosen teacher first.
     - **A measurement trap.** Without its BOS, Gemma's own tokenizer looks 0.47 nats/char worse on raw text than it is.
+
+11. (§3.18, the tokenizer benchmark, 2026-11-08 → 11-09) **Three more tokenizers across the three base models, writing only:**
+    - **The arms:**
+      - Farasa-BPE-16K: our 16 000-piece BPE whose merges never cross Farasa's morpheme boundaries; it runs Farasa on every input, by the pre-registered gate (0.655 < 0.90);
+      - the tokenizers released with **Jais-2** and **Fanar-1**, used as shipped.
+    - **Same recipe.** Each went through the recipe of BPE-128K, and both judges scored them.
+    - **None reaches the model's own vocabulary.** All three are below native on every model. Jais-2 − native replicates (below zero on all three, both judges); the others are consistent.
+    - **All match or beat a plain 128 K BPE.** Fanar-1 and Farasa-BPE-16K − BPE-128K replicate under Falcon.
+    - **The morpheme constraint does not replicate.** Farasa-BPE-16K − BPE-16K is +0.148 / +0.128 / −0.064 under gpt-oss on Qwen / Llama / Gemma (mixed). That is the model-dependence AraRooPat − BPE-16K showed in finding 10.
+    - **Farasa-BPE-16K and AraRooPat end level on every model** (within ±0.07), so two different ways of building morphology into a 16–17 K vocabulary give the same writing.
+    - **A shipped Arabic-poor vocabulary is no handicap here.** Fanar-1 (3.7 % Arabic-bearing, 56 % of pieces never seen in adaptation) is level with BPE-16K and AraRooPat.
+    - **Measured on the way, true of every arm since the panel began:** the four tokenizers we trained cannot write a line break.
+      - BPE maps it to `<unk>`; AraRooPat to a space.
+      - Our arms write 0 answers with a line break, against about 190 / 250 for native, Jais-2 and Fanar-1.
+      - It is reported beside every released-vs-ours comparison, not corrected.
+    - Replication table: `_tokenizer_benchmark/m7/replication.md`.
+
+12. (§3.19, human evaluation v2, 2026-11-21) **Three human raters on 120 blind items (Qwen3 and Llama; AraRooPat, BPE-16K, Farasa-BPE-16K):** on Qwen3 the humans confirm the judges — AraRooPat − BPE-16K +0.30 [+0.03, +0.58] under the consensus, positive under each rater alone; on Llama they do not — −0.21 [−0.51, +0.09], negative under each rater, where the judges on the same prompts give +0.105 with intervals through zero; pooled, +0.05 [−0.16, +0.28]. Farasa-BPE-16K and AraRooPat are level under humans too. Human–judge agreement is QWK 0.44–0.61 with Spearman 0.54–0.72 (the judges order like the humans on a lower scale); human–human exact agreement is low (Fleiss' κ 0.07 / −0.04; pairwise QWK 0.17–0.65) because one rater's scale sits near the top. The paper may call the Qwen3 result human-validated and must say the Llama result rests on the judges.
 
 ## 5. Open items and next steps (in the order proposed)
 
@@ -2063,6 +2463,16 @@ The order per 100 characters is the same on all three models: BPE-128K fastest, 
 33. **Queue chains** (`_comparative_tables/chains/`): a waiter must match a whole-line `QUEUE_DONE`. A quoted marker started a queue early once (10-11 06:27; no effect on results).
 34. **Item 2 still stands for the default held-out file.** Only the BPE-128K configs name `heldout_sets_v2.yaml`, which registers the raw-text set. Register it in `heldout_sets.yaml` when the next pool family is built from scratch.
 
+35. **A newline-capable rebuild of our tokenizers** (§3.18).
+    - Train BPE-16K, BPE-128K, Farasa-BPE-16K and AraRooPat on a corpus whose line breaks are kept, or add the newline byte to the initial alphabet, then re-run their arms.
+    - Until then every released-vs-ours difference includes "can write lists and paragraphs".
+36. **An equal-text arm for the large vocabularies** (§3.18 threats §5). Jais-2 reads about 95 M words in its 131 M pieces, Fanar-1 and Farasa-BPE-16K about 63 M. A run at equal words would separate vocabulary from exposure.
+37. **A 96 K Farasa-BPE** (the MorphBPE paper's size) and a Farasa-BPE trained on gold segmentations, if the morpheme constraint is to be tested at the paper's scale.
+38. **Farasa-BPE-16K's inference cost:** 6.3 µs per word, a 16 s load and 1 GB of segment tables, against 3.6 µs for the same merges without Farasa. A compiled segmenter, or a table for every pool word (as now) plus a fast fallback, would be needed for real use.
+39. **Response time on the nine new cells** (brief M14, ≈ 9 GPU-h): not run; it runs on the user's go.
+
+40. **Human evaluation v2 follow-ups** (§3.19): (a) a calibration round or an adjudicated consensus to lift the inter-rater agreement (Fleiss' κ ≈ 0; one rater's scale compressed near 5); (b) the Gemma-3-4B set (60 more items under the same builder) so the human check covers the third model, the one where the judges found no difference; (c) Nouha's one unscored Llama item (`h2l-012`); (d) a larger Llama draw — 20 paired prompts cannot separate differences of ±0.2, and the human point estimate there has the opposite sign to the judges'. The older `v5_blind` set (Qwen only, 51 / 200 by one rater) is superseded by `human_v2` and is not used.
+
 ## 6. GPU time (2026-09-22 onwards)
 Four training runs 8 h 52 min (1 h 15 lost attempt + 3 h 17 v3 + 0 h 56 lost attempt + 3 h 25 BPE), probe ~35 min, six diagnostics ~6 min, judge passes ~10 min — ≈ 9 h 43 min. Earlier: v1 ~1 h, v2 ~1.5 h (+ 45 min resume), native runs and re-evals ~2 h.
 
@@ -2094,6 +2504,22 @@ Brief v6 (2026-10-09 → 10-13; `_comparative_tables/chains/*_timing.jsonl`, the
 | P4 rotations | 8.1 | Llama 3.5, Gemma 4.6 |
 
 The overrun is response time: 14.6 h for fifteen cells against ~2.5 h estimated. Every judge pass together came to about 0.8 h.
+
+The tokenizer benchmark (2026-11-08 → 11-09; `_tokenizer_benchmark/chains/*_timing.jsonl`, the stage reports). Total **≈ 33.6 GPU-h** against the brief's ≈ 36 h core:
+
+| stage | GPU-h | parts |
+|---|---|---|
+| M6 smokes | 0.25 | 5 × 160–204 s |
+| M6 Qwen arms | 11.95 | Jais-2 4.06, Fanar-1 4.05, Farasa-BPE 3.84 |
+| M7 Qwen | 0.21 | judges 0.16, diagnostics 0.05 |
+| M8 Llama arms | 8.27 | 2.83 / 2.86 / 2.58 |
+| M9 Llama | 0.14 | |
+| M10 Gemma arms | 12.66 | 4.17 / 4.23 / 4.26 |
+| M11 Gemma | 0.13 | |
+
+- No run failed or was lost.
+- CPU only: the Farasa segmentation of the corpus (246 s), the Farasa-BPE training (404 s), the packs, intrinsic metrics and speed (≈ 2 h), and the tables.
+- M14 (response time) was not run.
 
 ## 7. References
 - Xu, J. et al. (2022). *Learning to Break the Loop: Analyzing and Mitigating Repetitions for Neural Text Generation* (DITTO). NeurIPS.
@@ -2156,6 +2582,41 @@ Brief v6 artifacts (2026-10-09 → 10-13):
 
 Results deck for the supervisor (2026-10-13): `outputs/experiments/_comparative_tables/_presentation/` — `supervisor_results_deck_2026-10-13.pptx` (23 main slides on Dr Amal's five requests of 2026-10-09 + 37 appendix slides with the 36 tables), built by `build_supervisor_deck.py` from the CSVs of `_comparative_tables/2026-10-13/` (charts: `make_figures.py`, `figures_manifest.json`; every number on a slide in `numbers_used.md`; notes in `speaker_notes.md`; rebuild after the rating: README.md). The T7 note of `scripts/build_comparative_tables.py` now says the rotation cells exist for all three base models; the regenerated tables differ only in that sentence.
 
+Paper (2026-11-08), *AraRooPat: Isolating the Effect of Morphology-Aware Tokenization on Arabic Open-Ended Generation*: `docs/paper/araroopat_generation/` — `introduction.md` / `introduction.tex` (the Introduction; results of the §3.18 benchmark as `[TBD]` placeholders), `references.bib` (`% verify` marks every field not readable in the repository), `numbers_sources.md` (every number of the introduction → file · row · column, plus the tokenization examples as encoded), `related_work_notes.md` (Alakeel et al. 2026, Reda et al. 2026, Alrefaie et al. 2024) and `mail_paragraph.md` (the paragraph for the supervisor's mail); written from `_briefs/opus_prompt_paper_introduction_2026-11-08.md`. Commits: none yet (the user commits).
+
+*Verification of the introduction (2026-11-08, Fable session; nothing in `docs/paper/` changed).* Every number of `introduction.md` re-read against `_comparative_tables/2026-10-13/*.csv`, the v5 config and report §3.11 / §3.14: all equal (G1 +0.212 / +0.132 / −0.016, G2 −0.152 / −0.004 / −0.284, BPE-16K − native and BPE-128K − BPE-16K per model, the four-judge line, loops, answer NLL, the T3b / T3c recognition figures, κ 0.817, 17 184 / 99.3 % / 41.8 % / 3.19, 45 000 / 27 000, 131 M). The tokenization examples were re-encoded with the saved tokenizers: inside a sentence BPE-16K gives ` بالق` + `لم` and Qwen3 ` بال` + `ق` + `لم`; AraRooPat gives `[ROOT_كتب] [PAT_يَ1ْ2ُ3ُونَ]` for يكتبون and `[CLITICP_ب] [CLITICP_ال] [ROOT_قلم] [PAT_1َ2َ3ِ]` for بالقلم, as the text renders them. One rounding note: §4 finding 10 says AraRooPat − BPE-16K runs to −0.047 (the §3.10 `mcq_compare` figure) while T3b's rebuilt value is −0.046; the introduction uses the table. Bibliography: every `% verify` field checked with network against the ACL Anthology / arXiv pages (Sennrich, Kudo & Richardson, Rust, Farasa, CAMeL Tools, WECHSEL, FOCUS, Kim & Rush, Alakeel et al., MorphBPE, Aya Expanse, CIDAR, Qwen3, Llama 3, Gemma 3, Jais 2, Mundra et al., Zheng 2023, Xu 2022, the three positioned papers' full names) — all correct as written or filled; two venue facts (Holtzman ICLR 2020, Zheng 2024 ICLR) could not be re-fetched (OpenReview challenge page) and stand on §7. The Fanar-1 paper exists (arXiv:2501.13944, Fanar Team, 2025) and replaces the model-card citation. Corrected entries and the small text fixes are in `_briefs/opus_prompt_paper_introduction_followup_2026-11-08.md`. Open for the user: the title's spelling (AraRooPat) and the ~100 words over the brief's ceiling.
+*Follow-up applied and re-checked (2026-11-08, Fable session):* `references.bib` holds 24 entries, all cited from `introduction.tex` (the optional-argument `\citep[…][]{}` forms included) and every key resolves; the only `% verify` marks left are Holtzman (ICLR 2020) and Zheng et al. (ICLR 2024), both consistent with §7; the text cites Anwar et al. (2026) and Fanar Team (2025), writes the clitic tokens in full (`[CLITICP_ب] [CLITICP_ال] [ROOT_قلم] [PAT_فَعَلِ]`), and `numbers_sources.md` carries the −0.047 / −0.046 note; running text 1 400 words, six `[TBD]` placeholders, no number changed. Still the user's: the title's spelling and whether to cut to ~1 300 words.
+
+*Introduction v2 (2026-11-10, Fable session).* Rewritten after the tokenizer benchmark on the user's three decisions of the day: (1) the benchmark results replace every `[TBD]` (W1 mixed +0.148 / +0.128 / −0.064; W2 level within ±0.07; Jais-2 − AraRooPat −0.068 / −0.160 / −0.128; Fanar-1 − AraRooPat −0.148 / −0.084 / +0.020; F1 38 / 56 / 3 %; F3 3.7 %; the gate 0.655 → variant A 0.960 at 6.3 µs per word, stated as Farasa at inference — the distinction from MorphBPE, whose constraint is training-only); (2) **the reference arm is the model as shipped**, the untrained base with its own vocabulary (`native_*_base_m2_c2400`), and the native arm trained through the pipeline is no longer used — against it AraRooPat is −0.064 [−0.200, +0.068] on Qwen3 (Farasa-BPE −0.128 and Jais-2 −0.132 also within their intervals; BPE-16K −0.276, BPE-128K −0.340, Fanar-1 −0.212 clearly below), and on Llama / Gemma, whose shipped models loop on 33 % / 55 % of answers, every adapted arm is +0.26 to +0.77 above (the 18 missing `*__minus__base.json` pairs for `araroopat` / `bpe16k` / `bpe128k` were written into `_tokenizer_benchmark/m6/paired/` with the campaign's `compare`); (3) the introduction argues that open-ended generation is the best available test of a tokenizer and describes the judge's 1–5 rubric, sub-scores, flags and the cell / difference arithmetic. The related work was widened from 24 to 53 cited entries, each verified at its ACL Anthology / arXiv / publisher page by five parallel lookups (corrections: Arnett & Bergen is COLING 2025; AraLLaMA's first author is Zhu; AraBERT's Farasa pre-segmentation is in the body, not the abstract; Alyafeai 2023 found no single best tokenizer; BALSAM's abstract does not make the judge-vs-BLEU claim; AraGen is a blog post; MorphBPE's ACL 2026 Findings version reports Arabic Belebele gains, its repository is still a 10-byte README) — nine further verified entries wait in `references_pool.bib` for the Related Work section. Files: `introduction.md` (2 250 words, bold-led findings), `introduction.tex` regenerated by the new `md_to_tex.py` (53 keys, none missing, none uncited), `references.bib`, `numbers_sources.md` (v2 rows), `related_work_notes.md`, `introduction.pdf` (`build_pdf.py`, headless Chromium + Amiri); the v1 files are in `_v1_2026-11-08/`. A caution the user chose to accept: with the shipped model as reference, the native comparison is no longer under equal treatment (the base arm got no Phase 3), so the Llama / Gemma margins measure the pipeline as much as the vocabulary; the text says so in the finding itself. *Second pass, same day:* on the user's question whether any paper supports the open-ended-generation position, nine more candidates were verified at the source; eight entered the text (Balepur et al. ACL 2025, Lyu et al. 2024, Wei et al. 2024, Myrzakhan et al. 2024, Chandak et al. 2025 on multiple choice vs generation; Sanz-Guerrero et al. 2025 on label tokenization moving MCQ accuracy by up to 11 %; Altıntaş et al. 2025's TokSuite as the controlled-tokenizer precedent; Lotz et al. ACL 2025 on compression), EQUATOR was dropped because its abstract makes no correlation claim, and Goldman et al. 2024's stronger correlation on generation tasks now carries the sentence. 61 cited entries, 10 pooled; `introduction.pdf` is 10 pages. *Human evaluation v2 (2026-11-12, Fable session), built to the supervisor's TODO on `ARA_version1.pdf` §4.6:* two blind sets named `human_v2` (`qwen_native_vs_araroopat/freeform_rating/`, `llama3b_tokenizers/freeform_rating/`), 20 prompts per model drawn at random with seed 7 in balance over the held-out set's length strata and disjoint between the models, every prompt under AraRooPat, BPE-16K and Farasa-BPE-16K (v5 cells) — 60 items per model, 120 in all, 20 per arm–model cell, shuffled, with opaque item ids so the page carries no cell information (the 2026-09-26 set's ids embedded the cell name). Tooling: `scripts/build_human_eval_v2.py` (sets, manifest, blind CSVs under `outputs/experiments/_human_eval_v2/`), `scripts/import_human_ratings.py` (a filled CSV through the page's own `submit`), `scripts/human_eval_v2_report.py` (refuses to unblind until every item of both sets has three ratings; then rater-vs-judge and consensus-vs-judge QWK / Spearman / exact pooled and per arm, pairwise rater QWK and Fleiss' κ, per-arm human means and the paired AraRooPat − BPE-16K / Farasa-BPE − BPE-16K / AraRooPat − Farasa-BPE differences under the human consensus with 10 000-resample intervals next to every judge's on the same prompts; pooled over the models). The chain was exercised once on a throwaway copy with three fake raters and the copy deleted. The procedure for the annotators is in `_human_eval_v2/README.md` (console Rate tab, or the CSVs). The older `v5_blind` set (Qwen only, 51 / 200 by one rater) stays as it is. Open: three native-speaker annotators and about 2–3 hours each.
+
+
+Tokenizer benchmark artifacts (2026-11-08 → 11-09), all under `outputs/experiments/_tokenizer_benchmark/`:
+- **The running record:** `ROADMAP.md`, `HANDOVER.md`, and `stage_reports/{P0_2026-11-08,S1_qwen_2026-11-09,S2_llama3b_2026-11-09,S3_gemma3_4b_2026-11-09,FINAL_2026-11-09}.md`.
+- **The paper record:** `paper/` (design, methods, threats, tables P1–P9, figures data, numbers_sources).
+- **By milestone:**
+  - `m2/`: the released-tokenizer checks;
+  - `m3/`: the gate;
+  - `m4/`: basics, intrinsic, speed;
+  - `m5/`: packs and dry runs;
+  - `m6/`: smoke checks, adaptation counts, unseen answers, Phase 3 tokens, `paired/<model>/<judge>/`;
+  - `m7/`: `readings_<model>`, `replication`;
+  - `m12/`: Arabic-bearing pieces.
+- **The chains:** `chains/`, with logs, timing and peaks.
+- **Tokenizers:** `outputs/tokenizers/{jais2_150k,fanar1_128k,farasa_bpe_16k_v1,farasa_bpe_16k_v1a}`; the released files are in `outputs/tokenizers/_incoming/`.
+- **The Farasa cache:** `outputs/data_cache/farasa_segmented/1fd406b007b7b39b/`.
+- **Configs:**
+  - `configs/experiments/qwen_{jais2,fanar1,farasa_bpe16k}_3phase_v5_distill.yaml`;
+  - `models_x_tokenizers/{llama3b,gemma3_4b}_{jais2,fanar1,farasa_bpe16k}_3phase_v5_distill.yaml`;
+  - five `_smoke_*`.
+- **Code:**
+  - `src/arabic_eval/tokenizers/{hf_pretrained,farasa_bpe,farasa_segmentation}.py`;
+  - the `reuses_model_embeddings` rule in `models/llama_adapter.py` and `tokenizers/{base,native_llama}.py`;
+  - `scripts/farasa_segment_corpus.py`;
+  - the supervisor builder's new arms.
+- **Commits:** none yet (the user commits).
+
+- **Human evaluation v2 (§3.19):** written into the paper source `publications/tokenizers-eval/ARA_version1/araroopat_revised_intro_related_work.tex` on 2026-11-24 (§4.6 *Human validation* + Table `tab:human`, §6.5, abstract / §6.1 / conclusion clauses; original kept in `_orig_2026-11-24/`); sets `outputs/experiments/{qwen_native_vs_araroopat,llama3b_tokenizers}/freeform_rating/human_v2.json`, ratings `…/human_v2.ratings/{Nada,Nouha,Wael}.json`, returned workbooks `outputs/experiments/_human_eval_v2/returned/<rater>/`, the report `outputs/experiments/_human_eval_v2/report.{md,json}` (every number of §3.19), blind workbooks and CSVs, `manifest.json` and `README.md` in the same folder; scripts `scripts/{build_human_eval_v2,build_human_eval_v2_xlsx,import_human_ratings,human_eval_v2_report}.py`.
+
 ## 9. Cells of `outputs/experiments/qwen_native_vs_araroopat/`
 Current: `native_qwen3_base_m2_c2400`, `native_qwen3_sft_m2_c2400`, `araroopat_3phase_v2`, `araroopat_3phase_v3`, `bpe_16k_3phase_v3`, **`araroopat_3phase_v3_ffstop`**, **`bpe_16k_3phase_v3_ffstop`** (§3.6: the same recipe with the free-form-aware early stop), **`araroopat_3phase_v4`** (§3.7: Phase 3 at 45 000 × 25/15/60, max_length 1 024 — judge 2.18, the highest AraRooPat cell but not separable from ffstop; the current best arms of each vocabulary are v4 / ffstop for AraRooPat and ffstop for BPE). Older rule sets, kept: `native_qwen3` (untrained base, v1 template), `native_qwen3_base`, `native_qwen3_sft`, `araroopat` (v1). Under `_superseded/`: `native_qwen3_base_after_loop_fix`, `native_qwen3_sft_reeval`, `native_qwen3_{base,sft}_m2_c1200`, the two lost v3 attempts.
 
@@ -2180,3 +2641,10 @@ New in brief v6 (2026-10-09 → 10-13):
   - the cells `araroopat_3phase_v5_distill`, `bpe_16k_3phase_v5_distill`, `bpe_128k_3phase_v5_distill`, `native_sft_v5_distill` and `native_base_m2_c2400`, each with `timing_v1.json` and both raw-text diagnostics;
   - their `*_mcq4096` cells (`native_base_mcq4096` for the base);
   - `_letter_slot/<arm>_<cond>` (25 cells) and `letter_slot.{md,json}`.
+
+New in the tokenizer benchmark (2026-11-08 → 11-09):
+- **In this folder and in `llama3b_tokenizers/` and `gemma3_4b_tokenizers/`:** `jais2_3phase_v5_distill`, `fanar1_3phase_v5_distill` and `farasa_bpe16k_3phase_v5_distill`. Each is one run of Phases 1–3 plus the free-form eval, and each holds:
+  - `freeform_judge/{gptoss_120b,falcon_h1_34b}.parquet`;
+  - `diag_heldout_rawtext_v1[_warmup].json`, with `_bosblocks` variants for Jais-2 and Fanar-1.
+- **Smoke cells:** `outputs/experiments/_smoke_{qwen3_jais2,qwen3_fanar1,qwen3_farasa_bpe16k,llama3b_jais2,llama3b_fanar1}`.
+

@@ -54,6 +54,10 @@ ARMS = {
     "araroopat_3phase_v5_distill": ("qwen_araroopat_3phase_v3.yaml", "qwen_araroopat_3phase_v5_distill.yaml"),
     "bpe_16k_3phase_v5_distill": ("qwen_bpe16k_3phase_v3.yaml", "qwen_bpe16k_3phase_v5_distill.yaml"),
     "bpe_128k_3phase_v5_distill": ("qwen_bpe128k_3phase_v5_distill.yaml", None),
+    # the tokenizer benchmark (2026-11-08; docs/report.md §3.18): one run, three phases each, like BPE-128K
+    "jais2_3phase_v5_distill": ("qwen_jais2_3phase_v5_distill.yaml", None),
+    "fanar1_3phase_v5_distill": ("qwen_fanar1_3phase_v5_distill.yaml", None),
+    "farasa_bpe16k_3phase_v5_distill": ("qwen_farasa_bpe16k_3phase_v5_distill.yaml", None),
 }
 
 

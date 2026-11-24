@@ -40,20 +40,38 @@ EXP_ROOT = REPO / "outputs" / "experiments"
 TABLES_ROOT = EXP_ROOT / "_comparative_tables"
 DOC = REPO / "docs" / "comparative_tables_2026-10.md"
 SELECTION = TABLES_ROOT / "judge_selection.json"         # written when S3 / S4 of docs/report.md §3.14 is applied
-BASICS = TABLES_ROOT / "m5" / "tokenizer_basics.json"
+BENCH = EXP_ROOT / "_tokenizer_benchmark"                            # the tokenizer benchmark (brief 2026-11-08)
+# the October six (byte-identical to _comparative_tables/m5/tokenizer_basics.json) + Jais-2, Fanar-1, Farasa-BPE-16K
+BASICS = BENCH / "m4" / "tokenizer_basics.json"
 COUNTS = TABLES_ROOT / "m5" / "adaptation_token_counts.json"          # scripts/count_adaptation_tokens.py
+COUNTS_NEW = BENCH / "m6" / "adaptation_token_counts.json"            # the same script on the three new arms
 PHASE3 = TABLES_ROOT / "m10" / "phase3_tokens.json"                   # scripts/count_phase3_tokens.py
+PHASE3_NEW = BENCH / "m6" / "phase3_tokens.json"
 SPEED_GLOB = "_tokenizer_speed/*/speed_v1.json"
+SPEED_NEW = BENCH / "m4" / "speed" / "speed_v1.json"                  # the three new tokenizers, same machine and texts
+NOT_RUN = "not run (free generation only)"                           # the new arms have no multiple-choice cells
+NOT_TIMED = "not measured (response time not run for this arm)"
+
+
+def merged(old: Path, new: Path) -> Tuple[Dict[str, Any], Callable[[str], str]]:
+    """Two keyed JSONs (cell path → record) read as one; the second function names the file a key came from."""
+    a, b = jload(old) or {}, jload(new) or {}
+    return {**a, **b}, (lambda k: rel(new) if k in b else rel(old))
 N_BOOT, SEED = 10000, 0
 
 # --------------------------------------------------------------------------------------------------------------
 # what is compared
 # --------------------------------------------------------------------------------------------------------------
 
-ARM_ORDER = ("native", "araroopat", "bpe16k", "bpe128k")
+MCQ_ARMS = ("native", "araroopat", "bpe16k", "bpe128k")              # the arms with multiple-choice cells
+NEW_ARMS = ("farasa_bpe16k", "jais2", "fanar1")                       # added 2026-11-09, free generation only
+ARM_ORDER = MCQ_ARMS + NEW_ARMS
 ARM_LABEL = {"native": "native (the model's own)", "araroopat": "AraRooPat (roots and patterns)",
-             "bpe16k": "BPE, 16 000 pieces", "bpe128k": "BPE, 128 000 pieces"}
-ARM_SHORT = {"native": "native", "araroopat": "AraRooPat", "bpe16k": "BPE-16K", "bpe128k": "BPE-128K"}
+             "bpe16k": "BPE, 16 000 pieces", "bpe128k": "BPE, 128 000 pieces",
+             "farasa_bpe16k": "Farasa-BPE, 16 000 pieces (ours: BPE-16K that never merges across Farasa's morpheme boundaries)",
+             "jais2": "Jais-2's tokenizer (released, as shipped)", "fanar1": "Fanar-1's tokenizer (released, as shipped)"}
+ARM_SHORT = {"native": "native", "araroopat": "AraRooPat", "bpe16k": "BPE-16K", "bpe128k": "BPE-128K",
+             "farasa_bpe16k": "Farasa-BPE-16K", "jais2": "Jais-2", "fanar1": "Fanar-1"}
 
 
 @dataclass
@@ -81,6 +99,15 @@ class ModelSpec:
     letter_slot: Optional[str] = None
 
 
+def new_arms() -> Dict[str, Arm]:
+    """The three arms of the tokenizer benchmark (brief 2026-11-08): one run each (stages 1–3 in one cell), the same
+    cell name on every model, no multiple-choice or letter-rotation cell."""
+    return {k: Arm(k, cell, None, None, basics, adapt=(cell,), tokenizer_dir=tdir) for k, cell, basics, tdir in (
+        ("farasa_bpe16k", "farasa_bpe16k_3phase_v5_distill", "farasa_bpe_16k_v1a", "outputs/tokenizers/farasa_bpe_16k_v1a"),
+        ("jais2", "jais2_3phase_v5_distill", "jais2_150k", "outputs/tokenizers/jais2_150k"),
+        ("fanar1", "fanar1_3phase_v5_distill", "fanar1_128k", "outputs/tokenizers/fanar1_128k"))}
+
+
 E = "qwen_native_vs_araroopat"
 MODELS: List[ModelSpec] = [
     ModelSpec(
@@ -97,6 +124,7 @@ MODELS: List[ModelSpec] = [
             "bpe128k": Arm("bpe128k", "bpe_128k_3phase_v5_distill", "bpe_128k_3phase_v5_distill_mcq4096", "bpe128k_v5",
                            "bpe_128k", adapt=("bpe_128k_3phase_v5_distill",),
                            tokenizer_dir="outputs/tokenizers/bpe_128k_v1"),
+            **new_arms(),
         },
         teacher="teacher_aya_expanse_32b_m2_c2400", base_ff="native_qwen3_base_m2_c2400",
         base_mcq="native_qwen3_base_mcq4096", base_letter="native_base",
@@ -113,6 +141,7 @@ MODELS: List[ModelSpec] = [
                           "bpe_16k", adapt=("bpe_16k_3phase_v5_distill",), tokenizer_dir="outputs/tokenizers/bpe_16k_v3"),
             "bpe128k": Arm("bpe128k", "bpe_128k_3phase_v5_distill", "bpe_128k_3phase_v5_distill_mcq4096", "bpe128k_v5",
                            "bpe_128k", adapt=("bpe_128k_3phase_v5_distill",), tokenizer_dir="outputs/tokenizers/bpe_128k_v1"),
+            **new_arms(),
         },
         # the teacher answered the same 250 prompts whatever the student model: its cell lives in the Qwen folder
         teacher=f"{E}/teacher_aya_expanse_32b_m2_c2400", base_ff="native_base_m2_c2400", base_mcq="native_base_mcq4096",
@@ -317,7 +346,7 @@ def judges_present(spec: ModelSpec, cells: Sequence[Optional[str]]) -> List[str]
 # --------------------------------------------------------------------------------------------------------------
 
 def t1(spec: ModelSpec, basics: Optional[Dict[str, Any]]) -> Table:
-    t = Table("T1", f"{spec.label}: the four tokenizers before any training",
+    t = Table("T1", f"{spec.label}: the tokenizers before any training",
               "one column per tokenizer; each row is a property of the tokenizer alone, measured on fixed Arabic text "
               "(no model involved). Arrows say which direction is better where there is one.",
               f"{rel(BASICS)} (scripts/measure_tokenizer_basics.py) and each arm's intrinsic_metrics.json "
@@ -362,20 +391,21 @@ def t1(spec: ModelSpec, basics: Optional[Dict[str, Any]]) -> Table:
     ]
     for label, fn in rows:
         t.add(label, [fn(a) for a in ARM_ORDER])
-    counts = jload(COUNTS) or {}
-    csrc = rel(COUNTS)
+    counts, csrc = merged(COUNTS, COUNTS_NEW)
 
     def seen(arm: str, key: str, where: str) -> str:
         if arm == "native":
             return "not applicable (no new pieces)"
         cell = spec.arms[arm].adapt[0] if spec.arms[arm].adapt else None
-        r = counts.get(f"outputs/experiments/{spec.experiment}/{cell}") if cell else None
-        return R.num(r[key], pct1, f"{csrc} ({cell})", where) if r else pending()
+        k = f"outputs/experiments/{spec.experiment}/{cell}"
+        r = counts.get(k) if cell else None
+        return R.num(r[key], pct1, f"{csrc(k)} ({cell})", where) if r else pending()
 
     t.add("pieces the adaptation never showed the model (stages 1–2)", [seen(a, "share_seen_0", f"T1 unseen {a}") for a in ARM_ORDER])
     t.add("pieces it showed fewer than ten times", [seen(a, "share_seen_1_9", f"T1 rare {a}") for a in ARM_ORDER])
-    t.shows = ("how differently the four tokenizers cut the same Arabic text. A larger vocabulary cuts words into fewer, "
-               "longer pieces; AraRooPat cuts every word into a root and a pattern, so it needs more pieces per word.")
+    t.shows = ("how differently the tokenizers cut the same Arabic text. A larger vocabulary cuts words into fewer, "
+               "longer pieces; AraRooPat cuts every word into a root and a pattern, so it needs more pieces per word; "
+               "Farasa-BPE-16K cuts at Farasa's morpheme boundaries first, so it needs more pieces than plain BPE-16K.")
     t.notes = [
         "AraRooPat's root conservation is high *by construction* on the words it writes as root + pattern; the number "
         "is a property of its design, not a measured skill (docs/report.md, the intrinsic metrics).",
@@ -657,6 +687,9 @@ def t3(spec: ModelSpec) -> Tuple[Table, Table, Optional[Dict[str, Any]]]:
               "scripts/mcq_compare.py through arabic_eval.analysis.mcq_compare over each cell's eval_rows/<task>.parquet "
               "(the rows no cell truncated)", cols)
     for k, label, c in rows:
+        if k in NEW_ARMS:
+            t.add(label, [NOT_RUN] * len(cols))
+            continue
         if res is None or cell_dir(spec, c) is None:
             t.add(label, [pending()] * len(cols))
             continue
@@ -732,6 +765,9 @@ def t3c(spec: ModelSpec) -> Table:
     ls = jload(REPO / "outputs" / "experiments" / spec.letter_slot) if spec.letter_slot else None
     src = f"outputs/experiments/{spec.letter_slot}" if spec.letter_slot else ""
     for key, label, name in [(a, ARM_LABEL[a], spec.arms[a].letter) for a in ARM_ORDER] + [("base", "the model before any training", spec.base_letter)]:
+        if key in NEW_ARMS:
+            t.add(label, [NOT_RUN] * 6)
+            continue
         if not ls or not name or name not in ls["tasks"]["arabic_exam"]["arms"]:
             t.add(label, [pending()] * 6)
             continue
@@ -845,7 +881,7 @@ def t6(spec: ModelSpec, basics: Optional[Dict[str, Any]]) -> Table:
     # training budget and time
     phase_rows = {"embedding_alignment": "stage 1 (vocabulary tables only)", "warmup": "stage 2 (whole model, web text)",
                   "sft": "stage 3 (whole model, instructions)"}
-    p3 = jload(PHASE3) or {}
+    p3, p3src = merged(PHASE3, PHASE3_NEW)
     params = {a: (non_emb + emb[a]) if emb[a] else None for a in ARM_ORDER}
     pf_total = {a: 0.0 for a in ARM_ORDER}
     pf_ok = {a: True for a in ARM_ORDER}
@@ -872,7 +908,7 @@ def t6(spec: ModelSpec, basics: Optional[Dict[str, Any]]) -> Table:
             n_tok, src = pc.get("mix_tokens"), rel(d / "config.json")
             if ph == "sft":
                 rec = p3.get(rel(d))
-                n_tok, src = (rec["input_tokens_processed_est"], f"{rel(PHASE3)} ({d.name})") if rec else (None, "")
+                n_tok, src = (rec["input_tokens_processed_est"], f"{p3src(rel(d))} ({d.name})") if rec else (None, "")
             if n_tok:
                 tok_vals.append(R.num(n_tok / 1e6, lambda x: f"{x:.1f}", src, f"T6 tokens {ph} {a}"))
                 per_tok = (2 * params[a] + 4 * emb[a]) if ph == "embedding_alignment" else 6 * params[a]
@@ -935,15 +971,18 @@ def t6(spec: ModelSpec, basics: Optional[Dict[str, Any]]) -> Table:
          lambda v: f"{v:.0f}", "T6 mcq ms")
     sp_files = sorted(EXP_ROOT.glob(SPEED_GLOB))
     sp = jload(sp_files[-1]) if sp_files else None
+    sp_new = jload(SPEED_NEW)
     sp_name = {"native": {"qwen3_4b": "native_qwen3", "llama3b": "native_llama3b", "gemma3_4b": "native_gemma3"}.get(spec.key),
-               "araroopat": "araroopat", "bpe16k": "bpe_16k", "bpe128k": "bpe_128k"}
+               "araroopat": "araroopat", "bpe16k": "bpe_16k", "bpe128k": "bpe_128k",
+               "farasa_bpe16k": "farasa_bpe_16k_v1a", "jais2": "jais2_150k", "fanar1": "fanar1_128k"}
     vals = []
     for a in ARM_ORDER:
-        c = next((c for c in (sp or {}).get("cases", []) if c.get("name") == sp_name[a] and c.get("mode") == "encode"
+        f_, d_ = (SPEED_NEW, sp_new) if a in NEW_ARMS else ((sp_files[-1] if sp_files else None), sp)
+        c = next((c for c in (d_ or {}).get("cases", []) if c.get("name") == sp_name[a] and c.get("mode") == "encode"
                   and not c.get("error")), None)
         ev = ((c or {}).get("sets") or {}).get("eval_split") or {}
         v = (ev.get("steady") or {}).get("us_per_word") if a == "araroopat" else (ev.get("encode") or {}).get("us_per_word")
-        vals.append(R.num(v, lambda x: f"{x:.1f}", rel(sp_files[-1]) if sp_files else "", f"T6 tok us {a}") if v else pending())
+        vals.append(R.num(v, lambda x: f"{x:.1f}", rel(f_) if f_ else "", f"T6 tok us {a}") if v else pending())
     t.add("the tokenizer's processor time, µs per word (AraRooPat: steady) ↓", vals)
     t.shows = ("that the vocabulary tables are a small part of the model at 16 000 pieces and a large part at "
                "128 000 or more, and that a tokenizer cutting text finer makes the model do more work for the same text.")
@@ -1022,13 +1061,13 @@ def t4(spec: ModelSpec) -> Optional[Table]:
             "multiple-choice: ms per question, AlGhafa ↓", "answers identical to the evaluated ones"]
     t = Table("T4", f"{spec.label}: how long the model takes to answer under each tokenizer",
               "every version answers the same 250 instructions one at a time on an otherwise idle GPU, under the "
-              "evaluation's own rules; the multiple-choice rows score the same 500 questions per benchmark. Fewer "
+              f"evaluation's own rules; the multiple-choice rows score the same {D('500', 'scripts/measure_response_time.py --mcq-rows (default 500)')} questions per benchmark. Fewer "
               "pieces per character usually means fewer steps per answer.",
               "each cell's timing_v1.json (scripts/measure_response_time.py)", cols)
     for k, label, c in rows:
         d = have.get(k)
         if not d:
-            t.add(label, [pending()] * len(cols))
+            t.add(label, [NOT_TIMED if k in NEW_ARMS else pending()] * len(cols))
             continue
         src = rel(cell_dir(spec, c) / "timing_v1.json")
         b1 = d["batch1"]["repeat_1_all_prompts"]
@@ -1057,7 +1096,10 @@ def t4(spec: ModelSpec) -> Optional[Table]:
 # --------------------------------------------------------------------------------------------------------------
 
 SPEED_LABEL = {"native_qwen3": "native Qwen3", "native_llama3b": "native Llama-3.2", "native_gemma3": "native Gemma-3",
-               "bpe_16k": "BPE-16K", "bpe_128k": "BPE-128K", "araroopat": "AraRooPat"}
+               "bpe_16k": "BPE-16K", "bpe_128k": "BPE-128K", "araroopat": "AraRooPat",
+               "farasa_bpe_16k_v1a": "Farasa-BPE-16K (runs Farasa on every text: the arm)",
+               "farasa_bpe_16k_v1": "Farasa-BPE-16K merges on raw text, no Farasa (not an arm; the gate's variant B)",
+               "jais2_150k": "Jais-2", "fanar1_128k": "Fanar-1"}
 
 
 def t5() -> Optional[Table]:
@@ -1067,6 +1109,10 @@ def t5() -> Optional[Table]:
     f = files[-1]
     d = jload(f)
     src = rel(f)
+    d_new = jload(SPEED_NEW)
+    if d_new and d_new.get("machine", {}).get("cpu") == d["machine"].get("cpu"):
+        # the three new tokenizers, measured on the same machine and texts (brief 2026-11-08, M4): same table
+        d = {**d, "cases": d["cases"] + [{**c, "_src": rel(SPEED_NEW)} for c in d_new["cases"]]}
     cols = ["encode, µs per word (one text at a time) ↓", "encode, µs per word (a batch, all cores) ↓",
             "decode, µs per word ↓", "encode latency of one answer-length text, p95 ms ↓",
             "whole texts given back exactly (eval texts)", "load time, s", "memory added by loading, MB"]
@@ -1098,14 +1144,15 @@ def t5() -> Optional[Table]:
                     R.num(base["load_sec"], f2, src, "T5 ara load") if phase == "cold" else "",
                     R.num(load_mb + (base.get("camel_server_rss_mb") or 0), thou, src, "T5 ara mem") if phase == "cold" else ""])
             continue
+        cs = base.get("_src", src)
         t.add(SPEED_LABEL.get(name, name), [
-            R.num(ev["encode"]["us_per_word"], f2, src, f"T5 {name} enc"),
-            R.num(batch["us_per_word"], f2, src, f"T5 {name} batch") if batch else "",
-            R.num(ev["decode"]["us_per_word"], f2, src, f"T5 {name} dec"),
-            R.num(refs["encode"]["latency_ms_p95"], f3, src, f"T5 {name} p95"),
-            R.num(ev["roundtrip_exact"], pct1, src, f"T5 {name} rt"),
-            R.num(base["load_sec"], f2, src, f"T5 {name} load"),
-            R.num(load_mb, thou, src, f"T5 {name} mem")])
+            R.num(ev["encode"]["us_per_word"], f2, cs, f"T5 {name} enc"),
+            R.num(batch["us_per_word"], f2, cs, f"T5 {name} batch") if batch else "not applicable (no batch path)",
+            R.num(ev["decode"]["us_per_word"], f2, cs, f"T5 {name} dec"),
+            R.num(refs["encode"]["latency_ms_p95"], f3, cs, f"T5 {name} p95"),
+            R.num(ev["roundtrip_exact"], pct1, cs, f"T5 {name} rt"),
+            R.num(base["load_sec"], f2, cs, f"T5 {name} load"),
+            R.num(load_mb, thou, cs, f"T5 {name} mem")])
     t.shows = ("how much processor time the tokenizer itself costs. The native and BPE tokenizers run compiled code; "
                "AraRooPat runs Python plus a morphological analyser in a second process, so its numbers describe "
                "this implementation, not the method's limit.")
@@ -1166,16 +1213,16 @@ def writing_diff(spec: ModelSpec, a: str, b: str, j: str, where: str) -> str:
 
 
 def mcq_order(spec: ModelSpec, res: Optional[Dict[str, Any]], task: str, norm: str) -> str:
-    """The four arms by accuracy, best first; '>' where the paired 95 % range of the two neighbours excludes zero,
-    '≈' where it includes zero (cannot be told apart)."""
+    """The four arms with multiple-choice cells by accuracy, best first; '>' where the paired 95 % range of the two
+    neighbours excludes zero, '≈' where it includes zero (cannot be told apart)."""
     if res is None:
         return pending()
-    cid = {a: f"{spec.experiment}/{spec.arms[a].mcq}" for a in ARM_ORDER}
+    cid = {a: f"{spec.experiment}/{spec.arms[a].mcq}" for a in MCQ_ARMS}
     cells = res["tasks"][task]["cells"]
-    if any(cid[a] not in cells for a in ARM_ORDER):
+    if any(cid[a] not in cells for a in MCQ_ARMS):
         return pending()
-    acc = {a: cells[cid[a]][f"acc_{norm}_int"] for a in ARM_ORDER}
-    order = sorted(ARM_ORDER, key=lambda a: -acc[a])
+    acc = {a: cells[cid[a]][f"acc_{norm}_int"] for a in MCQ_ARMS}
+    order = sorted(MCQ_ARMS, key=lambda a: -acc[a])
     pairs = {(p["a"], p["b"]): p for p in res["tasks"][task]["pairs"]}
     out = ARM_SHORT[order[0]]
     for x, y in zip(order, order[1:]):
@@ -1211,11 +1258,15 @@ def t7(res_by_model: Dict[str, Optional[Dict[str, Any]]], primary: Optional[str]
             "G3 recognition order, Arabic exams (plain; prior-corrected)",
             "G3 recognition order, translated MMLU (plain; prior-corrected)",
             "G4 AraRooPat − BPE-16K on questions whose answer is أ (ordinary order)",
-            f"G5 share of the teacher's score ({jl})",
+            f"G5 / W5 share of the teacher's score ({jl})",
             f"R-128-1 BPE-128K − BPE-16K, writing ({jl})",
             "R-128-2 BPE-128K − BPE-16K, recognition (plain; prior-corrected; letter-fair)",
             "R-128-3 BPE-128K − BPE-16K on questions whose answer is أ",
-            "R-128-4 BPE-128K pieces never seen in adaptation; used in the answers"]
+            "R-128-4 BPE-128K pieces never seen in adaptation; used in the answers",
+            f"W1 new tokenizer − BPE-16K, writing ({jl})",
+            f"W2 new tokenizer − AraRooPat, writing ({jl})",
+            f"W3 new tokenizer − native, writing ({jl})",
+            f"W4 new tokenizer − BPE-128K, writing ({jl})"]
     t = Table("T7", "across models — do the findings replicate?",
               "one row per base model. Each reading was written down before its numbers existed (brief v6; docs/report.md "
               "§3.14–§3.17). A difference is first − second with its 95 % range and where that range lies: 'above zero' "
@@ -1273,12 +1324,21 @@ def t7(res_by_model: Dict[str, Optional[Dict[str, Any]]], primary: Optional[str]
             row.append(f"{never} never seen; used: {used}")
         else:
             row.append(pending())
+        # W1–W4 (brief 2026-11-08 §9, pre-registered in docs/report.md §3.18): each new tokenizer against one comparator
+        for wk, comp in (("W1", "bpe16k"), ("W2", "araroopat"), ("W3", "native"), ("W4", "bpe128k")):
+            row.append(" · ".join(f"{ARM_SHORT[x]} {writing_diff(spec, x, comp, j, f'T7 {spec.key} {wk} {x}')}"
+                                  for x in NEW_ARMS))
         t.add(spec.label, row)
     t.shows = ("where each finding of the campaign replicates across the three base models and where it does not.")
     t.notes = [f"The writing readings use {jl}{' (the main judge)' if primary else ' (candidate C1, the main judge by default until the human rating names one — docs/report.md §3.14, S4)'}; "
                "T2b of each model has the other judges' columns.",
                "G4 and R-128-3 need the four letter-rotation cells of each version (optional stage P4); they exist "
                "for all three base models.",
+               "W1–W5 are the readings of the tokenizer benchmark (Farasa-BPE-16K, Jais-2, Fanar-1; docs/report.md "
+               "§3.18): W5 is the G5 column. The full replication table of every reading under both judges is "
+               "outputs/experiments/_tokenizer_benchmark/m7/replication.md.",
+               "Jais-2 and Fanar-1 write line breaks and the four tokenizers we trained cannot (docs/report.md §3.18); "
+               "every difference between a released and one of our tokenizers carries that.",
                "'≈' and 'includes zero' mean the two versions cannot be told apart with these questions, not that they are equal."]
 
     # T7b — the judge readings J6 (the three headline differences under every judge) and J10 (the bake-off order)
@@ -1328,9 +1388,11 @@ def model_status(spec: ModelSpec, j: str) -> str:
         return "not started"
     if not all(ff):
         return "training"
-    mcq = all(cell_dir(spec, c) for c in [spec.arms[a].mcq for a in ARM_ORDER] + [spec.base_mcq])
+    mcq = all(cell_dir(spec, c) for c in [spec.arms[a].mcq for a in MCQ_ARMS] + [spec.base_mcq])
     judged = all(judge_file(d, j) for d in ff)
-    timed = all((d / "timing_v1.json").exists() for d in ff)
+    # response time was measured on the October arms; for the three new arms it is optional (brief 2026-11-08, M14)
+    timed = all((d / "timing_v1.json").exists() for d in
+                [cell_dir(spec, c) for c in [spec.arms[a].ff for a in MCQ_ARMS] + [spec.base_ff]])
     return "complete" if (mcq and judged and timed) else "trained, evaluations running"
 
 
@@ -1352,11 +1414,17 @@ def preface(primary: Optional[str], primary_note: str, n_models_run: int) -> str
 
 *Generated by `scripts/build_comparative_tables.py` on {R.num(time.strftime('%Y-%m-%d'), '{}', 'build date', 'date')} from the result files; do not edit by hand.*
 
+*Added 2026-11-09 (the tokenizer benchmark, docs/report.md §3.18): three more tokenizers, compared on writing only —
+Farasa-BPE-16K, Jais-2's and Fanar-1's — in T1, T2, T5, T6, T8 and as readings W1–W5 in T7; their multiple-choice
+columns read "{NOT_RUN}".*
+
 **The question.** A tokenizer cuts text into the pieces a language model reads and writes. We keep everything else
 fixed — the base model, the training data, the training steps, the evaluation — and change only the tokenizer, to see
-what the tokenizer alone changes. Four tokenizers are compared: the model's **own** (native) tokenizer; **AraRooPat**,
-which writes each Arabic word as a root and a pattern; and two ordinary **BPE** tokenizers trained on the same Arabic
-text, one with 16 000 pieces and one with 128 000 (about the size of the native ones). Three base models, to see
+what the tokenizer alone changes. Seven tokenizers are compared: the model's **own** (native) tokenizer; **AraRooPat**,
+which writes each Arabic word as a root and a pattern; two ordinary **BPE** tokenizers trained on the same Arabic
+text, one with 16 000 pieces and one with 128 000 (about the size of the native ones); **Farasa-BPE-16K**, the same
+16 000-piece BPE trained so that no piece crosses a morpheme boundary found by the Farasa segmenter; and the tokenizers
+released with two Arabic language models, **Jais-2** and **Fanar-1**, used exactly as shipped. Three base models, to see
 whether the findings hold for other model families: {models_line}.
 
 **Equal treatment.** Every version goes through the same training: the from-scratch tokenizers first get two stages

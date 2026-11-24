@@ -58,6 +58,17 @@ def configure_sdpa_backends() -> Optional[bool]:
         return None
 
 
+
+PHASE_CHECKPOINT_NAMES = ("embedding_alignment", "warmup", "sft")
+
+
+def is_phase_checkpoint_dir(path: Path) -> bool:
+    """A local folder written by ``run_phase``'s ``save_checkpoint``: ``<cell>/training/<phase>/``
+    with a ``config.json`` — a model already adapted to its tokenizer (2026-11-08)."""
+    path = Path(path)
+    return (path.is_dir() and (path / "config.json").exists()
+            and path.name in PHASE_CHECKPOINT_NAMES and path.parent.name == "training")
+
 @model_registry.register("llama")
 class LlamaAdapter(BaseModelAdapter):
     """Adapter for LLaMA models (or any AutoModelForCausalLM-compatible model).
@@ -163,13 +174,14 @@ class LlamaAdapter(BaseModelAdapter):
         method = init.get("method", "legacy")
         old_vocab = int(self._model.get_input_embeddings().weight.shape[0])
         base_matrix = None
-        if method != "legacy" and old_vocab != tokenizer.vocab_size:
+        if method != "legacy" and self._should_init_rows(tokenizer, old_vocab):
             base_matrix = capture_base_embeddings(self._model)
         resize_token_embeddings(self._model, tokenizer.vocab_size)
         self._model.config.vocab_size = tokenizer.vocab_size
         if base_matrix is None:
             if method != "legacy":
-                logger.info("embedding_init %s skipped: vocab size unchanged (%d), the pretrained rows stay", method, old_vocab)
+                logger.info("embedding_init %s skipped (%s), the current rows stay", method,
+                            self._init_skip_reason or f"vocab size unchanged ({old_vocab})")
             self.embedding_init_report = None
             return
         self.embedding_init_report = apply_embedding_init(
@@ -179,6 +191,45 @@ class LlamaAdapter(BaseModelAdapter):
             seed=int(init.get("seed", 42)),
         )
         del base_matrix
+
+    def _should_init_rows(self, tokenizer: BaseTokenizer, old_vocab: int) -> bool:
+        """Whether ``model.embedding_init`` builds the rows (a non-legacy method assumed).
+
+        Until 2026-11-08 the rule was "the vocabulary size differs from the model's".
+        That rule exists for the native wrappers, and it silently kept the pretrained
+        rows id by id for a *foreign* vocabulary of the same size (Fanar-1's 128 256 on
+        Llama-3.2-3B — the arbitrary mapping of AraRooPat v2). Now:
+
+        * a tokenizer that is the model's own (``reuses_model_embeddings``): as before —
+          the rows are built only when the sizes differ (never, for a native wrapper);
+        * any other tokenizer of a different size: built, as before;
+        * any other tokenizer of the **same** size: built — the fix — unless the model
+          was loaded from a local checkpoint directory (a pipeline phase checkpoint,
+          already adapted to this tokenizer: the Phase-3-only arms load their Phase 2
+          checkpoint ``<cell>/training/warmup``, and re-initialising it would wipe the
+          trained rows; see :func:`is_phase_checkpoint_dir`).
+
+        Every existing arm is byte-identical: natives skip, from-scratch arms of another
+        size apply, checkpoint reloads skip.
+        """
+        self._init_skip_reason: Optional[str] = None
+        same_size = old_vocab == tokenizer.vocab_size
+        if getattr(tokenizer, "reuses_model_embeddings", False):
+            if same_size:
+                self._init_skip_reason = f"the model's own tokenizer, vocab size unchanged ({old_vocab})"
+            return not same_size
+        if not same_size:
+            return True
+        src = Path(str(self._model_name_or_path))
+        if is_phase_checkpoint_dir(src):
+            self._init_skip_reason = (f"vocab size {old_vocab} equals the tokenizer's and the model was loaded from the "
+                                      f"local checkpoint {src} — treated as already adapted")
+            logger.warning("embedding_init: %s; if %s is a base model rather than a phase checkpoint, its rows are "
+                           "NOT re-initialised for this foreign tokenizer", self._init_skip_reason, src)
+            return False
+        logger.info("embedding_init: foreign tokenizer of the same size as the base table (%d) — the rows are built, "
+                    "not kept (reuses_model_embeddings=False)", old_vocab)
+        return True
 
     def _adapt_character_cnn(self, tokenizer: BaseTokenizer) -> None:
         """CharacterBERT: replace embedding with CharCNN."""

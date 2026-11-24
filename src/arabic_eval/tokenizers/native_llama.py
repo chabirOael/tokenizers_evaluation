@@ -152,6 +152,11 @@ class NativeLlamaTokenizer(BaseTokenizer):
         return len(self._hf_tokenizer)
 
     @property
+    def reuses_model_embeddings(self) -> bool:
+        # The model's own tokenizer: its ids ARE the pretrained rows (native_qwen3 / native_gemma inherit this).
+        return True
+
+    @property
     def embedding_type(self) -> str:
         return EmbeddingType.STANDARD
 

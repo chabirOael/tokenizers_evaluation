@@ -1,0 +1,468 @@
+% references.bib — entries cited by introduction.tex (draft v2 of 2026-11-10).
+% The 24 entries of the 2026-11-08 draft were verified against the ACL Anthology / arXiv pages on 2026-11-08 (two kept
+% with "% verify" marks: holtzman2020curious and zheng2024large, whose OpenReview pages could not be fetched). The 29
+% entries added on 2026-11-10 were each verified against the ACL Anthology, arXiv, TACL, PMLR, NeurIPS, Springer or
+% OpenReview page named in docs/paper/araroopat_generation/related_work_notes.md; "unverified" fields were left out.
+% Verified entries not cited in the introduction are kept in references_pool.bib for the Related Work section.
+
+% ---------------------------------------------------------------- the three papers we position against
+
+@inproceedings{alakeel2026morphemes,
+  author    = {Alakeel, Yara Yousif and Qwaider, Chatrine and Aldarmaki, Hanan and Alqahtani, Sawsan},
+  title     = {Morphemes without Borders: Evaluating Root--Pattern Morphology in {Arabic} Tokenizers and {LLMs}},
+  booktitle = {Proceedings of the Fifteenth Language Resources and Evaluation Conference},
+  year      = {2026}, pages = {11787--11799}, address = {Palma de Mallorca, Spain},
+  publisher = {ELRA Language Resource Association},
+  eprint    = {2603.15773}, archivePrefix = {arXiv},
+}
+
+@misc{reda2026yallamorph,
+  author    = {Reda, Mahmoud and Khalifa, Salam and Marzouk, Reham and Habash, Nizar},
+  title     = {{YallaMorph}: A Benchmark for Evaluating {Arabic} Morphological Generation in Large Language Models},
+  year      = {2026}, eprint = {2609.10153}, archivePrefix = {arXiv},
+  note      = {arXiv comment: accepted to EMNLP 2026; cite the proceedings once they exist},
+}
+
+@misc{alrefaie2024exploring,
+  author    = {Alrefaie, Mohamed Taher and Morsy, Nour Eldin and Samir, Nada},
+  title     = {Exploring Tokenization Strategies and Vocabulary Sizes for Enhanced {Arabic} Language Models},
+  year      = {2024}, eprint = {2403.11130}, archivePrefix = {arXiv},
+}
+
+% ---------------------------------------------------------------- tokenization and Arabic tools
+
+@inproceedings{sennrich-etal-2016-neural,
+  author    = {Sennrich, Rico and Haddow, Barry and Birch, Alexandra},
+  title     = {Neural Machine Translation of Rare Words with Subword Units},
+  booktitle = {Proceedings of the 54th Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers)},
+  year      = {2016}, pages = {1715--1725},
+}
+
+@inproceedings{kudo-richardson-2018-sentencepiece,
+  author    = {Kudo, Taku and Richardson, John},
+  title     = {{SentencePiece}: A Simple and Language Independent Subword Tokenizer and Detokenizer for Neural Text Processing},
+  booktitle = {Proceedings of the 2018 Conference on Empirical Methods in Natural Language Processing: System Demonstrations},
+  year      = {2018}, pages = {66--71},
+}
+
+@inproceedings{rust-etal-2021-good,
+  author    = {Rust, Phillip and Pfeiffer, Jonas and Vuli{\'c}, Ivan and Ruder, Sebastian and Gurevych, Iryna},
+  title     = {How Good is Your Tokenizer? {O}n the Monolingual Performance of Multilingual Language Models},
+  booktitle = {Proceedings of the 59th Annual Meeting of the Association for Computational Linguistics and the 11th International Joint Conference on Natural Language Processing (Volume 1: Long Papers)},
+  year      = {2021}, pages = {3118--3135},
+}
+
+@misc{asgari2025morphbpe,
+  author    = {Asgari, Ehsaneddin and El Kheir, Yassine and Sadraei Javaheri, Mohammad Ali},
+  title     = {{MorphBPE}: A Morpho-Aware Tokenizer Bridging Linguistic Complexity for Efficient {LLM} Training Across Morphologies},
+  year      = {2025}, eprint = {2502.00894}, archivePrefix = {arXiv},
+  note      = {Code and tokenizers announced as forthcoming; not released as of 2026-11-08},
+}
+
+@inproceedings{abdelali-etal-2016-farasa,
+  author    = {Abdelali, Ahmed and Darwish, Kareem and Durrani, Nadir and Mubarak, Hamdy},
+  title     = {Farasa: A Fast and Furious Segmenter for {Arabic}},
+  booktitle = {Proceedings of the 2016 Conference of the North American Chapter of the Association for Computational Linguistics: Demonstrations},
+  year      = {2016}, pages = {11--16},
+}
+
+@inproceedings{obeid-etal-2020-camel,
+  author    = {Obeid, Ossama and Zalmout, Nasser and Khalifa, Salam and Taji, Dima and Oudah, Mai and Alhafni, Bashar and Inoue, Go and Eryani, Fadhl and Erdmann, Alexander and Habash, Nizar},
+  title     = {{CAMeL} Tools: An Open Source Python Toolkit for {Arabic} Natural Language Processing},
+  booktitle = {Proceedings of the Twelfth Language Resources and Evaluation Conference},
+  year      = {2020}, pages = {7022--7032},
+}
+
+% ---------------------------------------------------------------- vocabulary transfer and embedding initialisation
+
+@inproceedings{minixhofer-etal-2022-wechsel,
+  author    = {Minixhofer, Benjamin and Paischer, Fabian and Rekabsaz, Navid},
+  title     = {{WECHSEL}: Effective Initialization of Subword Embeddings for Cross-Lingual Transfer of Monolingual Language Models},
+  booktitle = {Proceedings of the 2022 Conference of the North American Chapter of the Association for Computational Linguistics: Human Language Technologies},
+  year      = {2022}, pages = {3992--4006},
+}
+
+@inproceedings{dobler-de-melo-2023-focus,
+  author    = {Dobler, Konstantin and de Melo, Gerard},
+  title     = {{FOCUS}: Effective Embedding Initialization for Monolingual Specialization of Multilingual Models},
+  booktitle = {Proceedings of the 2023 Conference on Empirical Methods in Natural Language Processing},
+  year      = {2023}, pages = {13440--13454},
+}
+
+@inproceedings{mundra2024empirical,
+  author    = {Mundra, Nandini and Nanda Kishore, Aditya and Dabre, Raj and Puduppully, Ratish and Kunchukuttan, Anoop and Khapra, Mitesh M.},
+  title     = {An Empirical Comparison of Vocabulary Expansion and Initialization Approaches for Language Models},
+  booktitle = {Proceedings of the 28th Conference on Computational Natural Language Learning (CoNLL)},
+  year      = {2024}, eprint = {2407.05841}, archivePrefix = {arXiv},
+}
+
+% ---------------------------------------------------------------- distillation, teacher, data, judges
+
+@inproceedings{kim-rush-2016-sequence,
+  author    = {Kim, Yoon and Rush, Alexander M.},
+  title     = {Sequence-Level Knowledge Distillation},
+  booktitle = {Proceedings of the 2016 Conference on Empirical Methods in Natural Language Processing},
+  year      = {2016}, pages = {1317--1327},
+}
+
+@misc{dang2024ayaexpanse,
+  author    = {Dang, John and Singh, Shivalika and D'souza, Daniel and others},
+  title     = {Aya Expanse: Combining Research Breakthroughs for a New Multilingual Frontier},
+  year      = {2024}, eprint = {2412.04261}, archivePrefix = {arXiv},
+  note      = {Teacher checkpoint used: \texttt{CohereLabs/aya-expanse-32b}, revision \texttt{b306ea27}},
+}
+
+@misc{alyafeai2024cidar,
+  author    = {Alyafeai, Zaid and Almubarak, Khalid and Ashraf, Ahmed and others},
+  title     = {{CIDAR}: Culturally Relevant Instruction Dataset for {Arabic}},
+  year      = {2024}, eprint = {2402.03177}, archivePrefix = {arXiv},
+  note      = {Dataset \texttt{arbml/CIDAR}},
+}
+
+@inproceedings{zheng2023judging,
+  author    = {Zheng, Lianmin and Chiang, Wei-Lin and Sheng, Ying and Zhuang, Siyuan and Wu, Zhanghao and Zhuang, Yonghao and Lin, Zi and Li, Zhuohan and Li, Dacheng and Xing, Eric P. and Zhang, Hao and Gonzalez, Joseph E. and Stoica, Ion},
+  title     = {Judging {LLM}-as-a-Judge with {MT-Bench} and {Chatbot Arena}},
+  booktitle = {Advances in Neural Information Processing Systems 36 (NeurIPS 2023), Datasets and Benchmarks Track},
+  year      = {2023},
+}
+
+% ---------------------------------------------------------------- degeneration and multiple-choice bias
+
+@inproceedings{holtzman2020curious,
+  author    = {Holtzman, Ari and Buys, Jan and Du, Li and Forbes, Maxwell and Choi, Yejin},   % verify: author list
+  title     = {The Curious Case of Neural Text Degeneration},
+  booktitle = {International Conference on Learning Representations},   % verify (arXiv version 2019, as in docs/report.md §7)
+  year      = {2020},   % verify
+}
+
+@inproceedings{xu2022learning,
+  author    = {Xu, Jin and Liu, Xiaojiang and Yan, Jianhao and Cai, Deng and Li, Huayang and Li, Jian},
+  title     = {Learning to Break the Loop: Analyzing and Mitigating Repetitions for Neural Text Generation},
+  booktitle = {Advances in Neural Information Processing Systems 35 (NeurIPS 2022)},
+  year      = {2022},
+}
+
+@inproceedings{zheng2024large,
+  author    = {Zheng, Chujie and Zhou, Hao and Meng, Fandong and Zhou, Jie and Huang, Minlie},   % verify: first names (initials in docs/report.md §7)
+  title     = {Large Language Models Are Not Robust Multiple Choice Selectors},
+  booktitle = {The Twelfth International Conference on Learning Representations},
+  year      = {2024},
+}
+
+% ---------------------------------------------------------------- base models and released tokenizers
+
+@misc{yang2025qwen3,
+  author    = {Yang, An and Li, Anfeng and Yang, Baosong and others},
+  title     = {Qwen3 Technical Report},
+  year      = {2025}, eprint = {2505.09388}, archivePrefix = {arXiv},
+  note      = {Checkpoint used: \texttt{Qwen/Qwen3-4B-Base}},
+}
+
+@misc{grattafiori2024llama3,
+  author    = {Grattafiori, Aaron and Dubey, Abhimanyu and Jauhri, Abhinav and others},
+  title     = {The {Llama} 3 Herd of Models},
+  year      = {2024}, eprint = {2407.21783}, archivePrefix = {arXiv},
+  note      = {Checkpoint used: \texttt{meta-llama/Llama-3.2-3B}},
+}
+
+@misc{gemmateam2025gemma3,
+  author    = {{Gemma Team} and Kamath, Aishwarya and Ferret, Johan and Pathak, Shreya and others},
+  title     = {Gemma 3 Technical Report},
+  year      = {2025}, eprint = {2503.19786}, archivePrefix = {arXiv},
+  note      = {Checkpoint used: \texttt{google/gemma-3-4b-pt} (text model only)},
+}
+
+@misc{anwar2026jais2,
+  author    = {Anwar, Mohamed and Freihat, Abed Alhakim and Ibrahim, George and others},
+  title     = {Jais 2: A Family of {Arabic}-Centric Open Large Language Models},
+  year      = {2026}, eprint = {2608.13580}, archivePrefix = {arXiv},
+  note      = {Tokenizer used: \texttt{inceptionai/Jais-2-8B-Chat}, revision \texttt{da0e1639cd92b508b24120f7f77f5270a8465dc4}},
+}
+
+@misc{fanarteam2025fanar,
+  author    = {{Fanar Team} and Abbas, Ummar and Ahmad, Mohammad Shahmeer and Alam, Firoj and others},
+  title     = {Fanar: An {Arabic}-Centric Multimodal Generative {AI} Platform},
+  year      = {2025}, eprint = {2501.13944}, archivePrefix = {arXiv},
+  note      = {Tokenizer evaluated as shipped with \texttt{QCRI/Fanar-1-9B}, revision \texttt{d33480ed13158518a0902a1d4ac00d66cf4086a9}},
+}
+
+% ================================================================ added 2026-11-10 (v2 draft)
+
+@misc{mielke-2021-tokenization,
+  author    = {Mielke, Sabrina J. and Alyafeai, Zaid and Salesky, Elizabeth and Raffel, Colin and Dey, Manan and Gall{\'e}, Matthias and Raja, Arun and Si, Chenglei and Lee, Wilson Y. and Sagot, Beno{\^i}t and Tan, Samson},
+  title     = {Between words and characters: A Brief History of Open-Vocabulary Modeling and Tokenization in {NLP}},
+  year      = {2021}, eprint = {2112.10508}, archivePrefix = {arXiv},
+}
+
+@inproceedings{petrov-2023-unfairness,
+  author    = {Petrov, Aleksandar and La Malfa, Emanuele and Torr, Philip and Bibi, Adel},
+  title     = {Language Model Tokenizers Introduce Unfairness Between Languages},
+  booktitle = {Advances in Neural Information Processing Systems 36 (NeurIPS 2023)},
+  year      = {2023}, eprint = {2305.15425}, archivePrefix = {arXiv},
+}
+
+@article{park-2021-morphology,
+  author    = {Park, Hyunji Hayley and Zhang, Katherine J. and Haley, Coleman and Steimel, Kenneth and Liu, Han and Schwartz, Lane},
+  title     = {Morphology Matters: A Multilingual Language Modeling Analysis},
+  journal   = {Transactions of the Association for Computational Linguistics},
+  year      = {2021}, volume = {9}, pages = {261--276}, publisher = {MIT Press}, address = {Cambridge, MA},
+  doi       = {10.1162/tacl_a_00365}, eprint = {2012.06262}, archivePrefix = {arXiv},
+}
+
+@inproceedings{hofmann-2021-superbizarre,
+  author    = {Hofmann, Valentin and Pierrehumbert, Janet and Sch{\"u}tze, Hinrich},
+  title     = {Superbizarre Is Not Superb: Derivational Morphology Improves {BERT}'s Interpretation of Complex Words},
+  booktitle = {Proceedings of the 59th Annual Meeting of the Association for Computational Linguistics and the 11th International Joint Conference on Natural Language Processing (Volume 1: Long Papers)},
+  year      = {2021}, pages = {3594--3608}, address = {Online}, publisher = {Association for Computational Linguistics},
+  doi       = {10.18653/v1/2021.acl-long.279}, eprint = {2101.00403}, archivePrefix = {arXiv},
+}
+
+@inproceedings{bostrom-2020-bpe,
+  author    = {Bostrom, Kaj and Durrett, Greg},
+  title     = {Byte Pair Encoding is Suboptimal for Language Model Pretraining},
+  booktitle = {Findings of the Association for Computational Linguistics: EMNLP 2020},
+  year      = {2020}, pages = {4617--4624}, address = {Online}, publisher = {Association for Computational Linguistics},
+  doi       = {10.18653/v1/2020.findings-emnlp.414}, eprint = {2004.03720}, archivePrefix = {arXiv},
+}
+
+@inproceedings{nzeyimana-2022-kinyabert,
+  author    = {Nzeyimana, Antoine and Niyongabo Rubungo, Andre},
+  title     = {{KinyaBERT}: a Morphology-aware {K}inyarwanda Language Model},
+  booktitle = {Proceedings of the 60th Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers)},
+  year      = {2022}, pages = {5347--5363}, address = {Dublin, Ireland}, publisher = {Association for Computational Linguistics},
+  doi       = {10.18653/v1/2022.acl-long.367}, eprint = {2203.08459}, archivePrefix = {arXiv},
+}
+
+@article{toraman-2023-tokenization,
+  author    = {Toraman, Cagri and Yilmaz, Eyup Halit and {\c{S}}ahinu{\c{c}}, Furkan and Ozcelik, Oguzhan},
+  title     = {Impact of Tokenization on Language Models: An Analysis for {T}urkish},
+  journal   = {ACM Transactions on Asian and Low-Resource Language Information Processing},
+  year      = {2023}, volume = {22}, number = {4}, pages = {1--21},
+  doi       = {10.1145/3578707}, eprint = {2204.08832}, archivePrefix = {arXiv},
+}
+
+@misc{jabbar-2023-morphpiece,
+  author    = {Jabbar, Haris},
+  title     = {{MorphPiece}: A Linguistic Tokenizer for Large Language Models},
+  year      = {2023}, eprint = {2307.07262}, archivePrefix = {arXiv},
+  note      = {arXiv preprint, v2 of 3 February 2024},
+}
+
+@inproceedings{bauwens-2024-bpeknockout,
+  author    = {Bauwens, Thomas and Delobelle, Pieter},
+  title     = {{BPE}-knockout: Pruning Pre-existing {BPE} Tokenisers with Backwards-compatible Morphological Semi-supervision},
+  booktitle = {Proceedings of the 2024 Conference of the North American Chapter of the Association for Computational Linguistics: Human Language Technologies (Volume 1: Long Papers)},
+  year      = {2024}, pages = {5810--5832}, address = {Mexico City, Mexico}, publisher = {Association for Computational Linguistics},
+  doi       = {10.18653/v1/2024.naacl-long.324},
+}
+
+@inproceedings{libovicky-2024-lexically,
+  author    = {Libovick{\'y}, Jind{\v{r}}ich and Helcl, Jind{\v{r}}ich},
+  title     = {Lexically Grounded Subword Segmentation},
+  booktitle = {Proceedings of the 2024 Conference on Empirical Methods in Natural Language Processing},
+  year      = {2024}, pages = {7403--7420}, address = {Miami, Florida, USA}, publisher = {Association for Computational Linguistics},
+  doi       = {10.18653/v1/2024.emnlp-main.421},
+}
+
+@inproceedings{antoun-2020-arabert,
+  author    = {Antoun, Wissam and Baly, Fady and Hajj, Hazem},
+  title     = {{AraBERT}: Transformer-based Model for {A}rabic Language Understanding},
+  booktitle = {Proceedings of the 4th Workshop on Open-Source Arabic Corpora and Processing Tools, with a Shared Task on Offensive Language Detection},
+  year      = {2020}, pages = {9--15}, address = {Marseille, France}, publisher = {European Language Resources Association},
+  eprint    = {2003.00104}, archivePrefix = {arXiv},
+}
+
+@inproceedings{asgari-2026-morphbpe,
+  author    = {Asgari, Ehsaneddin and El Kheir, Yassine and SadraeiJavaheri, MohammadAli and Nazari, Ali},
+  title     = {{MorphBPE}: Morphology-Aware Tokenization for Efficient {LLM} Training},
+  booktitle = {Findings of the Association for Computational Linguistics: ACL 2026},
+  year      = {2026}, pages = {41610--41621}, address = {San Diego, California, United States}, publisher = {Association for Computational Linguistics},
+  doi       = {10.18653/v1/2026.findings-acl.2068},
+}
+
+@article{alyafeai-2023-tokenizers,
+  author    = {Alyafeai, Zaid and Al-shaibani, Maged S. and Ghaleb, Mustafa and Ahmad, Irfan},
+  title     = {Evaluating Various Tokenizers for {A}rabic Text Classification},
+  journal   = {Neural Processing Letters},
+  year      = {2023}, volume = {55}, number = {3}, pages = {2911--2933},
+  doi       = {10.1007/s11063-022-10990-8}, eprint = {2106.07540}, archivePrefix = {arXiv},
+}
+
+@inproceedings{dimarco-2024-subword,
+  author    = {Di Marco, Marion and Fraser, Alexander},
+  title     = {Subword Segmentation in {LLM}s: Looking at Inflection and Consistency},
+  booktitle = {Proceedings of the 2024 Conference on Empirical Methods in Natural Language Processing},
+  year      = {2024}, pages = {12050--12060}, address = {Miami, Florida, USA}, publisher = {Association for Computational Linguistics},
+  doi       = {10.18653/v1/2024.emnlp-main.672},
+}
+
+@inproceedings{arnett-2025-morphology,
+  author    = {Arnett, Catherine and Bergen, Benjamin},
+  title     = {Why do language models perform worse for morphologically complex languages?},
+  booktitle = {Proceedings of the 31st International Conference on Computational Linguistics},
+  year      = {2025}, pages = {6607--6623}, address = {Abu Dhabi, UAE}, publisher = {Association for Computational Linguistics},
+  eprint    = {2411.14198}, archivePrefix = {arXiv},
+}
+
+@inproceedings{ali-2024-tokenizer,
+  author    = {Ali, Mehdi and Fromm, Michael and Thellmann, Klaudia and Rutmann, Richard and L{\"u}bbering, Max and Leveling, Johannes and Klug, Katrin and Ebert, Jan and Doll, Niclas and Buschhoff, Jasper and Jain, Charvi and Weber, Alexander and Jurkschat, Lena and Abdelwahab, Hammam and John, Chelsea and Ortiz Suarez, Pedro and Ostendorff, Malte and Weinbach, Samuel and Sifa, Rafet and Kesselheim, Stefan and Flores-Herr, Nicolas},
+  title     = {Tokenizer Choice For {LLM} Training: Negligible or Crucial?},
+  booktitle = {Findings of the Association for Computational Linguistics: NAACL 2024},
+  year      = {2024}, pages = {3907--3924}, address = {Mexico City, Mexico}, publisher = {Association for Computational Linguistics},
+  doi       = {10.18653/v1/2024.findings-naacl.247}, eprint = {2310.08754}, archivePrefix = {arXiv},
+}
+
+@inproceedings{dagan-2024-tokenizer,
+  author    = {Dagan, Gautier and Synnaeve, Gabriel and Rozi{\`e}re, Baptiste},
+  title     = {Getting the most out of your tokenizer for pre-training and domain adaptation},
+  booktitle = {Proceedings of the 41st International Conference on Machine Learning},
+  series    = {Proceedings of Machine Learning Research}, volume = {235},
+  year      = {2024}, pages = {9784--9805}, publisher = {PMLR},
+  eprint    = {2402.01035}, archivePrefix = {arXiv},
+}
+
+@misc{alqahtani-2026-tokenizers,
+  author    = {Alqahtani, Sawsan and Nayeem, Mir Tafseer and Laskar, Md Tahmid Rahman and Mohiuddin, Tasnim and Bari, M Saiful},
+  title     = {Stop Taking Tokenizers for Granted: They Are Core Design Decisions in Large Language Models},
+  year      = {2026}, eprint = {2601.13260}, archivePrefix = {arXiv},
+  note      = {arXiv comment: accepted to EACL 2026 (long, main); cite the proceedings once they exist},
+}
+
+@inproceedings{goldman-2024-unpacking,
+  author    = {Goldman, Omer and Caciularu, Avi and Eyal, Matan and Cao, Kris and Szpektor, Idan and Tsarfaty, Reut},
+  title     = {Unpacking Tokenization: Evaluating Text Compression and its Correlation with Model Performance},
+  booktitle = {Findings of the Association for Computational Linguistics: ACL 2024},
+  year      = {2024}, pages = {2274--2286}, address = {Bangkok, Thailand}, publisher = {Association for Computational Linguistics},
+  doi       = {10.18653/v1/2024.findings-acl.134}, eprint = {2403.06265}, archivePrefix = {arXiv},
+}
+
+@inproceedings{schmidt-2024-compression,
+  author    = {Schmidt, Craig W. and Reddy, Varshini and Zhang, Haoran and Alameddine, Alec and Uzan, Omri and Pinter, Yuval and Tanner, Chris},
+  title     = {Tokenization Is More Than Compression},
+  booktitle = {Proceedings of the 2024 Conference on Empirical Methods in Natural Language Processing},
+  year      = {2024}, pages = {678--702}, address = {Miami, Florida, USA}, publisher = {Association for Computational Linguistics},
+  doi       = {10.18653/v1/2024.emnlp-main.40}, eprint = {2402.18376}, archivePrefix = {arXiv},
+}
+
+@misc{batsuren-2024-alien,
+  author    = {Batsuren, Khuyagbaatar and Vylomova, Ekaterina and Dankers, Verna and Delgerbaatar, Tsetsuukhei and Uzan, Omri and Pinter, Yuval and Bella, G{\'a}bor},
+  title     = {Evaluating Subword Tokenization: Alien Subword Composition and {OOV} Generalization Challenge},
+  year      = {2024}, eprint = {2404.13292}, archivePrefix = {arXiv},
+}
+
+@inproceedings{uzan-2024-greed,
+  author    = {Uzan, Omri and Schmidt, Craig W. and Tanner, Chris and Pinter, Yuval},
+  title     = {Greed is All You Need: An Evaluation of Tokenizer Inference Methods},
+  booktitle = {Proceedings of the 62nd Annual Meeting of the Association for Computational Linguistics (Volume 2: Short Papers)},
+  year      = {2024}, pages = {813--822}, address = {Bangkok, Thailand}, publisher = {Association for Computational Linguistics},
+  doi       = {10.18653/v1/2024.acl-short.73}, eprint = {2403.01289}, archivePrefix = {arXiv},
+}
+
+@inproceedings{li-2025-tokalign,
+  author    = {Li, Chong and Zhang, Jiajun and Zong, Chengqing},
+  title     = {{TokAlign}: Efficient Vocabulary Adaptation via Token Alignment},
+  booktitle = {Proceedings of the 63rd Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers)},
+  year      = {2025}, pages = {4109--4126}, address = {Vienna, Austria}, publisher = {Association for Computational Linguistics},
+  doi       = {10.18653/v1/2025.acl-long.207}, eprint = {2506.03523}, archivePrefix = {arXiv},
+}
+
+@misc{goddard-2025-omp,
+  author    = {Goddard, Charles and Fernandes Neto, Fernando},
+  title     = {Training-Free Tokenizer Transplantation via Orthogonal Matching Pursuit},
+  year      = {2025}, eprint = {2506.06607}, archivePrefix = {arXiv},
+}
+
+@article{andriushchenko-2025-tokenizer-russian,
+  author    = {Andriushchenko, G. D. and Godunova, M. E. and Ivanov, V. V. and Kuzmin, D. S. and Parinov, A. A. and Schenikova, A. Yu. and Zhemchuzhina, E. V.},
+  title     = {A Multi-Aspect Evaluation of Tokenizer Adaptation Methods for Large Language Models on {R}ussian},
+  journal   = {Doklady Mathematics},
+  year      = {2025}, volume = {112}, pages = {455--464},
+  doi       = {10.1134/S1064562425700395},
+}
+
+@inproceedings{bari-2025-allam,
+  author    = {Bari, M Saiful and Alnumay, Yazeed and Alzahrani, Norah A. and Alotaibi, Nouf M. and Alyahya, Hisham A. and AlRashed, Sultan and Mirza, Faisal A. and Alsubaie, Shaykhah Z. and Alahmed, Hassan A. and Alabduljabbar, Ghadah and Alkhathran, Raghad and Almushayqih, Yousef and Alnajim, Raneem and Alsubaihi, Salman and Al Mansour, Maryam and Alrubaian, Majed and Alammari, Ali and Alawami, Zaki and Al-Thubaity, Abdulmohsen and Abdelali, Ahmed and Kuriakose, Jeril and Abujabal, Abdalghani and Al-Twairesh, Nora and Alowisheq, Areeb and Khan, Haidar},
+  title     = {{ALLaM}: Large Language Models for {A}rabic and {E}nglish},
+  booktitle = {The Thirteenth International Conference on Learning Representations},
+  year      = {2025}, eprint = {2407.15390}, archivePrefix = {arXiv},
+  note      = {OpenReview forum MscdsFVZrN},
+}
+
+@inproceedings{zhu-2025-arallama,
+  author    = {Zhu, Jianqing and Huang, Huang and Lin, Zhihang and Liang, Juhao and Tang, Zhengyang and Almubarak, Khalid and Alharthi, Mosen and An, Bang and He, Juncai and Wu, Xiangbo and Yu, Fei and Chen, Junying and {Ma Zhuoheng} and Du, Yuhao and Zhang, He and Alshahrani, Saied and Alghamdi, Emad A. and Zhang, Lian and Sun, Ruoyu and Li, Haizhou and Wang, Benyou and Xu, Jinchao},
+  title     = {Second Language ({A}rabic) Acquisition of {LLM}s via Progressive Vocabulary Expansion},
+  booktitle = {Proceedings of the 63rd Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers)},
+  year      = {2025}, pages = {2025--2042}, address = {Vienna, Austria}, publisher = {Association for Computational Linguistics},
+  doi       = {10.18653/v1/2025.acl-long.100},
+}
+
+@misc{kashirskiy-2025-aratoken,
+  author    = {Kashirskiy, Mark and Lipinski, Artiom and Makarov, Ilya},
+  title     = {{AraToken}: Optimizing {A}rabic Tokenization with Normalization Pipeline and Language Extension for {Qwen3}},
+  year      = {2025}, eprint = {2512.18399}, archivePrefix = {arXiv},
+}
+
+@misc{elfilali-2024-aragen,
+  author       = {El Filali, Ali and Sengupta, Neha and Abouelseoud, Arwa and Nakov, Preslav and Fourrier, Cl{\'e}mentine},
+  title        = {Rethinking {LLM} Evaluation with {3C3H}: {AraGen} Benchmark and Leaderboard},
+  year         = {2024},
+  howpublished = {Hugging Face blog, \url{https://huggingface.co/blog/leaderboard-3c3h-aragen}},
+  note         = {Technical blog post, 4 December 2024; no peer-reviewed version exists},
+}
+
+% ================================================================ added 2026-11-10, second pass (the measure: multiple choice vs generation; controlled tokenizer studies)
+
+@misc{sanz-guerrero-2025-mindthegap,
+  author    = {Sanz-Guerrero, Mario and Bui, Minh Duc and von der Wense, Katharina},
+  title     = {Mind the Gap: A Closer Look at Tokenization for Multiple-Choice Question Answering with {LLM}s},
+  year      = {2025}, eprint = {2509.15020}, archivePrefix = {arXiv},
+  note      = {arXiv comment: accepted to EMNLP 2025 (main); cite the proceedings once they exist},
+}
+
+@inproceedings{balepur-2025-mcqa,
+  author    = {Balepur, Nishant and Rudinger, Rachel and Boyd-Graber, Jordan},
+  title     = {Which of These Best Describes Multiple Choice Evaluation with {LLM}s? {A}) Forced {B}) Flawed {C}) Fixable {D}) All of the Above},
+  booktitle = {Proceedings of the 63rd Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers)},
+  year      = {2025}, pages = {3394--3418}, address = {Vienna, Austria}, publisher = {Association for Computational Linguistics},
+  doi       = {10.18653/v1/2025.acl-long.169}, eprint = {2502.14127}, archivePrefix = {arXiv},
+}
+
+@misc{lyu-2024-beyondprobabilities,
+  author    = {Lyu, Chenyang and Wu, Minghao and Aji, Alham Fikri},
+  title     = {Beyond Probabilities: Unveiling the Misalignment in Evaluating Large Language Models},
+  year      = {2024}, eprint = {2402.13887}, archivePrefix = {arXiv},
+  note      = {arXiv comment: accepted to the KnowledgeableLMs workshop at ACL 2024},
+}
+
+@misc{wei-2024-rethinking,
+  author    = {Wei, Fangyun and Chen, Xi and Luo, Lin},
+  title     = {Rethinking Generative Large Language Model Evaluation for Semantic Comprehension},
+  year      = {2024}, eprint = {2403.07872}, archivePrefix = {arXiv},
+}
+
+@misc{myrzakhan-2024-openllm,
+  author    = {Myrzakhan, Aidar and Bsharat, Sondos Mahmoud and Shen, Zhiqiang},
+  title     = {Open-{LLM}-Leaderboard: From Multi-choice to Open-style Questions for {LLM}s Evaluation, Benchmark, and Arena},
+  year      = {2024}, eprint = {2406.07545}, archivePrefix = {arXiv},
+}
+
+@misc{chandak-2025-answermatching,
+  author    = {Chandak, Nikhil and Goel, Shashwat and Prabhu, Ameya and Hardt, Moritz and Geiping, Jonas},
+  title     = {Answer Matching Outperforms Multiple Choice for Language Model Evaluation},
+  year      = {2025}, eprint = {2507.02856}, archivePrefix = {arXiv},
+}
+
+@misc{altintas-2025-toksuite,
+  author    = {Alt{\i}nta{\c{s}}, G{\"u}l Sena and Ehghaghi, Malikeh and Lester, Brian and Liu, Fengyuan and Zhao, Wanru and Ciccone, Marco and Raffel, Colin},
+  title     = {{TokSuite}: Measuring the Impact of Tokenizer Choice on Language Model Behavior},
+  year      = {2025}, eprint = {2512.20757}, archivePrefix = {arXiv},
+  note      = {arXiv comment: ICML 2026; v2 of 6 July 2026},
+}
+
+@inproceedings{lotz-2025-beyondcompression,
+  author    = {Lotz, Jonas F. and Lopes, Ant{\'o}nio V. and Peitz, Stephan and Setiawan, Hendra and Emili, Leonardo},
+  title     = {Beyond Text Compression: Evaluating Tokenizers Across Scales},
+  booktitle = {Proceedings of the 63rd Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers)},
+  year      = {2025}, pages = {32155--32173}, address = {Vienna, Austria}, publisher = {Association for Computational Linguistics},
+  doi       = {10.18653/v1/2025.acl-long.1546},
+}
