@@ -79,12 +79,12 @@ Arabic NLP \sep tokenization \sep morphology-aware \sep root-and-pattern \sep op
 This page is an internal checklist. Every item below is repeated in red at the place where it belongs. The paper's claims in Sections~\ref{sec:results}--\ref{sec:discussion} are calibrated to the current state of the data; the items below are what would let the stronger claims be made.
 
 \begin{enumerate}
-\item \todo{Aya-Expanse-32B's own score on the 250 held-out prompts under the primary judge (and the other judges). This is the anchor every arm is read against.} \emph{Location: \S\ref{sec:protocol:rules}, \S\ref{sec:results:morpho}.}
+\item \note{Done. The teacher's own score on the 250 held-out prompts is given in \S\ref{sec:protocol:rules} under all four judges, every arm is read against it in \S\ref{sec:results:morpho}, and the teacher is the first row of Table~\ref{tab:shipped}.} \emph{Location: \S\ref{sec:protocol:rules}, \S\ref{sec:results:morpho}.}
 \item \note{Done. Human evaluation on 120 answers (Qwen3 and Llama; three annotators, blind, the judge's rubric): human--LLM agreement, human--human agreement and the ranking under human scores are reported in \S\ref{sec:protocol:eval} (Table~\ref{tab:human}) and \S\ref{sec:discussion:limitations}. The Qwen3 result is confirmed; the Llama result is not.} \emph{Location: \S\ref{sec:protocol:eval}, \S\ref{sec:discussion:limitations}.}
-\item \todo{Inference compute: tokens per query, FLOPs per query, wall-clock latency per query, at 3.19 vs 1.50 fertility.} \emph{Location: \S\ref{sec:results:morpho}, \S\ref{sec:discussion:fertility}.}
-\item \todo{Per-benchmark, per-model MCQ numbers under letter scoring (currently a combined range across benchmarks and models).} \emph{Location: Table~\ref{tab:mcq}.}
-\item \todo{Per-judge breakdown on Qwen3 (four judges, sign consistent, three of four intervals above zero).} \emph{Location: Table~\ref{tab:equal}.}
-\item \todo{Verify native vocabulary sizes against the base-model configs, and the pattern transliterations against the AraRooPat vocabulary.} \emph{Location: Table~\ref{tab:models}, Table~\ref{tab:decomposition}.}
+\item \note{Done. Wall-clock latency and energy were measured for the Farasa-BPE-16K, Jais-2 and Fanar-1 arms on the three models, with the same script and settings as the other four arms (8.3 GPU-hours); Table~\ref{tab:cost} now gives latency, energy, tokens and forward operations per answer for every arm, and \S\ref{sec:results:cost} and \S\ref{sec:discussion:fertility} are read against them.} \emph{Location: \S\ref{sec:results:cost}, \S\ref{sec:discussion:fertility}.}
+\item \note{Done. Table~\ref{tab:mcq} carries the per-benchmark, per-model differences with their intervals under letter scoring and under rotation.} \emph{Location: Table~\ref{tab:mcq}.}
+\item \note{Done. Table~\ref{tab:equal} carries the Qwen3 difference under each of the four judges and the NLL cells for Llama and Gemma.} \emph{Location: Table~\ref{tab:equal}.}
+\item \note{Done. The native vocabulary sizes are the loaded models' embedding rows (Gemma corrected to 262\,208); the tokens of Table~\ref{tab:decomposition} were checked against the vocabulary (two pattern spellings and the suffix-clitic prefix corrected).} \emph{Location: Table~\ref{tab:models}, Table~\ref{tab:decomposition}.}
 \end{enumerate}
 
 \newpage
@@ -178,7 +178,7 @@ AraRooPat is a fixed vocabulary of 17\,184 tokens built around the morphological
 The design principle is compositional. An Arabic content word is analysed as a consonantal root carrying lexical meaning, a pattern that maps the root to a grammatical form, and, on either side, clitics that carry definiteness, case, conjunction and pronominal information. Rather than compressing the whole word into one statistical token, AraRooPat represents each of these pieces explicitly:
 
 \begin{center}
-\emph{content word} $\;\to\;$ [CLITICP\_\dots] [CLITICP\_\dots] [ROOT\_\dots] [PAT\_\dots] [CLITICS\_\dots]
+\emph{content word} $\;\to\;$ [CLITICP\_\dots] [CLITICP\_\dots] [ROOT\_\dots] [PAT\_\dots] [CLITICE\_\dots]
 \end{center}
 
 with the clitic slots optional. A closed-class item (a preposition, a pronoun, a conjunction, a particle) is a single token of its own. A proper name or an unanalysable word is spelled out in characters between two reserved markers. Patterns are written with the template letters \emph{f-'-l} (f, ayn, l), so that the pattern itself is a token independent of any particular root. The vocabulary contains root tokens, pattern tokens, clitic-prefix and clitic-suffix tokens, closed-class tokens, character tokens, and the markers that delimit them; 17\,184 tokens in total.
@@ -187,20 +187,17 @@ Table~\ref{tab:decomposition} shows three examples. The root and the pattern are
 
 \begin{table}[t]
 \centering
-\caption{Decomposition of three Arabic words under AraRooPat. Roots are written in transliteration; patterns use the template letters \emph{f-'-l}.}
+\caption{Decomposition of three Arabic words under AraRooPat. Roots are written in transliteration; patterns use the template letters \emph{f-'-l}. In the vocabulary itself a root token carries the three radicals and a pattern token carries the slot digits 1, 2, 3 in place of \emph{f}, \emph{'}, \emph{l} together with the pattern's short vowels, written as Arabic diacritics: [PAT\_fa'ali] is the token 1a2a3i, and the case vowel of \emph{bi-l-qalami} belongs to the pattern token. Prefix clitics are CLITICP tokens and suffix clitics CLITICE tokens.}
 \label{tab:decomposition}
 \begin{tabular}{@{}lll@{}}
 \toprule
 Word & Gloss & AraRooPat tokens \\
 \midrule
-\emph{bi-l-qalam} & `with the pen' & [CLITICP\_bi] [CLITICP\_al] [ROOT\_q-l-m] [PAT\_fa'al] \\
-\emph{yaktubuna} & `they write' & [ROOT\_k-t-b] [PAT\_yaF'uLuna] \\
+\emph{bi-l-qalami} & `with the pen' & [CLITICP\_bi] [CLITICP\_al] [ROOT\_q-l-m] [PAT\_fa'ali] \\
+\emph{yaktubuna} & `they write' & [ROOT\_k-t-b] [PAT\_yaf'uluna] \\
 \emph{wa-kataba} & `and he wrote' & [CLITICP\_wa] [ROOT\_k-t-b] [PAT\_fa'ala] \\
 \bottomrule
 \end{tabular}
-\vspace{2pt}
-\raggedright\footnotesize
-\todo{Verify each pattern transliteration against the actual token strings in the AraRooPat vocabulary (\texttt{vocab.json}), and replace \emph{wa-kataba} with the third example actually shown in the released examples file if a different one is preferred.}
 \end{table}
 
 \subsection{Encoding}
@@ -213,7 +210,7 @@ Encoding proceeds in three steps. First, the input text is analysed morphologica
 
 The decoder rebuilds the inflected stem from the (root, pattern) pair in its most frequent written spelling, then prepends the prefix clitics and appends the suffix clitics in their surface forms, and finally restores the \emph{li-} + \emph{al-} contraction. On a held-out sample of 2\,000 corpus words, 99.3\% are reconstructed exactly; with diacritics removed the character-level F-score (chrF) is 99.0, and with diacritics retained it is 91.1. The residual 8.9\% diacritic error is concentrated in the assignment of short vowels within a stem, not in the consonantal skeleton: the root letters are recovered correctly whenever the analyser identified a root.
 
-Two further measurements characterise the design. Root integrity --- the proportion of words whose root appears whole inside a single token, among the words for which this is possible at all --- is 41.8\% for AraRooPat, against 5.3\% for BPE-16K and 8.8\% for Qwen3. Fertility --- tokens per whitespace-delimited word --- is 3.19, against 1.50 for BPE-16K and 2.08--2.30 for the shipped multilingual tokenizers. The higher fertility reflects an intentional compositional representation rather than an accidental increase in segmentation length. Whether the resulting representational benefit justifies the additional computational cost is an empirical question, which we examine alongside the judge scores in \S\ref{sec:results:morpho} and \S\ref{sec:discussion:fertility}.
+Two further measurements characterise the design. Root integrity --- the proportion of words whose root appears whole inside a single token, among the words for which this is possible at all --- is 41.8\% for AraRooPat, against 5.3\% for BPE-16K and 8.8\% for Qwen3. Fertility --- tokens per whitespace-delimited word --- is 3.19, against 1.50 for BPE-16K and 2.08--2.30 for the shipped multilingual tokenizers. The higher fertility reflects an intentional compositional representation rather than an accidental increase in segmentation length. Whether the resulting representational benefit justifies the additional computational cost is an empirical question, which we examine alongside the judge scores in \S\ref{sec:results:cost} and \S\ref{sec:discussion:fertility}.
 
 %% ============================================================
 %%  4. EXPERIMENTAL PROTOCOL
@@ -228,7 +225,7 @@ The protocol is the paper's methodological contribution, and it is designed to a
 
 The experimental arms share the same base model, adaptation corpus, teacher-generated examples, optimisation procedure, adaptation budget in tokens, prompts and evaluation protocol. The tokenizer configuration --- including its resulting segmentation, sequence lengths and embedding initialisation --- is the experimental variable.
 
-This formulation is more precise than saying that the vocabulary is the only change, and the difference matters for interpreting the results. Because the arms receive the same number of training tokens but differ in fertility, they cover different amounts of Arabic text, incur different inference costs, and undergo different numbers of optimisation steps per unit of text. These consequences do not invalidate the comparison; they define what the comparison measures. We report them explicitly: fertility in \S\ref{sec:tokenizer:decoding}, training-text coverage per token budget in \S\ref{sec:protocol:pipeline}, inference cost and latency in \S\ref{sec:results:morpho}, and their interpretation in \S\ref{sec:discussion:fertility}.
+This formulation is more precise than saying that the vocabulary is the only change, and the difference matters for interpreting the results. Because the arms receive the same number of training tokens but differ in fertility, they cover different amounts of Arabic text, incur different inference costs, and undergo different numbers of optimisation steps per unit of text. These consequences do not invalidate the comparison; they define what the comparison measures. We report them explicitly: fertility in \S\ref{sec:tokenizer:decoding}, training-text coverage per token budget in \S\ref{sec:protocol:pipeline}, inference cost and latency in \S\ref{sec:results:cost}, and their interpretation in \S\ref{sec:discussion:fertility}.
 
 This design differs from both of the dominant paradigms in the literature. Comparisons between independently released models differ at once in pretraining data, size, vocabulary, instruction data and decoding, so a difference cannot be attributed to the tokenizer. Comparisons that train a separate model per tokenizer, including TokSuite \citep{altintas2025toksuite}, hold the tokenizer as the only variable but train from scratch, so their conclusions describe pretraining, not vocabulary adaptation. We work with pretrained generative models and adapt their vocabularies under a shared procedure, which is the setting a practitioner changing the tokenizer of an existing model actually faces.
 
@@ -247,7 +244,7 @@ Five rules govern the comparison, and each is justified by a specific confound i
 
 \paragraph{Results read against the teacher's own score.}
 The teacher's score on the same 250 prompts is the reference. This anchors the scale: a difference between two arms is interpretable relative to how far either is from the teacher, not only to each other.
-\todo{Run the primary judge (gpt-oss-120b) on the teacher's own answers to the same 250 held-out prompts. Report: mean score, 95\% bootstrap CI, loop rate, and the three sub-scores. Do the same under the secondary judge (Falcon-H1-34B). This number is referenced in \S\ref{sec:results:morpho} and \S\ref{sec:results:shipped} and must be filled before submission. Until it is, the results below are reported as relative to the shipped Qwen3 baseline (2.376), which is the best available anchor.}
+Under the primary judge the teacher scores 3.272 (standard error 0.080) on the 250 prompts, with sub-scores of 3.26 for correctness, 4.19 for fluency and 3.25 for instruction following, and no answer stopped as a repetition loop; under Falcon-H1-34B it scores 4.176 (0.059), under Gemma-4-31B 3.652 and under GPT-5.6 3.308. Every arm is read against these figures in \S\ref{sec:results:morpho}.
 
 \subsection{Vocabularies}
 \label{sec:protocol:vocab}
@@ -281,27 +278,40 @@ The three base models are Qwen3-4B-Base \citep{yang2025qwen3}, Llama-3.2-3B \cit
 
 \begin{table}[t]
 \centering
-\caption{Base models and the fertility of their shipped tokenizers on Arabic. Fertility is tokens per whitespace-delimited word, measured on the AraRooPat corpus.}
+\caption{Base models and the fertility of their shipped tokenizers on Arabic. Native vocabulary is the number of rows of the loaded model's embedding table (its \texttt{vocab\_size}), which for Qwen3 and Gemma exceeds the tokenizer's piece count. Fertility is tokens per whitespace-delimited word, measured on the AraRooPat corpus.}
 \label{tab:models}
 \begin{tabular}{@{}llll@{}}
 \toprule
 Model & Parameters & Native vocabulary & Native Arabic fertility \\
 \midrule
-Qwen3-4B-Base & 4B & \textcolor{red}{151\,936} & 2.30 \\
-Llama-3.2-3B & 3B & \textcolor{red}{128\,256} & 2.26 \\
-Gemma-3-4B & 4B & \textcolor{red}{262\,144} & 2.08 \\
+Qwen3-4B-Base & 4B & 151\,936 & 2.30 \\
+Llama-3.2-3B & 3B & 128\,256 & 2.26 \\
+Gemma-3-4B & 4B & 262\,208 & 2.08 \\
 \bottomrule
 \end{tabular}
-\vspace{2pt}
-\raggedright\footnotesize
-\todo{Verify the three native-vocabulary sizes from each model's \texttt{config.json} (\texttt{vocab\_size}). The values shown are the current best estimates; replace with the actual loaded values. The Gemma figure must be the one that matches the 2.08 fertility reported above.}
 \end{table}
 
 \subsection{Adaptation pipeline}
 \label{sec:protocol:pipeline}
 
-For each arm, the new vocabulary's embedding rows are initialised from the base model's embeddings of the strings each token represents, following the recipes of WECHSEL, FOCUS and the empirical comparison of Mundra et al.\ \citep{minixhofer2022wechsel,dobler2023focus,mundra2024empirical}. The model is then adapted on 131\,M tokens of filtered Arabic web text and Wikipedia: embeddings first, then all weights. Because fertility differs across arms, the number of Arabic words covered by this fixed token budget differs: the corpus represents approximately 87\,M words under AraRooPat's 3.19 fertility, 76\,M under Qwen3's 2.30, and 100\,M under BPE-16K's 1.50. We report this asymmetry rather than adjust for it, because adjusting would break the equality of the token budget across arms and would substitute a different experimental variable for the one we set out to study.
-\todo{Report the exact corpus word counts per arm, computed from the tokenised corpus rather than estimated from fertility. Add a table of (arm, tokens, words, estimated optimisation steps per word) to \S\ref{sec:protocol:pipeline}, so the reader can see the training-text coverage of each arm.}
+For each arm, the new vocabulary's embedding rows are initialised from the base model's embeddings of the strings each token represents, following the recipes of WECHSEL, FOCUS and the empirical comparison of Mundra et al.\ \citep{minixhofer2022wechsel,dobler2023focus,mundra2024empirical}. The model is then adapted on 131\,M tokens of filtered Arabic web text and Wikipedia: embeddings first, then all weights. Because fertility differs across arms, the number of Arabic words covered by this fixed token budget differs (Table~\ref{tab:coverage}): computed from the packed corpus, the budget covers 42\,M words of web text under AraRooPat, whose pieces per word on that corpus are 2.97, against 76\,M under BPE-16K (1.68) and 94\,M under BPE-128K (1.37). We report this asymmetry rather than adjust for it, because adjusting would break the equality of the token budget across arms and would substitute a different experimental variable for the one we set out to study.
+\begin{table}[t]
+\centering
+\caption{Training-text coverage of the adaptation budget per arm. Stages 1--2 draw 131.1\,M tokens for every arm (32.8\,M for the vocabulary tables, 98.3\,M for the whole model), of which 2--5\% are question--answer records rendered as plain text and the rest web text and Wikipedia; the words covered are the web-text tokens divided by the arm's measured pieces per word on that corpus, and the two stages perform 20\,000 optimiser updates for every arm. The model as shipped is not adapted.}
+\label{tab:coverage}
+\begin{tabular}{@{}lcccc@{}}
+\toprule
+Arm & Pieces per word (corpus) & Web-text tokens (M) & Words covered (M) & Updates per million words \\
+\midrule
+AraRooPat & 2.97 & 126.2 & 42.4 & 471 \\
+BPE-16K & 1.68 & 128.1 & 76.5 & 262 \\
+BPE-128K & 1.37 & 128.6 & 94.2 & 212 \\
+Farasa-BPE-16K & 2.09 & 127.6 & 61.0 & 328 \\
+Jais-2 vocabulary & 1.39 & 128.6 & 92.2 & 217 \\
+Fanar-1 vocabulary & 2.06 & 127.6 & 62.0 & 322 \\
+\bottomrule
+\end{tabular}
+\end{table}
 
 Finally, every adapted arm is fine-tuned on the same 45\,000 examples, whose 27\,000 free-form answers come from the shared teacher, under the five rules of Section~\ref{sec:protocol:rules}. The reference arm is the model as shipped: its own vocabulary and no training of ours. Because it has not undergone the same adaptation, it is a contextual reference point, not a tokenizer-only comparison; claims about tokenizer design are based primarily on the six adapted arms.
 
@@ -353,26 +363,29 @@ This is the paper's primary scientific comparison. AraRooPat and BPE-16K are tra
 
 \begin{table}[t]
 \centering
-\caption{Primary comparison: AraRooPat versus BPE-16K, primary judge. Positive $\Delta$ favours AraRooPat. Loop rate and NLL per character are measured on the same answers.}
+\caption{Primary comparison: AraRooPat versus BPE-16K, primary judge. Positive $\Delta$ favours AraRooPat. Loop rate and NLL per character are measured on the same answers. NLL/char is the summed negative log-likelihood of the 250 held-out reference answers, end-of-sequence token included, divided by their character count (72\,705 characters; the same reference text under every tokenizer, so the figure does not depend on token granularity). The lower panel gives the Qwen3 difference under each of the four judges.}
 \label{tab:equal}
 \begin{tabular}{@{}lccc@{}}
 \toprule
 Model & $\Delta$ judge [95\% CI] & Loop rate (AraRooPat / BPE-16K) & NLL/char (AraRooPat / BPE-16K) \\
 \midrule
 Qwen3-4B-Base & $+0.212$ $[+0.088,+0.340]$ & 6.8\% / 15.6\% & 0.812 / 0.907 \\
-Llama-3.2-3B & $+0.132$ $[+0.004,+0.256]$ & 12.8\% / 18.4\% & --- \\
-Gemma-3-4B & $-0.016$ $[-0.144,+0.108]$ & 5.6\% / 8.4\% & --- \\
+Llama-3.2-3B & $+0.132$ $[+0.004,+0.256]$ & 12.8\% / 18.4\% & 0.844 / 0.962 \\
+Gemma-3-4B & $-0.016$ $[-0.144,+0.108]$ & 5.6\% / 8.4\% & 0.761 / 0.861 \\
+\midrule
+\multicolumn{4}{@{}l}{\emph{Qwen3-4B-Base, per judge}} \\
+gpt-oss-120b (primary) & $+0.212$ $[+0.088,+0.340]$ & & \\
+Falcon-H1-34B & $+0.072$ $[-0.068,+0.216]$ & & \\
+Gemma-4-31B & $+0.300$ $[+0.152,+0.452]$ & & \\
+GPT-5.6 & $+0.172$ $[+0.048,+0.300]$ & & \\
 \bottomrule
 \end{tabular}
-\vspace{2pt}
-\raggedright\footnotesize
-\todo{Add a per-judge panel for Qwen3 (four judges: gpt-oss-120b, Falcon-H1-34B, Gemma-4-31B, GPT-5.6). The text says the sign holds under all four and the interval excludes zero under three; show the four $\Delta$ values and their intervals in a small sub-table. Also fill the two missing NLL cells if the data exist; otherwise drop the column for those rows and say so in the caption. Define the NLL measure precisely: which reference text is used, whether it is the same across tokenizers, and how token-level probabilities are converted to a character-normalised measure.}
 \end{table}
 
 Two further measurements corroborate the finding. AraRooPat's answers are stopped as repetition loops less often than BPE-16K's on every model (6.8 vs.\ 15.6\%, 12.8 vs.\ 18.4\%, 5.6 vs.\ 8.4\%), and of the adapted vocabularies it gives the reference answers the lowest negative log-likelihood per character on all three (Qwen3: 0.812 nats, against 0.907 for BPE-16K). The two measurements point in the same direction: on the models where the judge scores separate, the morphological representation also improves fluency and agreement with a human reference, not merely a judge's subjective score.
 
 \paragraph{Anchor against the teacher.}
-\todo{Report the arm scores against Aya-Expanse-32B's own score on the same 250 prompts (see \S\ref{sec:protocol:rules}). A suggested sentence: ``Aya scores $X$ on the same prompts; AraRooPat scores $Y$, so it recovers $Y/X$ of the teacher's judged quality, against $Z/X$ for BPE-16K.'' Until this is filled, the results are read relative to the shipped Qwen3 baseline (2.376), which is reported in Table~\ref{tab:shipped}.}
+Aya-Expanse-32B scores 3.272 on the same 250 prompts under the primary judge; on Qwen3 AraRooPat scores 2.312, so it recovers 0.71 of the teacher's judged quality, against 0.64 for BPE-16K (2.100) and 0.73 for the model as shipped (2.376). The paired differences to the teacher are $-0.960$ $[-1.116,-0.804]$ for AraRooPat and $-1.172$ $[-1.336,-1.008]$ for BPE-16K on Qwen3; $-1.200$ $[-1.356,-1.040]$ and $-1.332$ $[-1.480,-1.176]$ on Llama, where the two arms recover 0.63 and 0.59 of the teacher; and $-0.896$ $[-1.048,-0.748]$ and $-0.880$ $[-1.036,-0.720]$ on Gemma, 0.73 for both. Every arm sits about one judge point below the teacher; the differences between arms are a fraction of that distance, and it is the teacher's score, not the shipped model's, that the arms are read against.
 
 \subsection{Corroboration by a second morphology-aware design}
 \label{sec:results:corroboration}
@@ -410,23 +423,22 @@ On Qwen3, where the shipped model is strong (judge 2.376, loops on 6.8\% of answ
 
 \begin{table}[t]
 \centering
-\caption{Against the model as shipped: each adapted arm versus Qwen3-4B-Base as shipped, primary judge. Negative $\Delta$ means the adapted arm scores below the shipped model.}
+\caption{Against the model as shipped: each adapted arm versus Qwen3-4B-Base as shipped, primary judge. Negative $\Delta$ means the adapted arm scores below the shipped model; the first row is the teacher on the same prompts.}
 \label{tab:shipped}
 \begin{tabular}{@{}lc@{}}
 \toprule
 Arm & $\Delta$ versus shipped [95\% CI] \\
 \midrule
+Aya-Expanse-32B, the teacher & $+0.896$ $[+0.740,+1.052]$ \\
+\midrule
 AraRooPat & $-0.064$ $[-0.200,+0.068]$ \\
-Farasa-BPE-16K & $-0.128$ \\
-Jais-2 shipped vocabulary & $-0.132$ \\
+Farasa-BPE-16K & $-0.128$ $[-0.268,+0.012]$ \\
+Jais-2 shipped vocabulary & $-0.132$ $[-0.276,+0.012]$ \\
 Fanar-1 shipped vocabulary & $-0.212$ $[-0.344,-0.084]$ \\
 BPE-16K & $-0.276$ $[-0.428,-0.128]$ \\
 BPE-128K & $-0.340$ $[-0.492,-0.188]$ \\
 \bottomrule
 \end{tabular}
-\vspace{2pt}
-\raggedright\footnotesize
-\todo{Fill the missing 95\% CIs for Farasa-BPE-16K and Jais-2 shipped vocabulary, or state in the caption why they are omitted. When the teacher score is available, add Aya's own score as a row at the top.}
 \end{table}
 
 Jais-2's tokenizer trails AraRooPat on all three models ($-0.068$; $-0.160$ $[-0.292,-0.024]$; $-0.128$ $[-0.248,-0.004]$), and Fanar-1's on Qwen3 ($-0.148$ $[-0.268,-0.028]$) and Llama ($-0.084$), with a tie on Gemma ($+0.020$); every new arm matches or beats the native-sized BPE-128K. Two facts frame the shipped tokenizers. Fanar-1's vocabulary is Arabic-poor by construction --- 3.7\% of its tokens bear an Arabic letter, close to the native vocabularies' 2.4--3.2\% --- and 56\% of its tokens never occur in our 131\,M adaptation tokens (Jais-2: 38\%; Farasa-BPE-16K: 3\%); it is level with the 16\,K designs even so.
@@ -439,47 +451,104 @@ Jais-2's tokenizer trails AraRooPat on all three models ($-0.068$; $-0.160$ $[-0
 \toprule
 Shipped vocabulary & Qwen3-4B-Base & Llama-3.2-3B & Gemma-3-4B \\
 \midrule
-Jais-2 & $-0.068$ & $-0.160$ $[-0.292,-0.024]$ & $-0.128$ $[-0.248,-0.004]$ \\
-Fanar-1 & $-0.148$ $[-0.268,-0.028]$ & $-0.084$ & $+0.020$ \\
+Jais-2 & $-0.068$ $[-0.192,+0.060]$ & $-0.160$ $[-0.292,-0.024]$ & $-0.128$ $[-0.248,-0.004]$ \\
+Fanar-1 & $-0.148$ $[-0.268,-0.028]$ & $-0.084$ $[-0.200,+0.036]$ & $+0.020$ $[-0.096,+0.136]$ \\
 \bottomrule
 \end{tabular}
-\vspace{2pt}
-\raggedright\footnotesize
-\todo{Fill the missing 95\% CIs (Jais-2 on Qwen3, Fanar-1 on Llama and Gemma). If the intervals exist in the analysis output, copy them; if not, say so in the caption and state that the point estimates are reported.}
 \end{table}
 
-One further caveat applies to every shipped-versus-ours comparison. The four tokenizers we trained, on a whitespace-collapsed corpus, cannot write a line break; the shipped and native tokenizers can. The magnitude and direction of this layout disadvantage for our tokenizers has not been measured, so we do not call the shipped-versus-ours comparison conservative.
-\todo{Measure the line-break effect: evaluate each arm on prompts that require multi-paragraph answers, score layout quality separately, and report the differential. Until this is done, the shipped-versus-ours numbers should not carry a claim of conservatism in either direction.}
+One further caveat applies to every shipped-versus-ours comparison. The four tokenizers we trained, on a whitespace-collapsed corpus, cannot write a line break; the shipped and native tokenizers can, and the Jais-2 and Fanar-1 arms do so on 45 to 51 of the 58 held-out prompts whose reference answer contains one. We measured the cost on those 58 prompts against the other 192 (Table~\ref{tab:linebreak}). Under the primary judge, the advantage of a shipped vocabulary over AraRooPat is larger on the 58 in all nine comparisons, by $+0.03$ to $+0.30$, but the interval excludes zero in one only, the model as shipped on Llama ($+0.304$ $[+0.062,+0.543]$); under Falcon-H1-34B the nine differences are of mixed sign. The control pair, AraRooPat $-$ BPE-16K, whose arms both lack line breaks, moves by $-0.22$ to $+0.06$ between the two subsets, so differences of this size arise without any difference in layout. A judge told to score layout alone, ignoring content, puts the Jais-2 and Fanar-1 answers $0.50$ to $0.99$ points above AraRooPat's, on the 192 prompts as on the 58, while the quality judges name layout in at most 6 of the 174 verdicts per arm on the 58 prompts. The structural difference is therefore real, but it barely enters the judged quality: no layout effect is detectable at $n = 58$, the shipped-versus-ours comparison is read as it stands, and we do not call it conservative.
+
+\begin{table}[t]
+\centering
+\caption{The line-break differential. Upper panel: for each pair, the paired judge-score difference on the 58 held-out prompts whose reference answer contains a line break, minus the same difference on the other 192 prompts (primary judge; 95\% interval from resampling the two subsets independently). Lower panel: the paired difference in a layout-only score on the 58 prompts (gpt-oss-120b with a rubric that scores paragraphing, lists and headings and ignores correctness and language quality). Positive values favour the first arm; neither arm of the control pair can write a line break.}
+\label{tab:linebreak}
+\begin{tabular}{@{}lccc@{}}
+\toprule
+Pair & Qwen3-4B-Base & Llama-3.2-3B & Gemma-3-4B \\
+\midrule
+\multicolumn{4}{@{}l}{\emph{Judged quality: difference on the 58 minus difference on the 192}} \\
+Jais-2 $-$ AraRooPat & $+0.044$ $[-0.236,+0.322]$ & $+0.298$ $[-0.004,+0.614]$ & $+0.032$ $[-0.285,+0.349]$ \\
+Fanar-1 $-$ AraRooPat & $+0.103$ $[-0.153,+0.353]$ & $+0.109$ $[-0.122,+0.354]$ & $+0.131$ $[-0.152,+0.410]$ \\
+Model as shipped $-$ AraRooPat & $+0.186$ $[-0.139,+0.521]$ & $+0.304$ $[+0.062,+0.543]$ & $+0.267$ $[-0.054,+0.591]$ \\
+AraRooPat $-$ BPE-16K (control) & $+0.061$ $[-0.229,+0.355]$ & $-0.217$ $[-0.472,+0.029]$ & $-0.159$ $[-0.439,+0.107]$ \\
+\midrule
+\multicolumn{4}{@{}l}{\emph{Layout-only score: difference on the 58}} \\
+Jais-2 $-$ AraRooPat & $+0.638$ $[+0.259,+1.000]$ & $+0.741$ $[+0.397,+1.086]$ & $+0.500$ $[+0.086,+0.897]$ \\
+Fanar-1 $-$ AraRooPat & $+0.724$ $[+0.379,+1.069]$ & $+0.776$ $[+0.414,+1.155]$ & $+0.828$ $[+0.500,+1.155]$ \\
+Model as shipped $-$ AraRooPat & $+1.017$ $[+0.638,+1.414]$ & $+0.035$ $[-0.397,+0.483]$ & $+0.310$ $[-0.138,+0.759]$ \\
+AraRooPat $-$ BPE-16K (control) & $+0.103$ $[-0.190,+0.414]$ & $0.000$ $[-0.207,+0.224]$ & $+0.052$ $[-0.224,+0.345]$ \\
+\bottomrule
+\end{tabular}
+\end{table}
 
 The tables keep the two groups apart. The four tokenizers we trained are compared among themselves under identical conditions; the two shipped tokenizers are compared to the adapted arms with the caveat that the comparison crosses the adaptation boundary. The conclusion about tokenizer design rests on the adapted-vs-adapted comparisons; the shipped-vs-adapted numbers are reported because they show that a 17\,K morphological vocabulary is competitive with vocabularies 7--15$\times$ larger, and not because they carry the paper's central claim.
 
 \subsection{Multiple-choice versus open-ended evaluation}
 \label{sec:results:mcq}
 
-The multiple-choice results are a methodological diagnostic, not a ranking of the vocabularies. On two letter-scored benchmarks --- Arabic exams and translated MMLU --- log-likelihood scoring puts AraRooPat 0.013 to 0.046 in accuracy behind BPE-16K on all three models, every interval below zero. Read alone, this would count against the morphology-aware design. It does not survive a check. AraRooPat spells the answer letters in three tokens where the other vocabularies use one --- the label-tokenization effect that Sanz-Guerrero et al.\ \citep{sanzguerrero2025mind} measure. Under rotation of the answer letters, a diagnostic rather than the official scoring, the Arabic exam gap can no longer be separated from zero on any model (Qwen3: $-0.001$ $[-0.030,+0.027]$), while an MMLU gap of 0.026 to 0.039 remains. The MCQ gap is therefore heterogeneous: on the exam benchmark it is largely a property of how the answer is scored, and on MMLU a residual gap survives that cannot be attributed to the label artefact alone. A judged answer is not scored through option letters, which is the measurement argument of Section~\ref{sec:related:eval} seen in our own numbers.
+The multiple-choice results are a methodological diagnostic, not a ranking of the vocabularies. On two letter-scored benchmarks --- Arabic exams and translated MMLU --- log-likelihood scoring puts AraRooPat 0.018 to 0.046 in accuracy behind BPE-16K on all three models, every interval below zero. Read alone, this would count against the morphology-aware design. It does not survive a check. AraRooPat spells the answer letters in three tokens where the other vocabularies use one --- the label-tokenization effect that Sanz-Guerrero et al.\ \citep{sanzguerrero2025mind} measure. Under rotation of the answer letters, a diagnostic rather than the official scoring, the Arabic exam gap can no longer be separated from zero on any model (Qwen3: $-0.001$ $[-0.030,+0.027]$), while an MMLU gap of 0.026 to 0.039 remains, its interval below zero on Qwen3 and Llama and reaching $+0.003$ on Gemma. The MCQ gap is therefore heterogeneous: on the exam benchmark it is largely a property of how the answer is scored, and on MMLU a residual gap survives that cannot be attributed to the label artefact alone. A judged answer is not scored through option letters, which is the measurement argument of Section~\ref{sec:related:eval} seen in our own numbers.
 
 \begin{table}[t]
 \centering
-\caption{Multiple-choice accuracy: AraRooPat versus BPE-16K under official letter scoring and under rotation of the answer letters. Negative values favour BPE-16K; rotation is a diagnostic, not an official score.}
+\caption{Multiple-choice accuracy: AraRooPat $-$ BPE-16K under official letter scoring (character-normalised log-likelihood over the full benchmarks, on the rows no arm truncates) and under rotation of the answer letters (the mean over the four rotations on seeded 1\,000-question subsets). Negative values favour BPE-16K; rotation is a diagnostic, not an official score.}
 \label{tab:mcq}
-\begin{tabular}{@{}lcc@{}}
+\begin{tabular}{@{}llcc@{}}
 \toprule
-Benchmark & Letter-scored & Rotated \\
+Benchmark & Model & Letter-scored $\Delta$ [95\% CI] & Rotated $\Delta$ [95\% CI] \\
 \midrule
-Arabic exams & \textcolor{red}{per benchmark, per model} & indistinguishable from zero (Qwen3: $-0.001$ $[-0.030,+0.027]$) \\
-Translated MMLU & \textcolor{red}{per benchmark, per model} & $-0.026$ to $-0.039$ (gap remains) \\
+Arabic exams & Qwen3-4B-Base & $-0.046$ $[-0.054,-0.038]$ & $-0.001$ $[-0.030,+0.027]$ \\
+ & Llama-3.2-3B & $-0.021$ $[-0.030,-0.012]$ & $+0.010$ $[-0.024,+0.045]$ \\
+ & Gemma-3-4B & $-0.018$ $[-0.027,-0.009]$ & $-0.025$ $[-0.059,+0.009]$ \\
+\midrule
+Translated MMLU & Qwen3-4B-Base & $-0.026$ $[-0.034,-0.019]$ & $-0.039$ $[-0.068,-0.011]$ \\
+ & Llama-3.2-3B & $-0.024$ $[-0.033,-0.015]$ & $-0.039$ $[-0.071,-0.007]$ \\
+ & Gemma-3-4B & $-0.029$ $[-0.037,-0.020]$ & $-0.026$ $[-0.056,+0.003]$ \\
 \bottomrule
 \end{tabular}
-\vspace{2pt}
-\raggedright\footnotesize
-\todo{Fill the letter-scored column with per-benchmark, per-model $\Delta$ values and 95\% CIs. The 0.013--0.046 range currently in the text is a combined range across both benchmarks and all three models; the table needs the nine cells. If the rotated MMLU range also needs per-model values, add them. This table is load-bearing for the paper's methodological contribution; the per-cell numbers must be present in the final version.}
 \end{table}
 
 \subsection{Computational cost of the fertility trade-off}
 \label{sec:results:cost}
 
-AraRooPat's fertility of 3.19 tokens per word is roughly double BPE-16K's 1.50. The morphological representation is therefore not cost-free at inference: the same Arabic text requires roughly twice as many autoregressive decoding steps under AraRooPat, and consumes roughly twice the context window for the same passage. Whether the judge-score gain of \S\ref{sec:results:morpho} justifies this cost is a question for a deployer, and it cannot be answered without measuring the cost.
-\todo{Report, for each arm and each base model: (i) tokens per query = fertility $\times$ average answer length in words; (ii) FLOPs per query = tokens per query $\times$ FLOPs per token (from each model card); (iii) wall-clock latency per query on the evaluation hardware, median and p95 over the 250 prompts. One sentence per number. The paper's claim that the morphological trade-off is worth making cannot be evaluated by a reader without these numbers.}
+AraRooPat's fertility of 3.19 tokens per word is roughly double BPE-16K's 1.50. The morphological representation is therefore not cost-free at inference: the same Arabic text requires more autoregressive decoding steps under AraRooPat and consumes more of the context window for the same passage --- on answer text 1.3 times as many tokens as BPE-16K (510 against 401 tokens per 1\,000 characters), less than the ratio of the corpus fertilities, because the gap between the two vocabularies is narrower on answer text than on the corpus. Whether the judge-score gain of \S\ref{sec:results:morpho} justifies this cost is a question for a deployer, and it cannot be answered without measuring the cost.
+Table~\ref{tab:cost} reports the cost for every arm and model. Tokens per answer are the mean generated tokens of the evaluated answers; forward operations per answer multiply them by the operations per generated token (twice the body and vocabulary-table parameters, plus the attention term at a context of 512 tokens); latency and energy come from a separate pass that answers the 250 prompts one at a time on the evaluation GPU, available for every arm. On Qwen3 an AraRooPat answer is 310 tokens against 235 for BPE-16K, for answers of 541 and 533 characters. Its forward cost is 2.33 TFLOP against 1.76. Its median latency is 5.99\,s against 4.98\,s, and its 95th percentile 27.5\,s against 17.3\,s; per 100 characters written, 1\,696\,ms against 1\,177. Its energy is 393\,Wh per 1\,000 answers against 276. On Llama the ratios are 1.2 in tokens (312 against 258), 1.24 in median latency (3.34 against 2.69\,s) and 1.6 at the 95th percentile (18.6 against 11.8\,s); on Gemma 1.2 in tokens (260 against 225), 1.13 in median latency (5.53 against 4.88\,s) and 1.5 at the 95th percentile (26.2 against 17.6\,s). For the three remaining arms the median latency on Qwen3, Llama and Gemma is 5.36, 3.42 and 6.24\,s for Farasa-BPE-16K, 4.98, 2.84 and 5.66\,s for Fanar-1's vocabulary and 3.59, 2.03 and 3.77\,s for Jais-2's, against 4.98, 2.69 and 4.88\,s for BPE-16K and 5.99, 3.34 and 5.53\,s for AraRooPat. The Jais-2 vocabulary therefore has the lowest median latency, time per character and energy of the adapted arms on every model, followed by the native-sized BPE-128K, which scores lowest.
+
+\begin{table}[t]
+\centering
+\caption{Inference cost per answer, by arm and base model. Tokens: mean generated tokens of the 250 evaluated answers. TFLOP: forward operations per answer at a context of 512 tokens. Latency, milliseconds per 100 characters and energy: a separate pass answering the 250 prompts one at a time on an otherwise idle H100 (median and 95th percentile over the prompts). The shipped Gemma model loops to the character budget on 55\% of its evaluated answers, which its token count reflects.}
+\label{tab:cost}
+\small
+\begin{tabular}{@{}llcccccc@{}}
+\toprule
+Model & Arm & Tokens & TFLOP & Median s & p95 s & ms / 100 chars & Wh / 1\,000 answers \\
+\midrule
+Qwen3-4B-Base & model as shipped & 206 & 1.69 & 5.02 & 19.5 & 1\,321 & 301 \\
+ & AraRooPat & 310 & 2.33 & 5.99 & 27.5 & 1\,696 & 393 \\
+ & BPE-16K & 235 & 1.76 & 4.98 & 17.3 & 1\,177 & 276 \\
+ & BPE-128K & 199 & 1.61 & 3.67 & 12.8 & 1\,029 & 215 \\
+ & Farasa-BPE-16K & 289 & 2.17 & 5.36 & 23.0 & 1\,488 & 326 \\
+ & Jais-2 vocabulary & 201 & 1.65 & 3.59 & 13.6 & 949 & 213 \\
+ & Fanar-1 vocabulary & 263 & 2.13 & 4.98 & 20.5 & 1\,294 & 295 \\
+\midrule
+Llama-3.2-3B & model as shipped & 141 & 0.92 & 1.15 & 26.3 & 1\,142 & 139 \\
+ & AraRooPat & 312 & 1.82 & 3.34 & 18.6 & 1\,181 & 254 \\
+ & BPE-16K & 258 & 1.50 & 2.69 & 11.8 & 837 & 178 \\
+ & BPE-128K & 286 & 1.86 & 2.51 & 12.8 & 769 & 171 \\
+ & Farasa-BPE-16K & 276 & 1.61 & 3.42 & 15.2 & 959 & 216 \\
+ & Jais-2 vocabulary & 181 & 1.21 & 2.03 & 9.6 & 642 & 135 \\
+ & Fanar-1 vocabulary & 267 & 1.74 & 2.84 & 13.1 & 865 & 194 \\
+\midrule
+Gemma-3-4B & model as shipped & 899 & 7.04 & 6.27 & 42.5 & 2\,084 & 453 \\
+ & AraRooPat & 260 & 1.71 & 5.53 & 26.2 & 1\,867 & 360 \\
+ & BPE-16K & 225 & 1.48 & 4.88 & 17.6 & 1\,316 & 282 \\
+ & BPE-128K & 185 & 1.32 & 4.30 & 15.3 & 1\,128 & 238 \\
+ & Farasa-BPE-16K & 233 & 1.53 & 6.24 & 22.5 & 1\,653 & 318 \\
+ & Jais-2 vocabulary & 175 & 1.27 & 3.77 & 15.4 & 1\,063 & 221 \\
+ & Fanar-1 vocabulary & 237 & 1.69 & 5.66 & 20.6 & 1\,425 & 311 \\
+\bottomrule
+\end{tabular}
+\end{table}
 
 %% ============================================================
 %%  6. DISCUSSION
@@ -497,7 +566,7 @@ What the results do not establish is that the effect is universal. It is absent 
 \subsection{Why does the effect depend on the model?}
 \label{sec:discussion:model}
 
-The finding that Gemma shows no gain while Qwen3 and Llama do is the paper's least comfortable result, and we state it rather than explain it away. Three hypotheses are consistent with the data. First, Gemma's native vocabulary is the largest of the three (262\,144 entries) and its Arabic fertility the lowest (2.08), so the headroom that a morphological vocabulary could recover is smaller. Second, the three models differ in embedding dimension and in the distribution of their pretraining data, either of which could make the initialisation of the new embedding rows more or less effective. Third, the adaptation budget is fixed across arms; a model that adapts more slowly to a new vocabulary could need more tokens to show the effect. We do not have the evidence to choose among these, and the paper's claim is correspondingly narrow: the effect is real on two of three model families and absent on the third, and the boundary between them is an open question. A larger study that varies vocabulary size and adaptation budget jointly is the natural next step.
+The finding that Gemma shows no gain while Qwen3 and Llama do is the paper's least comfortable result, and we state it rather than explain it away. Three hypotheses are consistent with the data. First, Gemma's native vocabulary is the largest of the three (262\,208 entries) and its Arabic fertility the lowest (2.08), so the headroom that a morphological vocabulary could recover is smaller. Second, the three models differ in embedding dimension and in the distribution of their pretraining data, either of which could make the initialisation of the new embedding rows more or less effective. Third, the adaptation budget is fixed across arms; a model that adapts more slowly to a new vocabulary could need more tokens to show the effect. We do not have the evidence to choose among these, and the paper's claim is correspondingly narrow: the effect is real on two of three model families and absent on the third, and the boundary between them is an open question. A larger study that varies vocabulary size and adaptation budget jointly is the natural next step.
 
 \subsection{Fertility as compositional factorisation}
 \label{sec:discussion:fertility}
@@ -505,12 +574,12 @@ The finding that Gemma shows no gain while Qwen3 and Llama do is the paper's lea
 AraRooPat's fertility of 3.19 tokens per word is roughly double that of a statistical BPE and half again that of the shipped multilingual tokenizers. The higher fertility reflects an intentional compositional representation rather than an accidental increase in segmentation length: each additional token is a linguistic unit (a root, a pattern, a clitic), not an arbitrary fragment. A statistical BPE fragment carries no such information; it is a frequent substring, and the same word may be split differently depending on context.
 
 Whether the resulting representational benefit justifies the additional computational cost is an empirical question, and it cannot be settled by the linguistic argument alone. A model does not automatically benefit from receiving more linguistically meaningful tokens; more tokens also mean more autoregressive prediction steps, greater inference cost, more context-window consumption, and different optimisation dynamics. We therefore report the cost explicitly (\S\ref{sec:results:cost}) rather than treating the morphological representation as self-evidently superior.
-\todo{Quantify the cost as described in \S\ref{sec:results:cost}, and state whether the quality gain of \S\ref{sec:results:morpho} outweighs the measured cost for a deployer. One sentence per number, then a sentence of judgement. Until this is done, the paper's claim is that the morphological representation is competitive with much larger vocabularies, not that it is more efficient.}
+Measured (\S\ref{sec:results:cost}), the cost of the morphological representation against the size-matched BPE is 1.2--1.3 times the tokens and forward operations per answer, a median latency 13--24\% higher, a 95th-percentile latency 49--59\% higher and 28--43\% more energy per answer, across the three models. Against it stand $+0.212$ judge points on Qwen3 and $+0.132$ on Llama, nothing on Gemma, and lower loop rates on all three. For a deployer bound by answer quality the trade is favourable on Qwen3 and Llama and unfavourable on Gemma; for one bound by latency or energy it is not, since the Jais-2 vocabulary is the fastest adapted arm on every model, and on Qwen3 the model as shipped answers faster than AraRooPat (5.02 against 5.99\,s) at a score AraRooPat does not exceed. The paper's claim is therefore that the morphological representation buys judged quality at a measured and moderate cost on two of three models, not that it is more efficient.
 
 \subsection{Implications for tokenizer evaluation}
 \label{sec:discussion:eval}
 
-The multiple-choice result is a contribution independent of the tokenizer: on the Arabic exam benchmark, the letter-scoring gap reverses under answer-letter rotation, which means that a substantial part of the measured difference was a property of how the answer labels are tokenized, not of how the model understands the question. On MMLU, a residual gap of 0.026 to 0.039 remains under rotation, which means that the label artefact does not explain the entire multiple-choice disadvantage; some of the gap on that benchmark reflects genuine differences in model capability. This is the label-tokenization artefact that Sanz-Guerrero et al.\ \citep{sanzguerrero2025mind} and Zheng et al.\ \citep{zheng2024large} document, and it is not limited to Arabic: any tokenizer that spells the answer letters differently from its competitors will show the same artefact on any letter-scored benchmark.
+The multiple-choice result is a contribution independent of the tokenizer: on the Arabic exam benchmark, the letter-scoring gap reverses under answer-letter rotation, which means that a substantial part of the measured difference was a property of how the answer labels are tokenized, not of how the model understands the question. On MMLU, a residual gap of 0.026 to 0.039 remains under rotation (its interval reaches zero on Gemma), which means that the label artefact does not explain the entire multiple-choice disadvantage; some of the gap on that benchmark reflects genuine differences in model capability. This is the label-tokenization artefact that Sanz-Guerrero et al.\ \citep{sanzguerrero2025mind} and Zheng et al.\ \citep{zheng2024large} document, and it is not limited to Arabic: any tokenizer that spells the answer letters differently from its competitors will show the same artefact on any letter-scored benchmark.
 
 The methodological recommendation follows. Multiple-choice accuracy is insufficient as the sole measure of tokenizer quality; open-ended generation, scored by LLM judges against human references, is a complementary measure that does not read the tokenizer through the answer labels. We recommend it as one of the primary measures for tokenizer comparisons, and as a check on any multiple-choice result whose direction is load-bearing for the conclusion. We do not claim that it is universally more reliable; its own dependence on judge quality (\S\ref{sec:discussion:limitations}) is a real limitation, and the two measures together provide a more informative assessment than either alone.
 
@@ -518,7 +587,7 @@ The methodological recommendation follows. Multiple-choice accuracy is insuffici
 \label{sec:discussion:limitations}
 
 Five limitations bound the claims. First, the models are 3--4B parameters; whether the ranking holds at larger scale is untested. Second, inter-judge agreement is LLM-to-LLM ($\kappa = 0.817$), and the human evaluation of \S\ref{sec:protocol:eval} covers 120 answers on two of the three models. It confirms the Qwen3 result ($+0.300$ $[+0.033,+0.583]$ under the human consensus, the same sign under each annotator) but not the Llama result ($-0.210$ $[-0.509,+0.088]$, where the judges on the same prompts give $+0.105$); human--LLM agreement is moderate ($\kappa = 0.31$--$0.61$ for the consensus), and human--human agreement is low in exact terms (Fleiss' $\kappa$ of $0.07$ and $-0.04$) because one of the three annotators used a compressed scale. The results of \S\ref{sec:results} are therefore described as \emph{LLM-judged} generation quality, confirmed by human readers on Qwen3 only; a larger human sample on Llama and Gemma, with a calibration round among the annotators, is the natural next step.
-Third, our trained vocabularies cannot produce line breaks, while the shipped vocabularies can, and the magnitude of that layout disadvantage has not been measured; the finding that AraRooPat leads on five of six shipped-vs-adapted comparisons should be read in that light, neither as conservative nor as inflated. Fourth, the adaptation budget is fixed in tokens across arms, and because fertility differs, the arms see different amounts of Arabic text (\S\ref{sec:protocol:pipeline}); a study that equalises text coverage rather than token coverage could produce a different ranking, particularly on Gemma. Fifth, the study is one language; generalisation to other root-and-pattern languages (Hebrew, Amharic, Maltese) is untested, and the two-question framework of Section~\ref{sec:intro} is what would carry over, not the specific vocabulary.
+Third, our trained vocabularies cannot produce line breaks, while the shipped vocabularies can; a layout-only judge sees the difference ($+0.50$ to $+0.99$ points for Jais-2 and Fanar-1 over AraRooPat), but its cost in judged quality is not detectable on the 58 prompts whose reference has more than one line (\S\ref{sec:results:shipped}), and 58 prompts bound what could be detected. The finding that AraRooPat leads on five of six shipped-vs-adapted comparisons should be read in that light, neither as conservative nor as inflated; a newline-capable rebuild of the four vocabularies is the fix. Fourth, the adaptation budget is fixed in tokens across arms, and because fertility differs, the arms see different amounts of Arabic text (\S\ref{sec:protocol:pipeline}); a study that equalises text coverage rather than token coverage could produce a different ranking, particularly on Gemma. Fifth, the study is one language; generalisation to other root-and-pattern languages (Hebrew, Amharic, Maltese) is untested, and the two-question framework of Section~\ref{sec:intro} is what would carry over, not the specific vocabulary.
 
 %% ============================================================
 %%  7. CONCLUSION
@@ -530,7 +599,7 @@ We asked whether language-specific tokenization can improve a model's generation
 
 Four findings emerge. Morphology helps at equal vocabulary size on two of three model families, with fewer repetition loops on all three, and a second morphology-aware design corroborates the model-dependent pattern under the same protocol. A 17\,K morphological vocabulary is competitive with the tokenizers of Jais-2 (150\,K) and Fanar-1 (128\,K) on five of six shipped-versus-adapted comparisons, a supporting result whose interpretation is qualified by the adaptation boundary that separates shipped tokenizers from adapted arms. The multiple-choice gap on the Arabic exam benchmark becomes indistinguishable from zero under answer-letter rotation, which confirms a label-tokenization artefact, while an MMLU gap remains, which means that part of the multiple-choice disadvantage is real and part is a property of how the answers are scored. And the computational cost of the morphological representation's higher fertility is reported alongside the judge scores, so that the trade-off can be evaluated rather than assumed.
 
-The broader implication is that tokenizer design for morphologically rich languages is an open and productive research direction, and that the two questions of Section~\ref{sec:intro} are separable: language-specific coverage and explicit morphological structure each contribute, and a protocol that isolates the tokenizer configuration is what lets the contribution of each be read. The results establish the morphology benefit on LLM-judged generation on two of three model families, and a blind human evaluation confirms it on one of them; they do not yet establish it on human-judged generation on the second family, on models above 4B parameters, or on languages other than Arabic. Future work should extend the comparison to larger models, extend the human evaluation of \S\ref{sec:protocol:eval} to Llama and Gemma with more prompts per model, measure the inference cost of the fertility trade-off, and test whether the pattern carries over to other root-and-pattern languages.
+The broader implication is that tokenizer design for morphologically rich languages is an open and productive research direction, and that the two questions of Section~\ref{sec:intro} are separable: language-specific coverage and explicit morphological structure each contribute, and a protocol that isolates the tokenizer configuration is what lets the contribution of each be read. The results establish the morphology benefit on LLM-judged generation on two of three model families, and a blind human evaluation confirms it on one of them; they do not yet establish it on human-judged generation on the second family, on models above 4B parameters, or on languages other than Arabic. Future work should extend the comparison to larger models, extend the human evaluation of \S\ref{sec:protocol:eval} to Llama and Gemma with more prompts per model, and test whether the pattern carries over to other root-and-pattern languages.
 
 %% ============================================================
 %%  ACKNOWLEDGEMENTS & CRediT

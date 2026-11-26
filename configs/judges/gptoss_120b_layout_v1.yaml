@@ -1,0 +1,23 @@
+# Layout-only pass (2026-11-24, docs/report.md §3.20, brief opus_prompt_paper_finish_2026-11-24.md §4.4): the
+# gpt-oss-120b judge of gptoss_120b_local.yaml, byte for byte, with rubric "layout_v1" (structure only: paragraphing,
+# lists, headings; correctness and language quality explicitly ignored) and its own name, so it writes
+# freeform_judge/gptoss_120b_layout_v1.parquet beside the quality judges and never overwrites one. A layout score,
+# never a quality judge.
+judge:
+  name: "gptoss_120b_layout_v1"
+  backend: "vllm"
+  model: "openai/gpt-oss-120b"
+  revision: "b5c939de8f754692c1647ca79fbf85e8c1e70f8a"   # snapshot downloaded 2026-10-09 (session 77; original/ and metal/ excluded)
+  rubric: "layout_v1"
+  temperature: 0.0
+  max_tokens: 1024
+  seed: 0
+  structured_json: true
+  max_model_len: 4096
+  gpu_memory_utilization: 0.92
+  dtype: "auto"
+  batch_size: 64
+  engine_kwargs:
+    reasoning_parser: "openai_gptoss"
+  chat_template_kwargs:
+    reasoning_effort: "low"

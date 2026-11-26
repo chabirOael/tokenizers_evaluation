@@ -87,7 +87,36 @@ Reply with one JSON object and nothing else:
 ### Candidate answer
 {candidate}"""
 
-RUBRICS: Dict[str, str] = {"default_v1": RUBRIC_V1}
+# Layout only (2026-11-24, docs/report.md §3.20): structure, not quality. Same placeholders and the same JSON keys
+# as RUBRIC_V1, so the parser, the schema and the judge file are unchanged; the three sub-score keys keep their
+# names but hold layout aspects (stated in the text). A judge on this rubric writes under its own name
+# (configs/judges/gptoss_120b_layout_v1.yaml) and is a layout score, never a quality judge.
+RUBRIC_LAYOUT_V1 = """You are a strict evaluator of the visual layout of Arabic answers. You will see an instruction in Arabic, a reference answer written by a human, and a candidate answer produced by a small language model. Judge the layout of the candidate, not the reference.
+
+Score only the structure of the candidate from 1 to 5: its paragraphing, lists, numbering, headings and line breaks, and whether this visual organisation suits what the instruction asks for. Use the reference as a guide to the expected shape (one line, several paragraphs, a list), not as the only acceptable layout. Ignore whether the content is correct, complete or true, and ignore the quality of the Arabic: a wrong answer with a suitable layout deserves a high score, and a correct answer with an unsuitable layout a low one. An answer that needs no structure (a word, a sentence, a short paragraph) and has none deserves 5. Do not reward length or decoration for its own sake.
+
+Scale:
+5 = the layout suits the instruction: lists, numbered steps, separate paragraphs or headings wherever the content calls for them, and none where it does not
+4 = suitable layout with a minor lapse (one item run into its neighbour, an unnecessary heading)
+3 = partly organised: some structure, but content that calls for a list or separate paragraphs is partly run together
+2 = barely organised: content that calls for a list, steps or paragraphs is written as one undivided block, at most with inline numbers or dashes
+1 = empty, or content that clearly needs a list, steps or paragraphs written as one undivided block with no visible organisation at all
+
+Also give three sub-scores on the same 1-5 scale, under these fixed key names: "correctness" (how closely the layout matches the shape the reference shows: one line, paragraphs, a list), "fluency" (how easy the visual organisation makes the answer to read), "instruction_following" (whether the layout is the form the instruction asks for, such as a list when it asks to list).
+Flags, any that apply or none: "repetition" (loops or repeats phrases), "wrong_language" (mostly not Arabic), "empty" (no answer), "off_topic" (does not address the instruction), "truncated" (cut off mid-sentence).
+
+Reply with one JSON object and nothing else:
+{"score": <1-5>, "correctness": <1-5>, "fluency": <1-5>, "instruction_following": <1-5>, "flags": [<flags>], "rationale": "<one sentence in English about the layout>"}
+
+### Instruction
+{instruction}
+{context_block}### Reference answer
+{reference}
+
+### Candidate answer
+{candidate}"""
+
+RUBRICS: Dict[str, str] = {"default_v1": RUBRIC_V1, "layout_v1": RUBRIC_LAYOUT_V1}
 EMPTY_CANDIDATE = "[EMPTY ANSWER]"
 
 

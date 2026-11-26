@@ -164,6 +164,9 @@ JUDGES: Dict[str, Dict[str, str]] = {
 }
 RETIRED_JUDGES = ("gemma4_31b", "gpt56_terra")         # brief v6 §3.6: not run again, not extended to new cells
 CANDIDATES = ("gptoss_120b", "falcon_h1_34b", "phi4_14b")   # Mistral-Small-3.2 dropped 2026-10-10 (docs/report.md §3.14)
+# Layout-only scores (docs/report.md §3.20, 2026-11-24): structure, not quality. Never a judge of these tables; T8
+# leaves their GPU seconds out so its "judging" column stays the cost of judging the versions.
+LAYOUT_ONLY_JUDGES = ("gptoss_120b_layout_v1",)
 DEFAULT_PRIMARY = "gptoss_120b"                           # S4: C1 until the human rating names one
 
 
@@ -1023,6 +1026,8 @@ def t8(spec: ModelSpec) -> Table:
             ev += ff.get("generation_wall_sec") or 0.0
             import pyarrow.parquet as pq
             for f in (d / "freeform_judge").glob("*.parquet"):
+                if f.stem in LAYOUT_ONLY_JUDGES:
+                    continue
                 md = pq.read_schema(f).metadata or {}
                 meta = json.loads(md.get(b"arabic_eval", b"{}"))
                 jd += float(meta.get("seconds") or 0.0)

@@ -326,3 +326,42 @@ class TestRun:
         rep = J.run(sweep, [cfg], {"broken": Broken()}, regenerate_report=False)
         s = rep["judges"]["broken"]["native_llama"]
         assert s["parse_fail_rate"] == 1.0 and s["score_mean"] is None and s["vs_baseline"] is None
+
+
+# 2026-11-24 (docs/report.md §3.20): the layout-only rubric — structure, not quality — keeps the verdict shape of
+# default_v1 so the parser, the schema and the judge file are unchanged, and its judge writes under its own name.
+class TestLayoutRubric:
+    def test_registered_and_valid(self):
+        assert set(J.RUBRICS) == {"default_v1", "layout_v1"}
+        cfg = J.JudgeConfig(name="x_layout", backend="vllm", model="m", rubric="layout_v1")
+        assert cfg.rubric == "layout_v1"
+
+    def test_same_verdict_keys_and_sections(self):
+        text = J.RUBRICS["layout_v1"]
+        for key in J.VERDICT_SCHEMA["required"]:
+            assert f'"{key}"' in text, key
+        for section in ("### Instruction", "### Reference answer", "### Candidate answer"):
+            assert text.count(section) == 1
+        assert "Ignore whether the content is correct" in text and "structure" in text
+
+    def test_messages_keep_line_breaks_of_both_answers(self):
+        m = J.build_messages("اذكر ثلاثة ألوان", "", "١. أحمر\n٢. أزرق\n٣. أخضر", "أحمر أزرق أخضر", rubric="layout_v1")
+        c = m[0]["content"]
+        assert "### Reference answer\n١. أحمر\n٢. أزرق\n٣. أخضر\n\n### Candidate answer\nأحمر أزرق أخضر" in c
+        assert "{candidate}" not in c and "{reference}" not in c
+        # the default rubric's prompt is untouched by the addition
+        assert J.build_messages("اكتب", "", "مرجع", "جواب")[0]["content"].startswith("You are a strict evaluator of Arabic")
+
+    def test_layout_judge_yaml_is_the_primary_judge_with_another_name_and_rubric(self):
+        a = J.JudgeConfig.from_yaml(REPO / "configs/judges/gptoss_120b_local.yaml")
+        b = J.JudgeConfig.from_yaml(REPO / "configs/judges/gptoss_120b_layout_v1.yaml")
+        assert b.name == "gptoss_120b_layout_v1" and b.rubric == "layout_v1"
+        da, db = dict(vars(a)), dict(vars(b))
+        for k in ("name", "rubric"):
+            da.pop(k), db.pop(k)
+        assert da == db
+
+    def test_parse_layout_verdict(self):
+        v = J.parse_verdict('{"score": 2, "correctness": 2, "fluency": 3, "instruction_following": 2, "flags": [], '
+                            '"rationale": "one undivided block where a list was asked"}')
+        assert v.score == 2 and v.parse_ok
